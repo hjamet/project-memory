@@ -42,7 +42,9 @@ export default class ReviewModal extends Modal {
 			// read frontmatter values
 			const fm = (cache as any).frontmatter ?? {};
 			let baseScore = typeof fm.pertinence_score !== 'undefined' ? Number(fm.pertinence_score) : (this.plugin as any).settings.defaultScore;
-			if (!isFinite(baseScore) || baseScore <= 0) baseScore = 1;
+			if (!isFinite(baseScore)) baseScore = Number((this.plugin as any).settings.defaultScore ?? 50);
+			// Ensure baseScore is within the normalized range [1, 100]
+			baseScore = Math.min(100, Math.max(1, baseScore));
 
 			let lastReviewedMillis: number | null = null;
 			if (fm.last_reviewed_date) {
@@ -125,7 +127,8 @@ export default class ReviewModal extends Modal {
 
 		// Helper to update frontmatter scores
 		const updateScore = async (newScore: number) => {
-			newScore = Math.max(1, newScore);
+			// Clamp stored base score to [1,100]
+			newScore = Math.min(100, Math.max(1, newScore));
 			await (this.app as any).fileManager.processFrontMatter(chosen.file, (fm: any) => {
 				fm.pertinence_score = newScore;
 				fm.last_reviewed_date = new Date().toISOString();
@@ -138,37 +141,32 @@ export default class ReviewModal extends Modal {
 			const cache = this.app.metadataCache.getFileCache(chosen.file) || {};
 			const fm = (cache as any).frontmatter ?? {};
 			let s = typeof fm.pertinence_score !== 'undefined' ? Number(fm.pertinence_score) : (this.plugin as any).settings.defaultScore;
-			const decreaseFactor = Number((this.plugin as any).settings.decreaseScoreFactor ?? 1.5);
-			await updateScore(s / decreaseFactor);
+			if (!isFinite(s)) s = Number((this.plugin as any).settings.defaultScore ?? 50);
+			const rapprochment = Number((this.plugin as any).settings.rapprochementFactor ?? 0.2);
+			const perte = rapprochment * (s - 1);
+			await updateScore(s - perte);
 		}, 'pm-moins-souvent');
 
 		const btn2 = makeButton('Fréquence OK', async () => {
 			const cache = this.app.metadataCache.getFileCache(chosen.file) || {};
 			const fm = (cache as any).frontmatter ?? {};
 			let s = typeof fm.pertinence_score !== 'undefined' ? Number(fm.pertinence_score) : (this.plugin as any).settings.defaultScore;
-			await updateScore(s * 1);
+			if (!isFinite(s)) s = Number((this.plugin as any).settings.defaultScore ?? 50);
+			await updateScore(s);
 		}, 'pm-ok');
 
 		const btn3 = makeButton('Plus souvent', async () => {
 			const cache = this.app.metadataCache.getFileCache(chosen.file) || {};
 			const fm = (cache as any).frontmatter ?? {};
 			let s = typeof fm.pertinence_score !== 'undefined' ? Number(fm.pertinence_score) : (this.plugin as any).settings.defaultScore;
-			const increaseFactor = Number((this.plugin as any).settings.increaseScoreFactor ?? 1.5);
-			await updateScore(s * increaseFactor);
+			if (!isFinite(s)) s = Number((this.plugin as any).settings.defaultScore ?? 50);
+			const rapprochment = Number((this.plugin as any).settings.rapprochementFactor ?? 0.2);
+			const gain = rapprochment * (100 - s);
+			await updateScore(s + gain);
 		}, 'pm-plus-souvent');
 
 		const btn4 = makeButton('Priorité Max', async () => {
-			let maxScore = 0;
-			for (const f of this.app.vault.getMarkdownFiles()) {
-				const c = this.app.metadataCache.getFileCache(f) || {};
-				const fm = (c as any).frontmatter ?? {};
-				if (typeof fm.pertinence_score !== 'undefined') {
-					const val = Number(fm.pertinence_score);
-					if (isFinite(val)) maxScore = Math.max(maxScore, val);
-				}
-			}
-			if (maxScore <= 0) maxScore = (this.plugin as any).settings.defaultScore;
-			await updateScore(maxScore * 1.2);
+			await updateScore(100);
 		}, 'pm-prio-max');
 
 		const btn5 = makeButton('Fini', async () => {

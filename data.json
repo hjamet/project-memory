@@ -1,5 +1,8 @@
 {
-  "projectTags": "projet",
+  "projectTags": "toto",
   "defaultScore": 50,
-  "archiveTag": "projet-fini"
+  "archiveTag": "projet-fini",
+  "ageBonusPerDay": 15,
+  "rapprochementFactor": 0.2,
+  "scoresNormalised": true
 }

@@ -8,8 +8,8 @@ interface ProjectsMemorySettings {
 	defaultScore: number;
 	archiveTag: string;
 	ageBonusPerDay: number;
-	increaseScoreFactor: number;
-	decreaseScoreFactor: number;
+	rapprochmentFactor: number; // fraction between 0 and 1
+	scoresNormalised: boolean; // migration flag
 }
 
 const DEFAULT_SETTINGS: ProjectsMemorySettings = {
@@ -17,8 +17,8 @@ const DEFAULT_SETTINGS: ProjectsMemorySettings = {
 	defaultScore: 50,
 	archiveTag: 'projet-fini',
 	ageBonusPerDay: 1,
-	increaseScoreFactor: 1.5,
-	decreaseScoreFactor: 1.5
+	rapprochmentFactor: 0.2,
+	scoresNormalised: false
 }
 
 export default class ProjectsMemoryPlugin extends Plugin {
@@ -27,6 +27,8 @@ export default class ProjectsMemoryPlugin extends Plugin {
 
 	async onload() {
 		await this.loadSettings();
+		// Run one-time migration to normalise existing pertinence scores into [1..100]
+		await this.migrateScores();
 
 		// Create an icon in the left ribbon that lists project files when clicked
 		const ribbonIconEl = this.addRibbonIcon('rocket', 'Review projects', (_evt: MouseEvent) => {
@@ -57,6 +59,42 @@ export default class ProjectsMemoryPlugin extends Plugin {
 
 	async saveSettings() {
 		await this.saveData(this.settings);
+	}
+
+	// One-time data migration: normalise old pertinence_score values into the [1..100] range
+	async migrateScores() {
+		if ((this.settings as any).scoresNormalised) return;
+
+		// Find the maximum existing pertinence_score
+		let oldMax = 0;
+		for (const f of this.app.vault.getMarkdownFiles()) {
+			const c = this.app.metadataCache.getFileCache(f) || {};
+			const fm = (c as any).frontmatter ?? {};
+			if (typeof fm.pertinence_score !== 'undefined') {
+				const val = Number(fm.pertinence_score);
+				if (isFinite(val)) oldMax = Math.max(oldMax, val);
+			}
+		}
+		if (oldMax <= 0) oldMax = Number(this.settings.defaultScore) || 1;
+
+		// Second pass: rewrite each pertinence_score using linear interpolation to [1..100]
+		for (const f of this.app.vault.getMarkdownFiles()) {
+			const file = f;
+			const cache = this.app.metadataCache.getFileCache(file) || {};
+			const fm = (cache as any).frontmatter ?? {};
+			if (typeof fm.pertinence_score !== 'undefined') {
+				const oldScore = Number(fm.pertinence_score);
+				if (!isFinite(oldScore)) continue;
+				const newScore = 1 + (oldScore / oldMax) * 99;
+				await (this.app as any).fileManager.processFrontMatter(file, (front: any) => {
+					front.pertinence_score = newScore;
+				});
+			}
+		}
+
+		// Mark migration completed and persist settings
+		(this.settings as any).scoresNormalised = true;
+		await this.saveSettings();
 	}
 }
 
@@ -184,7 +222,7 @@ class ProjectsMemorySettingTab extends PluginSettingTab {
 		// New configurable factors for scoring
 		new Setting(containerEl)
 			.setName('Age bonus per day')
-			.setDesc('Floating bonus added per day since last review.')
+			.setDesc('Additive linear bonus added per day since last review (default: 1).')
 			.addText(text => {
 				text
 					.setPlaceholder('1')
@@ -196,30 +234,17 @@ class ProjectsMemorySettingTab extends PluginSettingTab {
 					});
 			});
 
+		// Rapprochement factor: fraction of remaining gap closed per click
 		new Setting(containerEl)
-			.setName('Increase score factor')
-			.setDesc('Multiplier applied when choosing "Plus souvent" (default 1.5).')
+			.setName('Rapprochement factor')
+			.setDesc('Fraction of the remaining gap closed on each click (0..1, default: 0.2).')
 			.addText(text => {
 				text
-					.setPlaceholder('1.5')
-					.setValue(String(this.plugin.settings.increaseScoreFactor))
+					.setPlaceholder('0.2')
+					.setValue(String(this.plugin.settings.rapprochmentFactor))
 					.onChange(async (value) => {
 						const n = Number(value);
-						this.plugin.settings.increaseScoreFactor = isFinite(n) && n > 0 ? n : 1.5;
-						await this.plugin.saveSettings();
-					});
-			});
-
-		new Setting(containerEl)
-			.setName('Decrease score factor')
-			.setDesc('Divisor applied when choosing "Moins souvent" (default 1.5).')
-			.addText(text => {
-				text
-					.setPlaceholder('1.5')
-					.setValue(String(this.plugin.settings.decreaseScoreFactor))
-					.onChange(async (value) => {
-						const n = Number(value);
-						this.plugin.settings.decreaseScoreFactor = isFinite(n) && n > 0 ? n : 1.5;
+						this.plugin.settings.rapprochmentFactor = isFinite(n) && n >= 0 && n <= 1 ? n : 0.2;
 						await this.plugin.saveSettings();
 					});
 			});

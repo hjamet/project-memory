@@ -55,8 +55,10 @@ Quick starting guide for new plugin devs:
 
 - **Command**: use the command palette and run `Review a project` (or click the ribbon icon) to start an adaptive review loop that selects projects for review.
 - **Settings added**:
-  - `defaultScore` (in plugin settings): default pertinence score used when a project has no `pertinence_score` in frontmatter (default: `50`).
-  - `archiveTag` (in plugin settings): tag applied when marking a project as finished (default: `projet-fini`).
+  - **`defaultScore`**: default pertinence score used when a project has no `pertinence_score` in frontmatter (default: `50`).
+  - **`archiveTag`**: tag applied when marking a project as finished (default: `projet-fini`).
+  - **`ageBonusPerDay`**: additive linear bonus added per day since last review (default: `1`).
+  - **`rapprochementFactor`**: fraction of the remaining gap closed on each click (0..1, default: `0.2`).
 
 - **Behavior & context**: when the review modal opens, the chosen project file is opened in the currently active editor pane to provide context (no new pane is created). The modal also *remembers* the last shown project: if you close and reopen the modal, it will show the same project until you perform a review action (e.g., "Moins souvent", "Fini"), at which point the remembered project is reset and a new one will be selected on the next open.
 
