@@ -53,8 +53,10 @@ export default class ReviewModal extends Modal {
 				lastReviewedMillis = file.stat.ctime;
 			}
 
-			const daysSince = Math.floor((now - lastReviewedMillis) / (1000 * 60 * 60 * 24));
-			const bonus = daysSince;
+			// use floating days for precision and user-configurable per-day bonus
+			const ageDays = (now - lastReviewedMillis) / (1000 * 60 * 60 * 24);
+			const ageBonusPerDay = Number((this.plugin as any).settings.ageBonusPerDay ?? 1);
+			const bonus = ageDays * ageBonusPerDay;
 			const effectiveScore = baseScore + bonus;
 			candidates.push({ file, effectiveScore, baseScore, lastReviewed: fm.last_reviewed_date });
 		}
@@ -65,7 +67,7 @@ export default class ReviewModal extends Modal {
 			return;
 		}
 
-		// Determine chosen file: prefer plugin.remembered lastChosenFile if still valid, otherwise pick weighted-random
+		// Determine chosen file: prefer plugin.remembered lastChosenFile if still valid, otherwise pick highest effectiveScore
 		let chosen = candidates[0];
 		const lastChosen = (this.plugin as any).lastChosenFile as import('obsidian').TFile | null;
 		if (lastChosen) {
@@ -73,25 +75,10 @@ export default class ReviewModal extends Modal {
 			if (found) {
 				chosen = found;
 			} else {
-				// lastChosen not a candidate anymore; fall back to weighted selection
-				const total = candidates.reduce((s, c) => s + c.effectiveScore, 0);
-				if (total > 0) {
-					let r = Math.random() * total;
-					for (const c of candidates) {
-						r -= c.effectiveScore;
-						if (r <= 0) { chosen = c; break; }
-					}
-				}
+				chosen = candidates.reduce((prev, cur) => cur.effectiveScore > prev.effectiveScore ? cur : prev, candidates[0]);
 			}
 		} else {
-			const total = candidates.reduce((s, c) => s + c.effectiveScore, 0);
-			if (total > 0) {
-				let r = Math.random() * total;
-				for (const c of candidates) {
-					r -= c.effectiveScore;
-					if (r <= 0) { chosen = c; break; }
-				}
-			}
+			chosen = candidates.reduce((prev, cur) => cur.effectiveScore > prev.effectiveScore ? cur : prev, candidates[0]);
 		}
 
 		// Remember chosen file on the plugin instance so subsequent modal opens reuse it
@@ -163,7 +150,8 @@ export default class ReviewModal extends Modal {
 			const cache = this.app.metadataCache.getFileCache(chosen.file) || {};
 			const fm = (cache as any).frontmatter ?? {};
 			let s = typeof fm.pertinence_score !== 'undefined' ? Number(fm.pertinence_score) : (this.plugin as any).settings.defaultScore;
-			await updateScore(s / 1.5);
+			const decreaseFactor = Number((this.plugin as any).settings.decreaseScoreFactor ?? 1.5);
+			await updateScore(s / decreaseFactor);
 		}, 'pm-moins-souvent');
 
 		const btn2 = makeButton('Fréquence OK', async () => {
@@ -177,7 +165,8 @@ export default class ReviewModal extends Modal {
 			const cache = this.app.metadataCache.getFileCache(chosen.file) || {};
 			const fm = (cache as any).frontmatter ?? {};
 			let s = typeof fm.pertinence_score !== 'undefined' ? Number(fm.pertinence_score) : (this.plugin as any).settings.defaultScore;
-			await updateScore(s * 1.5);
+			const increaseFactor = Number((this.plugin as any).settings.increaseScoreFactor ?? 1.5);
+			await updateScore(s * increaseFactor);
 		}, 'pm-plus-souvent');
 
 		const btn4 = makeButton('Priorité Max', async () => {

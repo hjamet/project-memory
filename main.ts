@@ -7,12 +7,18 @@ interface ProjectsMemorySettings {
 	projectTags: string;
 	defaultScore: number;
 	archiveTag: string;
+	ageBonusPerDay: number;
+	increaseScoreFactor: number;
+	decreaseScoreFactor: number;
 }
 
 const DEFAULT_SETTINGS: ProjectsMemorySettings = {
 	projectTags: 'projet',
 	defaultScore: 50,
-	archiveTag: 'projet-fini'
+	archiveTag: 'projet-fini',
+	ageBonusPerDay: 1,
+	increaseScoreFactor: 1.5,
+	decreaseScoreFactor: 1.5
 }
 
 export default class ProjectsMemoryPlugin extends Plugin {
@@ -171,6 +177,49 @@ class ProjectsMemorySettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.archiveTag)
 					.onChange(async (value) => {
 						this.plugin.settings.archiveTag = value;
+						await this.plugin.saveSettings();
+					});
+			});
+
+		// New configurable factors for scoring
+		new Setting(containerEl)
+			.setName('Age bonus per day')
+			.setDesc('Floating bonus added per day since last review.')
+			.addText(text => {
+				text
+					.setPlaceholder('1')
+					.setValue(String(this.plugin.settings.ageBonusPerDay))
+					.onChange(async (value) => {
+						const n = Number(value);
+						this.plugin.settings.ageBonusPerDay = isFinite(n) ? n : 1;
+						await this.plugin.saveSettings();
+					});
+			});
+
+		new Setting(containerEl)
+			.setName('Increase score factor')
+			.setDesc('Multiplier applied when choosing "Plus souvent" (default 1.5).')
+			.addText(text => {
+				text
+					.setPlaceholder('1.5')
+					.setValue(String(this.plugin.settings.increaseScoreFactor))
+					.onChange(async (value) => {
+						const n = Number(value);
+						this.plugin.settings.increaseScoreFactor = isFinite(n) && n > 0 ? n : 1.5;
+						await this.plugin.saveSettings();
+					});
+			});
+
+		new Setting(containerEl)
+			.setName('Decrease score factor')
+			.setDesc('Divisor applied when choosing "Moins souvent" (default 1.5).')
+			.addText(text => {
+				text
+					.setPlaceholder('1.5')
+					.setValue(String(this.plugin.settings.decreaseScoreFactor))
+					.onChange(async (value) => {
+						const n = Number(value);
+						this.plugin.settings.decreaseScoreFactor = isFinite(n) && n > 0 ? n : 1.5;
 						await this.plugin.saveSettings();
 					});
 			});
