@@ -58,6 +58,11 @@ Quick starting guide for new plugin devs:
   - `defaultScore` (in plugin settings): default pertinence score used when a project has no `pertinence_score` in frontmatter (default: `50`).
   - `archiveTag` (in plugin settings): tag applied when marking a project as finished (default: `projet-fini`).
 
+Note on recent fixes:
+
+- **Ribbon icon**: the left ribbon icon now opens the same review modal as the `Review a project` command (previously it printed results to the console).
+- **Tags suggestions in settings**: the tag picker in the settings uses a non-blocking dropdown attached to the input field (type-ahead), instead of a blocking modal.
+
 The review modal updates `pertinence_score` and `last_reviewed_date` in each project's frontmatter and can archive finished projects by replacing project tags with the configured `archiveTag`.
 
 ## Manually installing the plugin

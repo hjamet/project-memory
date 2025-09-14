@@ -1,4 +1,4 @@
-import { App, Plugin, PluginSettingTab, Setting, FuzzySuggestModal } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, AbstractInputSuggest } from 'obsidian';
 import ReviewModal from './src/ReviewModal';
 
 // Projects Memory plugin: settings and UI for comma-separated project tags
@@ -23,32 +23,7 @@ export default class ProjectsMemoryPlugin extends Plugin {
 
 		// Create an icon in the left ribbon that lists project files when clicked
 		const ribbonIconEl = this.addRibbonIcon('rocket', 'Review projects', (_evt: MouseEvent) => {
-			const projectTagsStr = this.settings.projectTags ?? '';
-
-			// Build array of tags with a leading '#', robust to spaces and empty values
-			const tagsArray = projectTagsStr
-				.split(',')
-				.map(t => t.trim())
-				.filter(Boolean)
-				.map(t => (t.startsWith('#') ? t : `#${t}`));
-
-			if (tagsArray.length === 0) {
-				console.log([]);
-				return;
-			}
-
-			const mdFiles = this.app.vault.getMarkdownFiles();
-
-			const matchedNames = mdFiles
-				.filter((file) => {
-					const cache = this.app.metadataCache.getFileCache(file);
-					if (!cache || !cache.tags) return false;
-					// A file is a project if it contains at least one of the configured tags
-					return cache.tags.some((t) => tagsArray.includes(t.tag));
-				})
-				.map((file) => file.basename);
-
-			console.log(matchedNames);
+			new ReviewModal(this.app, this as any).open();
 		});
 		ribbonIconEl.addClass('projects-memory-ribbon-class');
 
@@ -87,39 +62,48 @@ function debounce<Func extends (...args: any[]) => void>(fn: Func, wait = 200) {
 	};
 }
 
-// Suggest modal that inserts chosen tag into the target input element
-class TagsSuggestModal extends FuzzySuggestModal<string> {
-	private itemsList: string[];
-	private targetInputEl: HTMLInputElement;
+// Non-blocking suggest dropdown attached to an input element
+class TagsSuggestor extends AbstractInputSuggest<string> {
+	private availableTags: string[];
 	private plugin: ProjectsMemoryPlugin;
 
-	constructor(app: App, items: string[], targetInputEl: HTMLInputElement, plugin: ProjectsMemoryPlugin) {
-		super(app);
-		this.itemsList = items;
-		this.targetInputEl = targetInputEl;
+	constructor(app: App, inputEl: HTMLInputElement, availableTags: string[], plugin: ProjectsMemoryPlugin) {
+		super(app, inputEl);
+		this.availableTags = availableTags;
 		this.plugin = plugin;
 	}
 
-	getItems(): string[] {
-		return this.itemsList;
+	private computeMatches(query: string): string[] {
+		const tokens = query.split(',');
+		const currentToken = tokens[tokens.length - 1].trim();
+		if (!currentToken) return [];
+		const lower = currentToken.toLowerCase();
+		return this.availableTags.filter(t => t.toLowerCase().includes(lower));
 	}
 
-	getItemText(item: string): string {
-		return item;
+	protected getSuggestions(query: string): string[] | Promise<string[]> {
+		return this.computeMatches(query);
 	}
 
-	onChooseItem(item: string, _evt: MouseEvent | KeyboardEvent) {
-		// Append chosen tag to the input value as a comma-terminated token
-		const current = this.targetInputEl.value;
+	renderSuggestion(item: string, el: HTMLElement) {
+		el.setText(item);
+	}
+
+	selectSuggestion(item: string, _evt: MouseEvent | KeyboardEvent) {
+		// Use public accessors for value; access underlying element only to move caret
+		const current = this.getValue();
 		const parts = current.split(',');
-		// Replace last token (in-progress) with the chosen tag
 		parts[parts.length - 1] = ' ' + item;
 		const newVal = parts.map(p => p.trim()).filter(Boolean).join(', ') + ', ';
-		this.targetInputEl.value = newVal;
-		// Persist to plugin settings (store without trailing comma)
+		this.setValue(newVal);
 		this.plugin.settings.projectTags = newVal.replace(/\s*,\s*$/, '');
 		this.plugin.saveSettings();
-		this.targetInputEl.focus();
+		// Move caret to end and focus input
+		const el = (this as any).inputEl as HTMLInputElement | undefined;
+		if (el) {
+			el.focus();
+			try { el.setSelectionRange(el.value.length, el.value.length); } catch { }
+		}
 	}
 }
 
@@ -161,20 +145,17 @@ class ProjectsMemorySettingTab extends PluginSettingTab {
 					});
 
 				// Suggest modal: open when user types (debounced) to show matching tags from cache
-				const openSuggest = debounce(() => {
+				const suggestor = new TagsSuggestor(this.app, text.inputEl, availableTags, this.plugin);
+				const debouncedOpen = debounce(() => {
+					// only open if there's a non-empty current token
 					const value = text.getValue();
-					// compute current token (the last comma-separated part)
 					const tokens = value.split(',');
 					const currentToken = tokens[tokens.length - 1].trim();
 					if (!currentToken) return;
-					// filter available tags by currentToken (case-insensitive)
-					const matches = availableTags.filter(t => t.toLowerCase().includes(currentToken.toLowerCase()));
-					if (matches.length === 0) return;
-					const modal = new TagsSuggestModal(this.app, matches, text.inputEl, this.plugin);
-					modal.open();
+					suggestor.open();
 				}, 150);
 
-				text.inputEl.addEventListener('input', () => openSuggest());
+				text.inputEl.addEventListener('input', () => debouncedOpen());
 			});
 
 		// Archive tag configuration
