@@ -66,3 +66,4 @@ Note on recent fixes:
 - **Tags suggestor behavior**: the tag suggestion dropdown now closes automatically after selecting a suggestion, keeping focus in the input.
 
 The review modal updates `pertinence_score` and `
+Note on styling: CSS rules were recently scoped to the review modal to avoid leaking styles into the rest of Obsidian. Files modified: `src/ReviewModal.ts` (adds `.projects-memory-review-modal` class) and `styles.css` (all selectors prefixed with `.projects-memory-review-modal`, button min-width removed, `flex-wrap` added to `.review-buttons`).

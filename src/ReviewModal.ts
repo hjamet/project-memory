@@ -5,6 +5,8 @@ export default class ReviewModal extends Modal {
 	constructor(app: App, plugin: Plugin) {
 		super(app);
 		this.plugin = plugin;
+		// Scope modal styles to avoid leaking into the rest of Obsidian
+		this.modalEl.classList.add('projects-memory-review-modal');
 	}
 	// Keydown handler used for numeric shortcuts while modal is open
 	keydownHandler: ((e: KeyboardEvent) => void) | null = null;

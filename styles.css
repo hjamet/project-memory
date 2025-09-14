@@ -7,59 +7,63 @@ If your plugin does not need CSS, delete this file.
 
 */
 
-.review-buttons {
+.projects-memory-review-modal .review-buttons {
     display: flex;
     justify-content: center;
     gap: 0.5rem;
     margin-top: 1rem;
+    flex-wrap: wrap;
+    /* allow buttons to wrap on narrow viewports */
+    flex-shrink: 0;
+    /* keep the button bar visible */
 }
 
-.review-buttons button {
+.projects-memory-review-modal .review-buttons button {
     padding: 0.45rem 0.8rem;
     border: 1px solid rgba(0, 0, 0, 0.08);
     border-radius: 6px;
     cursor: pointer;
     font-weight: 600;
     color: white;
-    min-width: 110px;
+    /* removed min-width to allow responsive wrapping */
 }
 
 /* Semantic colors for each action */
-.pm-moins-souvent {
+.projects-memory-review-modal .pm-moins-souvent {
     background-color: #2f74c0;
     /* blue */
 }
 
-.pm-ok {
+.projects-memory-review-modal .pm-ok {
     background-color: #2e8b57;
     /* green */
 }
 
-.pm-plus-souvent {
+.projects-memory-review-modal .pm-plus-souvent {
     background-color: #f39c12;
     /* orange */
 }
 
-.pm-prio-max {
+.projects-memory-review-modal .pm-prio-max {
     background-color: #c0392b;
     /* red */
 }
 
-.pm-fini {
+.projects-memory-review-modal .pm-fini {
     background-color: #7f8c8d;
     /* gray */
 }
 
 /* Focus/hover affordances */
-.review-buttons button:hover,
-.review-buttons button:focus {
+.projects-memory-review-modal .review-buttons button:hover,
+.projects-memory-review-modal .review-buttons button:focus {
     filter: brightness(0.95);
     outline: none;
     box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.06) inset;
 }
 
 /* Layout fixes: ensure modal content uses Flexbox so preview scrolls and buttons stay visible */
-.modal-content {
+.projects-memory-review-modal .modal-content {
     display: flex;
     flex-direction: column;
     height: 100%;
@@ -67,7 +71,7 @@ If your plugin does not need CSS, delete this file.
     /* allow children to shrink correctly inside flex container */
 }
 
-.review-preview {
+.projects-memory-review-modal .review-preview {
     flex: 1 1 auto;
     /* take available space and be shrinkable/growable as needed */
     overflow-y: auto;
@@ -76,18 +80,14 @@ If your plugin does not need CSS, delete this file.
     /* prevents overflow in some browsers when flex children grow */
 }
 
-.review-buttons {
-    flex-shrink: 0;
-    /* keep the button bar always visible */
+/* Safety rules: ensure plugin buttons remain visible even if theme overrides exist */
+.projects-memory-review-modal .modal-content>.review-buttons {
+    display: flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    z-index: 9999 !important;
 }
-+
-+/* Safety rules: ensure plugin buttons remain visible even if theme overrides exist */
-+.modal-content > .review-buttons {
-+    display: flex !important;
-+    visibility: visible !important;
-+    opacity: 1 !important;
-+    z-index: 9999 !important;
-+}
-+.modal-content > .review-buttons button {
-+    display: inline-block !important;
-+}
+
+.projects-memory-review-modal .modal-content>.review-buttons button {
+    display: inline-block !important;
+}
