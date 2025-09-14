@@ -80,3 +80,14 @@ If your plugin does not need CSS, delete this file.
     flex-shrink: 0;
     /* keep the button bar always visible */
 }
++
++/* Safety rules: ensure plugin buttons remain visible even if theme overrides exist */
++.modal-content > .review-buttons {
++    display: flex !important;
++    visibility: visible !important;
++    opacity: 1 !important;
++    z-index: 9999 !important;
++}
++.modal-content > .review-buttons button {
++    display: inline-block !important;
++}

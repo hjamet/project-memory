@@ -78,11 +78,20 @@ export default class ReviewModal extends Modal {
 		// Build UI
 		const titleEl = this.contentEl.createEl('h2', { text: chosen.file.basename });
 		const previewContainer = this.contentEl.createEl('div', { cls: 'review-preview' });
-		const fileContent = await this.app.vault.read(chosen.file);
-		// render markdown into preview
-		await MarkdownRenderer.render(fileContent, previewContainer, chosen.file.path, this);
 
+		// Create the buttons container early so the UI is present even if markdown rendering fails
 		const buttonsRow = this.contentEl.createEl('div', { cls: 'review-buttons' });
+
+		// Read and render file content; guard against rendering errors so buttons still appear
+		let fileContent = '';
+		try {
+			fileContent = await this.app.vault.read(chosen.file);
+			// render markdown into preview
+			await MarkdownRenderer.render(fileContent, previewContainer, chosen.file.path, this);
+		} catch (err) {
+			new Notice('Unable to render preview — review controls are still available.');
+			console.error('ReviewModal: MarkdownRenderer.render failed', err);
+		}
 
 		const makeButton = (label: string, onClick: () => Promise<void>, className?: string) => {
 			const btn = buttonsRow.createEl('button', { text: label, cls: className });
