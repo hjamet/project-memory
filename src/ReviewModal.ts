@@ -11,6 +11,8 @@ export default class ReviewModal extends Modal {
 	// Keydown handler used for numeric shortcuts while modal is open
 	keydownHandler: ((e: KeyboardEvent) => void) | null = null;
 	isClosed: boolean = false;
+	pomodoroIntervalId: number | null = null;
+	isPomodoroActive: boolean = false;
 
 	async onOpen() {
 		// Phase 1 - Load data (async) before touching the DOM
@@ -38,9 +40,18 @@ export default class ReviewModal extends Modal {
 			if (!cache.tags) continue;
 			const hasProjectTag = cache.tags.some((t) => tagsArray.includes(t.tag));
 			if (!hasProjectTag) continue;
+			// Exclude archived projects: skip if archiveTag is present in file tags or frontmatter
+			const archiveTag = (this.plugin as any).settings.archiveTag ?? '';
+			const normalizedArchiveTag = archiveTag ? (archiveTag.startsWith('#') ? archiveTag : `#${archiveTag}`) : '';
+			const hasArchiveTagInTags = normalizedArchiveTag ? cache.tags.some((t) => t.tag === normalizedArchiveTag) : false;
+			const fm = (cache as any).frontmatter ?? {};
+			const fmTagsArray: string[] = [];
+			if (Array.isArray(fm.tags)) fmTagsArray.push(...fm.tags.map((x: any) => String(x).replace(/^#/, '')));
+			else if (typeof fm.tags === 'string') fmTagsArray.push(...String(fm.tags).split(',').map((s: string) => s.trim().replace(/^#/, '')));
+			const hasArchiveTagInFrontmatter = archiveTag ? fmTagsArray.includes(archiveTag.replace(/^#/, '')) : false;
+			if (hasArchiveTagInTags || hasArchiveTagInFrontmatter) continue;
 
 			// read frontmatter values
-			const fm = (cache as any).frontmatter ?? {};
 			let baseScore = typeof fm.pertinence_score !== 'undefined' ? Number(fm.pertinence_score) : (this.plugin as any).settings.defaultScore;
 			if (!isFinite(baseScore)) baseScore = Number((this.plugin as any).settings.defaultScore ?? 50);
 			// Ensure baseScore is within the normalized range [1, 100]
@@ -101,6 +112,14 @@ export default class ReviewModal extends Modal {
 
 		// Create the buttons container early so the UI is present even if markdown rendering fails
 		const buttonsRow = this.contentEl.createEl('div', { cls: 'review-buttons' });
+
+		// Pomodoro container (inserted before buttonsRow in DOM flow): button + progress bar
+		const pomodoroContainer = this.contentEl.createEl('div', { cls: 'review-pomodoro' });
+		const startPomodoroBtn = pomodoroContainer.createEl('button', { text: 'Lancer le Pomodoro', cls: 'pm-start-pomodoro' });
+		const progressWrapper = pomodoroContainer.createEl('div', { cls: 'pm-progress-wrapper' });
+		progressWrapper.setAttr('style', 'display: none; width: 100%; background: #eee; height: 12px; border-radius: 6px; overflow: hidden; margin-top: 8px;');
+		const progressBar = progressWrapper.createEl('div', { cls: 'pm-progress-bar' });
+		progressBar.setAttr('style', 'width: 0%; height: 100%; background: linear-gradient(90deg, #4caf50, #8bc34a);');
 
 		// Phase 3 - Render and finalization
 		try {
@@ -187,6 +206,52 @@ export default class ReviewModal extends Modal {
 			new Notice('Project archived');
 		}, 'pm-fini');
 
+		// Pomodoro start handler
+		startPomodoroBtn.addEventListener('click', () => {
+			if (this.isPomodoroActive) return;
+			this.isPomodoroActive = true;
+			// hide start button and action buttons
+			startPomodoroBtn.setAttr('style', 'display: none;');
+			buttonsRow.setAttr('style', 'display: none;');
+			// show progress
+			progressWrapper.setAttr('style', 'display: block; width: 100%;');
+
+			const durationMinutes = Number((this.plugin as any).settings.pomodoroDuration ?? 25);
+			const durationMs = Math.max(1, durationMinutes) * 60 * 1000;
+			const startTime = Date.now();
+
+			// Play tick immediately? we just update progress
+			this.pomodoroIntervalId = window.setInterval(() => {
+				const elapsed = Date.now() - startTime;
+				const pct = Math.min(100, (elapsed / durationMs) * 100);
+				progressBar.setAttr('style', `width: ${pct}%; height: 100%; background: linear-gradient(90deg, #4caf50, #8bc34a);`);
+				if (elapsed >= durationMs) {
+					// complete
+					if (this.pomodoroIntervalId) {
+						window.clearInterval(this.pomodoroIntervalId);
+						this.pomodoroIntervalId = null;
+					}
+					this.isPomodoroActive = false;
+					// play sound notification
+					try {
+						const base = this.app.vault.adapter instanceof Object && (this.app.vault.adapter as any).basePath ? (this.app.vault.adapter as any).basePath : '';
+						// build plugin-relative path to asset
+						const pluginId = (this.plugin as any).manifest?.id ?? 'projects-memory';
+						const audioPath = `${base}/.obsidian/plugins/${pluginId}/assets/ring.wav`;
+						const audio = new Audio(audioPath);
+						audio.play().catch(() => { /* fail silently if playback blocked */ });
+					} catch (e) {
+						console.error('Pomodoro audio failed', e);
+					}
+					// reset UI
+					progressWrapper.setAttr('style', 'display: none;');
+					progressBar.setAttr('style', 'width: 0%; height: 100%; background: linear-gradient(90deg, #4caf50, #8bc34a);');
+					buttonsRow.setAttr('style', 'display: block;');
+					startPomodoroBtn.setAttr('style', 'display: inline-block;');
+				}
+			}, 500);
+		});
+
 		// Keyboard shortcuts: 1..5 trigger corresponding buttons while modal is open
 		this.keydownHandler = (e: KeyboardEvent) => {
 			const k = e.key;
@@ -214,6 +279,11 @@ export default class ReviewModal extends Modal {
 	onClose() {
 		this.isClosed = true;
 		this.contentEl.empty();
+		// stop any running pomodoro interval
+		if (this.pomodoroIntervalId) {
+			window.clearInterval(this.pomodoroIntervalId);
+			this.pomodoroIntervalId = null;
+		}
 		if (this.keydownHandler) {
 			window.removeEventListener('keydown', this.keydownHandler);
 			this.keydownHandler = null;

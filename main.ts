@@ -10,6 +10,7 @@ interface ProjectsMemorySettings {
 	ageBonusPerDay: number;
 	rapprochmentFactor: number; // fraction between 0 and 1
 	scoresNormalised: boolean; // migration flag
+	pomodoroDuration: number; // duration in minutes for Pomodoro
 }
 
 const DEFAULT_SETTINGS: ProjectsMemorySettings = {
@@ -18,7 +19,8 @@ const DEFAULT_SETTINGS: ProjectsMemorySettings = {
 	archiveTag: 'projet-fini',
 	ageBonusPerDay: 1,
 	rapprochmentFactor: 0.2,
-	scoresNormalised: false
+	scoresNormalised: false,
+	pomodoroDuration: 25
 }
 
 export default class ProjectsMemoryPlugin extends Plugin {
@@ -245,6 +247,21 @@ class ProjectsMemorySettingTab extends PluginSettingTab {
 					.onChange(async (value) => {
 						const n = Number(value);
 						this.plugin.settings.rapprochmentFactor = isFinite(n) && n >= 0 && n <= 1 ? n : 0.2;
+						await this.plugin.saveSettings();
+					});
+			});
+
+		// Pomodoro duration (minutes)
+		new Setting(containerEl)
+			.setName('Pomodoro duration (minutes)')
+			.setDesc('Duration in minutes for the Pomodoro timer (default: 25).')
+			.addText(text => {
+				text
+					.setPlaceholder('25')
+					.setValue(String(this.plugin.settings.pomodoroDuration))
+					.onChange(async (value) => {
+						const n = Number(value);
+						this.plugin.settings.pomodoroDuration = isFinite(n) && n > 0 ? Math.floor(n) : 25;
 						await this.plugin.saveSettings();
 					});
 			});
