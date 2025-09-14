@@ -10,6 +10,7 @@ export default class ReviewModal extends Modal {
 	}
 	// Keydown handler used for numeric shortcuts while modal is open
 	keydownHandler: ((e: KeyboardEvent) => void) | null = null;
+	isClosed: boolean = false;
 
 	async onOpen() {
 		// Phase 1 - Load data (async) before touching the DOM
@@ -67,26 +68,13 @@ export default class ReviewModal extends Modal {
 			return;
 		}
 
-		// Determine chosen file: prefer plugin.remembered lastChosenFile if still valid, otherwise pick highest effectiveScore
-		let chosen = candidates[0];
-		const lastChosen = (this.plugin as any).lastChosenFile as import('obsidian').TFile | null;
-		if (lastChosen) {
-			const found = candidates.find(c => c.file.path === lastChosen.path);
-			if (found) {
-				chosen = found;
-			} else {
-				chosen = candidates.reduce((prev, cur) => cur.effectiveScore > prev.effectiveScore ? cur : prev, candidates[0]);
-			}
-		} else {
-			chosen = candidates.reduce((prev, cur) => cur.effectiveScore > prev.effectiveScore ? cur : prev, candidates[0]);
-		}
-
-		// Remember chosen file on the plugin instance so subsequent modal opens reuse it
-		(this.plugin as any).lastChosenFile = chosen.file;
+		// Determine chosen file: pick highest effectiveScore
+		const chosen = candidates.reduce((prev, cur) => cur.effectiveScore > prev.effectiveScore ? cur : prev, candidates[0]);
 		// Open the chosen file in the currently active editor pane (do not create a new leaf)
 		try {
 			const leaf = this.app.workspace.getLeaf(false);
 			await leaf.openFile(chosen.file);
+			if (this.isClosed) return;
 		} catch (err) {
 			console.error('ReviewModal: failed to open chosen file in active pane', err);
 		}
@@ -95,6 +83,7 @@ export default class ReviewModal extends Modal {
 		let fileContent = '';
 		try {
 			fileContent = await this.app.vault.read(chosen.file);
+			if (this.isClosed) return;
 		} catch (err) {
 			new Notice('Unable to read project file for preview.');
 			console.error('ReviewModal: failed to read file', err);
@@ -115,6 +104,7 @@ export default class ReviewModal extends Modal {
 		try {
 			// IMPORTANT: use the app-first signature: (app, markdown, el, sourcePath, component)
 			await MarkdownRenderer.render(this.app, fileContent, previewContainer, chosen.file.path, this as any);
+			if (this.isClosed) return;
 		} catch (err) {
 			new Notice('Unable to render preview — review controls are still available.');
 			console.error('ReviewModal: MarkdownRenderer.render failed', err);
@@ -124,8 +114,6 @@ export default class ReviewModal extends Modal {
 			const btn = buttonsRow.createEl('button', { text: label, cls: className });
 			btn.addEventListener('click', async () => {
 				await onClick();
-				// Reset the plugin's remembered choice so the next modal session selects a new project
-				(this.plugin as any).lastChosenFile = null;
 				this.close();
 				// reopen next review instance
 				setTimeout(() => {
@@ -226,6 +214,7 @@ export default class ReviewModal extends Modal {
 	}
 
 	onClose() {
+		this.isClosed = true;
 		this.contentEl.empty();
 		if (this.keydownHandler) {
 			window.removeEventListener('keydown', this.keydownHandler);
