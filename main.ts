@@ -1,13 +1,18 @@
 import { App, Plugin, PluginSettingTab, Setting, FuzzySuggestModal } from 'obsidian';
+import ReviewModal from './src/ReviewModal';
 
 // Projects Memory plugin: settings and UI for comma-separated project tags
 
 interface ProjectsMemorySettings {
 	projectTags: string;
+	defaultScore: number;
+	archiveTag: string;
 }
 
 const DEFAULT_SETTINGS: ProjectsMemorySettings = {
-	projectTags: 'projet'
+	projectTags: 'projet',
+	defaultScore: 50,
+	archiveTag: 'projet-fini'
 }
 
 export default class ProjectsMemoryPlugin extends Plugin {
@@ -46,6 +51,15 @@ export default class ProjectsMemoryPlugin extends Plugin {
 			console.log(matchedNames);
 		});
 		ribbonIconEl.addClass('projects-memory-ribbon-class');
+
+		// Register review command
+		this.addCommand({
+			id: 'review-project',
+			name: 'Review a project',
+			callback: () => {
+				new ReviewModal(this.app, this as any).open();
+			}
+		});
 
 		// Settings tab
 		this.addSettingTab(new ProjectsMemorySettingTab(this.app, this));
@@ -161,6 +175,20 @@ class ProjectsMemorySettingTab extends PluginSettingTab {
 				}, 150);
 
 				text.inputEl.addEventListener('input', () => openSuggest());
+			});
+
+		// Archive tag configuration
+		new Setting(containerEl)
+			.setName('Archive tag')
+			.setDesc('Tag to apply when a project is marked finished (do not include the leading #).')
+			.addText(text => {
+				text
+					.setPlaceholder('projet-fini')
+					.setValue(this.plugin.settings.archiveTag)
+					.onChange(async (value) => {
+						this.plugin.settings.archiveTag = value;
+						await this.plugin.saveSettings();
+					});
 			});
 	}
 }

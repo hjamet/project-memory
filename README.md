@@ -51,6 +51,15 @@ Quick starting guide for new plugin devs:
 - `npm i` or `yarn` to install dependencies.
 - `npm run dev` to start compilation in watch mode.
 
+### Review command and settings
+
+- **Command**: use the command palette and run `Review a project` (or click the ribbon icon) to start an adaptive review loop that selects projects for review.
+- **Settings added**:
+  - `defaultScore` (in plugin settings): default pertinence score used when a project has no `pertinence_score` in frontmatter (default: `50`).
+  - `archiveTag` (in plugin settings): tag applied when marking a project as finished (default: `projet-fini`).
+
+The review modal updates `pertinence_score` and `last_reviewed_date` in each project's frontmatter and can archive finished projects by replacing project tags with the configured `archiveTag`.
+
 ## Manually installing the plugin
 
 - Copy over `main.js`, `styles.css`, `manifest.json` to your vault `VaultFolder/.obsidian/plugins/your-plugin-id/`.
