@@ -65,15 +65,43 @@ export default class ReviewModal extends Modal {
 			return;
 		}
 
-		// Weighted random selection
-		const total = candidates.reduce((s, c) => s + c.effectiveScore, 0);
+		// Determine chosen file: prefer plugin.remembered lastChosenFile if still valid, otherwise pick weighted-random
 		let chosen = candidates[0];
-		if (total > 0) {
-			let r = Math.random() * total;
-			for (const c of candidates) {
-				r -= c.effectiveScore;
-				if (r <= 0) { chosen = c; break; }
+		const lastChosen = (this.plugin as any).lastChosenFile as import('obsidian').TFile | null;
+		if (lastChosen) {
+			const found = candidates.find(c => c.file.path === lastChosen.path);
+			if (found) {
+				chosen = found;
+			} else {
+				// lastChosen not a candidate anymore; fall back to weighted selection
+				const total = candidates.reduce((s, c) => s + c.effectiveScore, 0);
+				if (total > 0) {
+					let r = Math.random() * total;
+					for (const c of candidates) {
+						r -= c.effectiveScore;
+						if (r <= 0) { chosen = c; break; }
+					}
+				}
 			}
+		} else {
+			const total = candidates.reduce((s, c) => s + c.effectiveScore, 0);
+			if (total > 0) {
+				let r = Math.random() * total;
+				for (const c of candidates) {
+					r -= c.effectiveScore;
+					if (r <= 0) { chosen = c; break; }
+				}
+			}
+		}
+
+		// Remember chosen file on the plugin instance so subsequent modal opens reuse it
+		(this.plugin as any).lastChosenFile = chosen.file;
+		// Open the chosen file in the currently active editor pane (do not create a new leaf)
+		try {
+			const leaf = this.app.workspace.getLeaf(false);
+			await leaf.openFile(chosen.file);
+		} catch (err) {
+			console.error('ReviewModal: failed to open chosen file in active pane', err);
 		}
 
 		// Read file content before creating any DOM nodes
@@ -98,8 +126,8 @@ export default class ReviewModal extends Modal {
 
 		// Phase 3 - Render and finalization
 		try {
-			// IMPORTANT: pass `this` as the fourth argument to bind render lifecycle to the modal
-			await MarkdownRenderer.render(fileContent, '', previewContainer, this);
+			// IMPORTANT: use the app-first signature: (app, markdown, el, sourcePath, component)
+			await MarkdownRenderer.render(this.app, fileContent, previewContainer, chosen.file.path, this as any);
 		} catch (err) {
 			new Notice('Unable to render preview — review controls are still available.');
 			console.error('ReviewModal: MarkdownRenderer.render failed', err);
@@ -109,6 +137,8 @@ export default class ReviewModal extends Modal {
 			const btn = buttonsRow.createEl('button', { text: label, cls: className });
 			btn.addEventListener('click', async () => {
 				await onClick();
+				// Reset the plugin's remembered choice so the next modal session selects a new project
+				(this.plugin as any).lastChosenFile = null;
 				this.close();
 				// reopen next review instance
 				setTimeout(() => {

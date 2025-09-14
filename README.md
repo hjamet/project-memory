@@ -58,6 +58,8 @@ Quick starting guide for new plugin devs:
   - `defaultScore` (in plugin settings): default pertinence score used when a project has no `pertinence_score` in frontmatter (default: `50`).
   - `archiveTag` (in plugin settings): tag applied when marking a project as finished (default: `projet-fini`).
 
+- **Behavior & context**: when the review modal opens, the chosen project file is opened in the currently active editor pane to provide context (no new pane is created). The modal also *remembers* the last shown project: if you close and reopen the modal, it will show the same project until you perform a review action (e.g., "Moins souvent", "Fini"), at which point the remembered project is reset and a new one will be selected on the next open.
+
 Note on recent fixes:
 
 - **Ribbon icon**: the left ribbon icon now opens the same review modal as the `Review a project` command (previously it printed results to the console).
@@ -65,5 +67,6 @@ Note on recent fixes:
 - **Review modal**: added numeric keyboard shortcuts (`1`–`5`) for the five review actions (Moins souvent, Fréquence OK, Plus souvent, Priorité Max, Fini); shortcuts are active only while the modal is open.
 - **Tags suggestor behavior**: the tag suggestion dropdown now closes automatically after selecting a suggestion, keeping focus in the input.
 
-The review modal updates `pertinence_score` and `
+The review modal updates `pertinence_score` and frontmatter fields when actions are performed.
+
 Note on styling: CSS rules were recently scoped to the review modal to avoid leaking styles into the rest of Obsidian. Files modified: `src/ReviewModal.ts` (adds `.projects-memory-review-modal` class) and `styles.css` (all selectors prefixed with `.projects-memory-review-modal`, button min-width removed, `flex-wrap` added to `.review-buttons`).

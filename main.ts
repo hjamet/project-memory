@@ -1,4 +1,4 @@
-import { App, Plugin, PluginSettingTab, Setting, AbstractInputSuggest } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, AbstractInputSuggest, TFile } from 'obsidian';
 import ReviewModal from './src/ReviewModal';
 
 // Projects Memory plugin: settings and UI for comma-separated project tags
@@ -17,6 +17,7 @@ const DEFAULT_SETTINGS: ProjectsMemorySettings = {
 
 export default class ProjectsMemoryPlugin extends Plugin {
 	settings: ProjectsMemorySettings;
+	public lastChosenFile: TFile | null = null;
 
 	async onload() {
 		await this.loadSettings();
