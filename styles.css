@@ -57,3 +57,26 @@ If your plugin does not need CSS, delete this file.
     outline: none;
     box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.06) inset;
 }
+
+/* Layout fixes: ensure modal content uses Flexbox so preview scrolls and buttons stay visible */
+.modal-content {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    /* allow children to shrink correctly inside flex container */
+}
+
+.review-preview {
+    flex: 1 1 auto;
+    /* take available space and be shrinkable/growable as needed */
+    overflow-y: auto;
+    /* only preview scrolls when content is long */
+    min-height: 0;
+    /* prevents overflow in some browsers when flex children grow */
+}
+
+.review-buttons {
+    flex-shrink: 0;
+    /* keep the button bar always visible */
+}
