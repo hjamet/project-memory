@@ -6,6 +6,8 @@ export default class ReviewModal extends Modal {
 		super(app);
 		this.plugin = plugin;
 	}
+	// Keydown handler used for numeric shortcuts while modal is open
+	keydownHandler: ((e: KeyboardEvent) => void) | null = null;
 
 	async onOpen() {
 		this.contentEl.empty();
@@ -82,8 +84,8 @@ export default class ReviewModal extends Modal {
 
 		const buttonsRow = this.contentEl.createEl('div', { cls: 'review-buttons' });
 
-		const makeButton = (label: string, onClick: () => Promise<void>) => {
-			const btn = buttonsRow.createEl('button', { text: label });
+		const makeButton = (label: string, onClick: () => Promise<void>, className?: string) => {
+			const btn = buttonsRow.createEl('button', { text: label, cls: className });
 			btn.addEventListener('click', async () => {
 				await onClick();
 				this.close();
@@ -105,32 +107,29 @@ export default class ReviewModal extends Modal {
 			new Notice(`Updated score: ${Math.round(newScore * 100) / 100}`);
 		};
 
-		// "Moins souvent"
-		makeButton('Moins souvent', async () => {
+		// Create buttons with classes and keep references for keyboard shortcuts
+		const btn1 = makeButton('Moins souvent', async () => {
 			const cache = this.app.metadataCache.getFileCache(chosen.file) || {};
 			const fm = (cache as any).frontmatter ?? {};
 			let s = typeof fm.pertinence_score !== 'undefined' ? Number(fm.pertinence_score) : (this.plugin as any).settings.defaultScore;
 			await updateScore(s / 1.5);
-		});
+		}, 'pm-moins-souvent');
 
-		// "Fréquence OK"
-		makeButton('Fréquence OK', async () => {
+		const btn2 = makeButton('Fréquence OK', async () => {
 			const cache = this.app.metadataCache.getFileCache(chosen.file) || {};
 			const fm = (cache as any).frontmatter ?? {};
 			let s = typeof fm.pertinence_score !== 'undefined' ? Number(fm.pertinence_score) : (this.plugin as any).settings.defaultScore;
 			await updateScore(s * 1);
-		});
+		}, 'pm-ok');
 
-		// "Plus souvent"
-		makeButton('Plus souvent', async () => {
+		const btn3 = makeButton('Plus souvent', async () => {
 			const cache = this.app.metadataCache.getFileCache(chosen.file) || {};
 			const fm = (cache as any).frontmatter ?? {};
 			let s = typeof fm.pertinence_score !== 'undefined' ? Number(fm.pertinence_score) : (this.plugin as any).settings.defaultScore;
 			await updateScore(s * 1.5);
-		});
+		}, 'pm-plus-souvent');
 
-		// "Priorité Max"
-		makeButton('Priorité Max', async () => {
+		const btn4 = makeButton('Priorité Max', async () => {
 			let maxScore = 0;
 			for (const f of this.app.vault.getMarkdownFiles()) {
 				const c = this.app.metadataCache.getFileCache(f) || {};
@@ -142,10 +141,9 @@ export default class ReviewModal extends Modal {
 			}
 			if (maxScore <= 0) maxScore = (this.plugin as any).settings.defaultScore;
 			await updateScore(maxScore * 1.2);
-		});
+		}, 'pm-prio-max');
 
-		// "Fini"
-		makeButton('Fini', async () => {
+		const btn5 = makeButton('Fini', async () => {
 			// Remove project tags from frontmatter.tags and add archiveTag
 			await (this.app as any).fileManager.processFrontMatter(chosen.file, (fm: any) => {
 				const projectTagsStr = (this.plugin as any).settings.projectTags ?? '';
@@ -161,10 +159,37 @@ export default class ReviewModal extends Modal {
 				fm.tags = tags;
 			});
 			new Notice('Project archived');
-		});
+		}, 'pm-fini');
+
+		// Keyboard shortcuts: 1..5 trigger corresponding buttons while modal is open
+		this.keydownHandler = (e: KeyboardEvent) => {
+			const k = e.key;
+			switch (k) {
+				case '1':
+					btn1?.click();
+					break;
+				case '2':
+					btn2?.click();
+					break;
+				case '3':
+					btn3?.click();
+					break;
+				case '4':
+					btn4?.click();
+					break;
+				case '5':
+					btn5?.click();
+					break;
+			}
+		};
+		window.addEventListener('keydown', this.keydownHandler);
 	}
 
 	onClose() {
 		this.contentEl.empty();
+		if (this.keydownHandler) {
+			window.removeEventListener('keydown', this.keydownHandler);
+			this.keydownHandler = null;
+		}
 	}
 }

@@ -6,3 +6,54 @@ available in the app when your plugin is enabled.
 If your plugin does not need CSS, delete this file.
 
 */
+
+.review-buttons {
+    display: flex;
+    justify-content: center;
+    gap: 0.5rem;
+    margin-top: 1rem;
+}
+
+.review-buttons button {
+    padding: 0.45rem 0.8rem;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 600;
+    color: white;
+    min-width: 110px;
+}
+
+/* Semantic colors for each action */
+.pm-moins-souvent {
+    background-color: #2f74c0;
+    /* blue */
+}
+
+.pm-ok {
+    background-color: #2e8b57;
+    /* green */
+}
+
+.pm-plus-souvent {
+    background-color: #f39c12;
+    /* orange */
+}
+
+.pm-prio-max {
+    background-color: #c0392b;
+    /* red */
+}
+
+.pm-fini {
+    background-color: #7f8c8d;
+    /* gray */
+}
+
+/* Focus/hover affordances */
+.review-buttons button:hover,
+.review-buttons button:focus {
+    filter: brightness(0.95);
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.06) inset;
+}

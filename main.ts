@@ -104,6 +104,8 @@ class TagsSuggestor extends AbstractInputSuggest<string> {
 			el.focus();
 			try { el.setSelectionRange(el.value.length, el.value.length); } catch { }
 		}
+		// Close the suggestion list after selection
+		this.close();
 	}
 }
 
