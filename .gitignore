@@ -7,3 +7,5 @@ package-lock.json
 repo.md
 agent.md
 diff
+.cursor/mcp
+.cursor/mcp.json
