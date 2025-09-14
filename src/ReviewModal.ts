@@ -89,7 +89,7 @@ export default class ReviewModal extends Modal {
 		try {
 			fileContent = await this.app.vault.read(chosen.file);
 			// render markdown into preview
-			await MarkdownRenderer.render(fileContent, previewContainer, chosen.file.path, this);
+			await MarkdownRenderer.render(fileContent, previewContainer, chosen.file.path);
 		} catch (err) {
 			new Notice('Unable to render preview — review controls are still available.');
 			console.error('ReviewModal: MarkdownRenderer.render failed', err);
