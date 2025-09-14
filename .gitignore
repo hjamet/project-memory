@@ -2,3 +2,8 @@
 node_modules
 main.js
 package-lock.json
+
+# Cursor
+repo.md
+agent.md
+diff
