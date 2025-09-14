@@ -99,7 +99,7 @@ export default class ReviewModal extends Modal {
 		// Phase 3 - Render and finalization
 		try {
 			// IMPORTANT: pass `this` as the fourth argument to bind render lifecycle to the modal
-			await MarkdownRenderer.render(fileContent, chosen.file.path, previewContainer, this);
+			await MarkdownRenderer.render(fileContent, '', previewContainer, this);
 		} catch (err) {
 			new Notice('Unable to render preview — review controls are still available.');
 			console.error('ReviewModal: MarkdownRenderer.render failed', err);
