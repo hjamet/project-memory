@@ -12,8 +12,7 @@ export default class ReviewModal extends Modal {
 	keydownHandler: ((e: KeyboardEvent) => void) | null = null;
 
 	async onOpen() {
-		this.contentEl.empty();
-
+		// Phase 1 - Load data (async) before touching the DOM
 		const projectTagsStr = (this.plugin as any).settings.projectTags ?? '';
 		const tagsArray = projectTagsStr
 			.split(',')
@@ -77,19 +76,30 @@ export default class ReviewModal extends Modal {
 			}
 		}
 
-		// Build UI
+		// Read file content before creating any DOM nodes
+		let fileContent = '';
+		try {
+			fileContent = await this.app.vault.read(chosen.file);
+		} catch (err) {
+			new Notice('Unable to read project file for preview.');
+			console.error('ReviewModal: failed to read file', err);
+			this.close();
+			return;
+		}
+
+		// Phase 2 - Build UI synchronously now that data is loaded
+		this.contentEl.empty();
+
 		const titleEl = this.contentEl.createEl('h2', { text: chosen.file.basename });
 		const previewContainer = this.contentEl.createEl('div', { cls: 'review-preview' });
 
 		// Create the buttons container early so the UI is present even if markdown rendering fails
 		const buttonsRow = this.contentEl.createEl('div', { cls: 'review-buttons' });
 
-		// Read and render file content; guard against rendering errors so buttons still appear
-		let fileContent = '';
+		// Phase 3 - Render and finalization
 		try {
-			fileContent = await this.app.vault.read(chosen.file);
-			// render markdown into preview
-			await MarkdownRenderer.render(fileContent, previewContainer, chosen.file.path);
+			// IMPORTANT: pass `this` as the fourth argument to bind render lifecycle to the modal
+			await MarkdownRenderer.render(fileContent, previewContainer, chosen.file.path, this);
 		} catch (err) {
 			new Notice('Unable to render preview — review controls are still available.');
 			console.error('ReviewModal: MarkdownRenderer.render failed', err);
