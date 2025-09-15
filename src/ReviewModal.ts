@@ -27,7 +27,7 @@ export default class ReviewModal extends Modal {
 		const s = pluginAny.pomodoroState;
 		if (!s || !s.isActive) {
 			// reset UI when finished
-			progressWrapper.setAttr('style', 'display: none;');
+			progressWrapper.style.display = 'none';
 			progressBar.setAttr('style', 'width: 0%; height: 100%; background: linear-gradient(90deg, #4caf50, #8bc34a);');
 			timeDisplay.setAttr('style', 'display: none;');
 			cancelPomodoroBtn.setAttr('style', 'display: none;');
@@ -310,19 +310,8 @@ export default class ReviewModal extends Modal {
 						window.clearInterval(pluginAny.pomodoroGlobalIntervalId);
 						pluginAny.pomodoroGlobalIntervalId = null;
 						s.isActive = false;
-						// play audio even if modal closed
-						try {
-							// obtain a resource path for the asset; only play if valid string
-							const resource = (this.app.vault.adapter as any).getResourcePath
-								? (this.app.vault.adapter as any).getResourcePath('assets/ring.wav')
-								: null;
-							if (typeof resource === 'string' && resource) {
-								const audio = new Audio(resource);
-								audio.play().catch(() => { /* playback blocked */ });
-							}
-						} catch (e) {
-							console.error('Pomodoro audio failed', e);
-						}
+						// notify user via native Obsidian notice
+						new Notice('Pomodoro terminé !');
 					}
 				}, 1000);
 			}
@@ -358,7 +347,7 @@ export default class ReviewModal extends Modal {
 			// remove active class from pomodoro container
 			pomodoroContainer.classList.remove('pomodoro-active');
 			// hide pomodoro UI
-			progressWrapper.setAttr('style', 'display: none;');
+			progressWrapper.style.display = 'none';
 			progressBar.setAttr('style', 'width: 0%; height: 100%; background: linear-gradient(90deg, #4caf50, #8bc34a);');
 			timeDisplay.setAttr('style', 'display: none;');
 			cancelPomodoroBtn.setAttr('style', 'display: none;');
