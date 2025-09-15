@@ -127,6 +127,49 @@ export default class ReviewModal extends Modal {
 		// Create the buttons container after pomodoro so DOM order is correct
 		const buttonsRow = this.contentEl.createEl('div', { cls: 'review-buttons' });
 
+		// If a pomodoro is already active at the plugin level, reflect it in this modal's UI
+		const pluginAny = this.plugin as any;
+		if (pluginAny.pomodoroState && pluginAny.pomodoroState.isActive) {
+			this.isPomodoroActive = true;
+			// set UI: hide start, show cancel, show time and progress, hide action buttons
+			startPomodoroBtn.setAttr('style', 'display: none;');
+			cancelPomodoroBtn.setAttr('style', 'display: inline-block;');
+			buttonsRow.setAttr('style', 'display: none;');
+			progressWrapper.setAttr('style', 'display: block; width: 100%;');
+			timeDisplay.setAttr('style', 'display: inline-block;');
+
+			// ensure modal-local UI interval updates from plugin state
+			if (this.pomodoroIntervalId) {
+				window.clearInterval(this.pomodoroIntervalId);
+				this.pomodoroIntervalId = null;
+			}
+			this.pomodoroIntervalId = window.setInterval(() => {
+				const s = (this.plugin as any).pomodoroState;
+				if (!s || !s.isActive) {
+					// reset UI when finished
+					progressWrapper.setAttr('style', 'display: none;');
+					progressBar.setAttr('style', 'width: 0%; height: 100%; background: linear-gradient(90deg, #4caf50, #8bc34a);');
+					timeDisplay.setAttr('style', 'display: none;');
+					cancelPomodoroBtn.setAttr('style', 'display: none;');
+					buttonsRow.setAttr('style', 'display: block;');
+					startPomodoroBtn.setAttr('style', 'display: inline-block;');
+					if (this.pomodoroIntervalId) {
+						window.clearInterval(this.pomodoroIntervalId);
+						this.pomodoroIntervalId = null;
+					}
+					this.isPomodoroActive = false;
+					return;
+				}
+				const remaining = s.remainingMs;
+				const pct = Math.min(100, ((s.durationMs - remaining) / s.durationMs) * 100);
+				progressBar.setAttr('style', `width: ${pct}%; height: 100%; background: linear-gradient(90deg, #4caf50, #8bc34a);`);
+				const secs = Math.ceil(remaining / 1000);
+				const minutes = Math.floor(secs / 60);
+				const seconds = secs % 60;
+				timeDisplay.setText(`${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`);
+			}, 1000);
+		}
+
 
 		// Phase 3 - Render and finalization
 		try {
@@ -215,72 +258,96 @@ export default class ReviewModal extends Modal {
 
 		// Pomodoro start handler
 		startPomodoroBtn.addEventListener('click', () => {
-			if (this.isPomodoroActive) return;
-			this.isPomodoroActive = true;
-			// hide start button and action buttons
-			startPomodoroBtn.setAttr('style', 'display: none;');
-			buttonsRow.setAttr('style', 'display: none;');
-			// show progress, time display and cancel button
-			progressWrapper.setAttr('style', 'display: block; width: 100%;');
-			timeDisplay.setAttr('style', 'display: inline-block; margin-left: 0.75rem; font-weight: 600;');
-			cancelPomodoroBtn.setAttr('style', 'display: inline-block; margin-left: 0.5rem;');
-
+			const pluginAny = this.plugin as any;
+			if (pluginAny.pomodoroState && pluginAny.pomodoroState.isActive) return;
 			const durationMinutes = Number((this.plugin as any).settings.pomodoroDuration ?? 25);
 			const durationMs = Math.max(1, durationMinutes) * 60 * 1000;
 			const startTime = Date.now();
-
-			const updateTimeAndProgress = () => {
-				const elapsed = Date.now() - startTime;
-				const remaining = Math.max(0, durationMs - elapsed);
-				const pct = Math.min(100, (elapsed / durationMs) * 100);
-				// update progress bar width
-				progressBar.setAttr('style', `width: ${pct}%; height: 100%; background: linear-gradient(90deg, #4caf50, #8bc34a);`);
-				// update time display MM:SS
-				const secs = Math.ceil(remaining / 1000);
-				const minutes = Math.floor(secs / 60);
-				const seconds = secs % 60;
-				timeDisplay.setText(`${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`);
-				return remaining;
+			// set plugin-level state so timer survives modal close
+			pluginAny.pomodoroState = {
+				isActive: true,
+				startTime,
+				durationMs,
+				remainingMs: durationMs,
 			};
+			// update modal UI
+			this.isPomodoroActive = true;
+			startPomodoroBtn.setAttr('style', 'display: none;');
+			cancelPomodoroBtn.setAttr('style', 'display: inline-block;');
+			buttonsRow.setAttr('style', 'display: none;');
+			progressWrapper.setAttr('style', 'display: block; width: 100%;');
+			timeDisplay.setAttr('style', 'display: inline-block;');
 
-			// run immediately to set initial state
-			updateTimeAndProgress();
+			// plugin-global interval: update remainingMs and play audio on completion
+			if (!pluginAny.pomodoroGlobalIntervalId) {
+				pluginAny.pomodoroGlobalIntervalId = window.setInterval(() => {
+					const s = pluginAny.pomodoroState;
+					if (!s || !s.isActive) return;
+					const elapsed = Date.now() - s.startTime;
+					s.remainingMs = Math.max(0, s.durationMs - elapsed);
+					if (s.remainingMs <= 0) {
+						// complete globally
+						window.clearInterval(pluginAny.pomodoroGlobalIntervalId);
+						pluginAny.pomodoroGlobalIntervalId = null;
+						s.isActive = false;
+						// play audio even if modal closed
+						try {
+							const base = this.app.vault.adapter instanceof Object && (this.app.vault.adapter as any).basePath ? (this.app.vault.adapter as any).basePath : '';
+							const pluginId = (this.plugin as any).manifest?.id ?? 'projects-memory';
+							const audioPath = `${base}/.obsidian/plugins/${pluginId}/assets/ring.wav`;
+							const audio = new Audio(audioPath);
+							audio.play().catch(() => { /* playback blocked */ });
+						} catch (e) {
+							console.error('Pomodoro audio failed', e);
+						}
+					}
+				}, 1000);
+			}
 
+			// modal-local UI updater (reads plugin state)
+			if (this.pomodoroIntervalId) {
+				window.clearInterval(this.pomodoroIntervalId);
+				this.pomodoroIntervalId = null;
+			}
 			this.pomodoroIntervalId = window.setInterval(() => {
-				const remaining = updateTimeAndProgress();
-				if (remaining <= 0) {
-					// complete
-					if (this.pomodoroIntervalId) {
-						window.clearInterval(this.pomodoroIntervalId);
-						this.pomodoroIntervalId = null;
-					}
-					this.isPomodoroActive = false;
-					// play sound notification
-					try {
-						const base = this.app.vault.adapter instanceof Object && (this.app.vault.adapter as any).basePath ? (this.app.vault.adapter as any).basePath : '';
-						// build plugin-relative path to asset
-						const pluginId = (this.plugin as any).manifest?.id ?? 'projects-memory';
-						const audioPath = `${base}/.obsidian/plugins/${pluginId}/assets/ring.wav`;
-						const audio = new Audio(audioPath);
-						audio.play().catch(() => { /* fail silently if playback blocked */ });
-					} catch (e) {
-						console.error('Pomodoro audio failed', e);
-					}
-					// reset UI similar to cancel
+				const s = (this.plugin as any).pomodoroState;
+				if (!s || !s.isActive) {
+					// reset UI when finished
 					progressWrapper.setAttr('style', 'display: none;');
 					progressBar.setAttr('style', 'width: 0%; height: 100%; background: linear-gradient(90deg, #4caf50, #8bc34a);');
 					timeDisplay.setAttr('style', 'display: none;');
 					cancelPomodoroBtn.setAttr('style', 'display: none;');
 					buttonsRow.setAttr('style', 'display: block;');
 					startPomodoroBtn.setAttr('style', 'display: inline-block;');
+					if (this.pomodoroIntervalId) {
+						window.clearInterval(this.pomodoroIntervalId);
+						this.pomodoroIntervalId = null;
+					}
+					this.isPomodoroActive = false;
+					return;
 				}
+				// update UI from plugin state
+				const remaining = s.remainingMs;
+				const pct = Math.min(100, ((s.durationMs - remaining) / s.durationMs) * 100);
+				progressBar.setAttr('style', `width: ${pct}%; height: 100%; background: linear-gradient(90deg, #4caf50, #8bc34a);`);
+				const secs = Math.ceil(remaining / 1000);
+				const minutes = Math.floor(secs / 60);
+				const seconds = secs % 60;
+				timeDisplay.setText(`${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`);
 			}, 1000);
-
 		});
-
-		// Cancel button logic: stop interval and reset UI
+		// Cancel button logic: stop plugin-global timer and reset UI
 		cancelPomodoroBtn.addEventListener('click', () => {
-			if (!this.isPomodoroActive) return;
+			const pluginAny = this.plugin as any;
+			const s = pluginAny.pomodoroState;
+			if (!s || !s.isActive) return;
+			// stop global timer
+			if (pluginAny.pomodoroGlobalIntervalId) {
+				window.clearInterval(pluginAny.pomodoroGlobalIntervalId);
+				pluginAny.pomodoroGlobalIntervalId = null;
+			}
+			pluginAny.pomodoroState = null;
+			// clear modal-local UI interval
 			if (this.pomodoroIntervalId) {
 				window.clearInterval(this.pomodoroIntervalId);
 				this.pomodoroIntervalId = null;

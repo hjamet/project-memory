@@ -129,3 +129,14 @@ If your plugin does not need CSS, delete this file.
     font-weight: 600;
     cursor: pointer;
 }
+
+/* center the time display within pomodoro container */
+.projects-memory-review-modal .review-pomodoro .pm-time-display {
+    flex: 1 1 auto;
+    text-align: center;
+}
+
+.projects-memory-review-modal .review-pomodoro .pm-start-pomodoro,
+.projects-memory-review-modal .review-pomodoro .pm-cancel-pomodoro {
+    min-width: 10rem;
+}
