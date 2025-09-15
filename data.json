@@ -3,6 +3,8 @@
   "defaultScore": 50,
   "archiveTag": "projet-fini",
   "ageBonusPerDay": 15,
-  "rapprochementFactor": 0.2,
-  "scoresNormalised": true
+  "rapprochmentFactor": 0.2,
+  "scoresNormalised": true,
+  "pomodoroDuration": 1,
+  "rapprochementFactor": 0.2
 }
