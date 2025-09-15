@@ -91,3 +91,41 @@ If your plugin does not need CSS, delete this file.
 .projects-memory-review-modal .modal-content>.review-buttons button {
     display: inline-block !important;
 }
+
+/* New Pomodoro UI styles */
+.projects-memory-review-modal .review-pomodoro {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    width: 100%;
+}
+
+.projects-memory-review-modal .pm-start-pomodoro {
+    padding: 0.45rem 0.8rem;
+    border-radius: 6px;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    background-color: #8e44ad;
+    /* distinct violet */
+    color: white;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.projects-memory-review-modal .pm-time-display {
+    font-family: inherit;
+    font-size: 0.95rem;
+    color: var(--text-normal, #222);
+}
+
+.projects-memory-review-modal .pm-cancel-pomodoro {
+    padding: 0.35rem 0.65rem;
+    border-radius: 6px;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    background-color: #bdc3c7;
+    /* subtle gray */
+    color: #222;
+    font-weight: 600;
+    cursor: pointer;
+}

@@ -111,8 +111,6 @@ export default class ReviewModal extends Modal {
 		const previewContainer = this.contentEl.createEl('div', { cls: 'review-preview' });
 
 		// Create the buttons container early so the UI is present even if markdown rendering fails
-		const buttonsRow = this.contentEl.createEl('div', { cls: 'review-buttons' });
-
 		// Pomodoro container (inserted before buttonsRow in DOM flow): button + progress bar
 		const pomodoroContainer = this.contentEl.createEl('div', { cls: 'review-pomodoro' });
 		const startPomodoroBtn = pomodoroContainer.createEl('button', { text: 'Lancer le Pomodoro', cls: 'pm-start-pomodoro' });
@@ -120,6 +118,15 @@ export default class ReviewModal extends Modal {
 		progressWrapper.setAttr('style', 'display: none; width: 100%; background: #eee; height: 12px; border-radius: 6px; overflow: hidden; margin-top: 8px;');
 		const progressBar = progressWrapper.createEl('div', { cls: 'pm-progress-bar' });
 		progressBar.setAttr('style', 'width: 0%; height: 100%; background: linear-gradient(90deg, #4caf50, #8bc34a);');
+		// time display and cancel button (initially hidden)
+		const timeDisplay = pomodoroContainer.createEl('span', { cls: 'pm-time-display', text: '' });
+		timeDisplay.setAttr('style', 'display: none; margin-left: 0.75rem; font-weight: 600;');
+		const cancelPomodoroBtn = pomodoroContainer.createEl('button', { text: 'Annuler', cls: 'pm-cancel-pomodoro' });
+		cancelPomodoroBtn.setAttr('style', 'display: none; margin-left: 0.5rem;');
+
+		// Create the buttons container after pomodoro so DOM order is correct
+		const buttonsRow = this.contentEl.createEl('div', { cls: 'review-buttons' });
+
 
 		// Phase 3 - Render and finalization
 		try {
@@ -213,19 +220,35 @@ export default class ReviewModal extends Modal {
 			// hide start button and action buttons
 			startPomodoroBtn.setAttr('style', 'display: none;');
 			buttonsRow.setAttr('style', 'display: none;');
-			// show progress
+			// show progress, time display and cancel button
 			progressWrapper.setAttr('style', 'display: block; width: 100%;');
+			timeDisplay.setAttr('style', 'display: inline-block; margin-left: 0.75rem; font-weight: 600;');
+			cancelPomodoroBtn.setAttr('style', 'display: inline-block; margin-left: 0.5rem;');
 
 			const durationMinutes = Number((this.plugin as any).settings.pomodoroDuration ?? 25);
 			const durationMs = Math.max(1, durationMinutes) * 60 * 1000;
 			const startTime = Date.now();
 
-			// Play tick immediately? we just update progress
-			this.pomodoroIntervalId = window.setInterval(() => {
+			const updateTimeAndProgress = () => {
 				const elapsed = Date.now() - startTime;
+				const remaining = Math.max(0, durationMs - elapsed);
 				const pct = Math.min(100, (elapsed / durationMs) * 100);
+				// update progress bar width
 				progressBar.setAttr('style', `width: ${pct}%; height: 100%; background: linear-gradient(90deg, #4caf50, #8bc34a);`);
-				if (elapsed >= durationMs) {
+				// update time display MM:SS
+				const secs = Math.ceil(remaining / 1000);
+				const minutes = Math.floor(secs / 60);
+				const seconds = secs % 60;
+				timeDisplay.setText(`${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`);
+				return remaining;
+			};
+
+			// run immediately to set initial state
+			updateTimeAndProgress();
+
+			this.pomodoroIntervalId = window.setInterval(() => {
+				const remaining = updateTimeAndProgress();
+				if (remaining <= 0) {
 					// complete
 					if (this.pomodoroIntervalId) {
 						window.clearInterval(this.pomodoroIntervalId);
@@ -243,13 +266,34 @@ export default class ReviewModal extends Modal {
 					} catch (e) {
 						console.error('Pomodoro audio failed', e);
 					}
-					// reset UI
+					// reset UI similar to cancel
 					progressWrapper.setAttr('style', 'display: none;');
 					progressBar.setAttr('style', 'width: 0%; height: 100%; background: linear-gradient(90deg, #4caf50, #8bc34a);');
+					timeDisplay.setAttr('style', 'display: none;');
+					cancelPomodoroBtn.setAttr('style', 'display: none;');
 					buttonsRow.setAttr('style', 'display: block;');
 					startPomodoroBtn.setAttr('style', 'display: inline-block;');
 				}
-			}, 500);
+			}, 1000);
+
+		});
+
+		// Cancel button logic: stop interval and reset UI
+		cancelPomodoroBtn.addEventListener('click', () => {
+			if (!this.isPomodoroActive) return;
+			if (this.pomodoroIntervalId) {
+				window.clearInterval(this.pomodoroIntervalId);
+				this.pomodoroIntervalId = null;
+			}
+			this.isPomodoroActive = false;
+			// hide pomodoro UI
+			progressWrapper.setAttr('style', 'display: none;');
+			progressBar.setAttr('style', 'width: 0%; height: 100%; background: linear-gradient(90deg, #4caf50, #8bc34a);');
+			timeDisplay.setAttr('style', 'display: none;');
+			cancelPomodoroBtn.setAttr('style', 'display: none;');
+			// show action buttons and start
+			buttonsRow.setAttr('style', 'display: block;');
+			startPomodoroBtn.setAttr('style', 'display: inline-block;');
 		});
 
 		// Keyboard shortcuts: 1..5 trigger corresponding buttons while modal is open
