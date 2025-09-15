@@ -34,6 +34,12 @@ export default class ReviewModal extends Modal {
 			buttonsRow.setAttr('style', 'display: block;');
 			startPomodoroBtn.setAttr('style', 'display: inline-block;');
 			this.isPomodoroActive = false;
+			// ensure layout class is removed so container returns to centered state
+			try {
+				progressWrapper.parentElement?.classList.remove('pomodoro-active');
+			} catch (e) {
+				// fail-fast policy: do not throw for DOM cleanup; silently ignore
+			}
 			return false;
 		}
 		const remaining = s.remainingMs;
@@ -310,8 +316,37 @@ export default class ReviewModal extends Modal {
 						window.clearInterval(pluginAny.pomodoroGlobalIntervalId);
 						pluginAny.pomodoroGlobalIntervalId = null;
 						s.isActive = false;
-						// notify user via native Obsidian notice
-						new Notice('Pomodoro terminé !');
+						// Best-effort: play ring sound if resource is available; do not block on failure
+						try {
+							const url = (this as any).app.vault.adapter.getResourcePath('assets/ring.wav');
+							if (url) {
+								const audio = new Audio(url);
+								// attempt play and ignore promise rejection (autoplay policies)
+								audio.play().catch(() => { });
+							}
+						} catch (err) {
+							// ignore errors from attempting to play audio
+						}
+						// Desktop notification: replace Notice with standard Web Notification handling
+						try {
+							if (typeof Notification !== 'undefined') {
+								if (Notification.permission === 'granted') {
+									new Notification('Pomodoro terminé !');
+								} else if (Notification.permission === 'default') {
+									Notification.requestPermission().then((perm) => {
+										if (perm === 'granted') new Notification('Pomodoro terminé !');
+									});
+								} else {
+									// denied: do nothing
+								}
+							} else {
+								// Fallback environment: show Obsidian notice
+								new Notice('Pomodoro terminé !');
+							}
+						} catch (err) {
+							// Ensure notification errors do not break flow
+							try { new Notice('Pomodoro terminé !'); } catch (e) { /* ignore */ }
+						}
 					}
 				}, 1000);
 			}
