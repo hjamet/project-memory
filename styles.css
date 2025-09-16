@@ -150,3 +150,17 @@ If your plugin does not need CSS, delete this file.
     flex: 0 0 35%;
     min-width: 100px;
 }
+
+/* "Nouveau" badge next to title */
+.projects-memory-review-modal .pm-new-indicator {
+    display: inline-block;
+    background-color: #e67e22;
+    /* warm orange */
+    color: white;
+    padding: 0.15rem 0.4rem;
+    margin-left: 0.6rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    vertical-align: middle;
+}

@@ -1,4 +1,4 @@
-import { App, Modal, Setting, Notice, Plugin, MarkdownRenderer } from 'obsidian';
+import { App, Modal, Setting, Notice, Plugin, MarkdownRenderer, getAllTags } from 'obsidian';
 
 export default class ReviewModal extends Modal {
 	plugin: Plugin;
@@ -70,24 +70,22 @@ export default class ReviewModal extends Modal {
 		const mdFiles = this.app.vault.getMarkdownFiles();
 
 		// Collect candidate project files
-		const candidates: { file: import('obsidian').TFile; effectiveScore: number; baseScore: number; lastReviewed?: string }[] = [];
+		const candidates: { file: import('obsidian').TFile; effectiveScore: number; baseScore: number; lastReviewed?: string; isNew?: boolean }[] = [];
 		const now = Date.now();
 		for (const file of mdFiles) {
 			const cache = this.app.metadataCache.getFileCache(file);
 			if (!cache) continue;
-			if (!cache.tags) continue;
-			const hasProjectTag = cache.tags.some((t) => tagsArray.includes(t.tag));
+			// Use unified tag extraction API to include frontmatter and body tags
+			const allTags = getAllTags(cache) || [];
+			// Check for presence of any configured project tag
+			const hasProjectTag = allTags.some((t: string) => tagsArray.includes(t));
 			if (!hasProjectTag) continue;
-			// Exclude archived projects: skip if archiveTag is present in file tags or frontmatter
+			// Exclude archived projects: skip if archiveTag is present in unified tags
 			const archiveTag = (this.plugin as any).settings.archiveTag ?? '';
 			const normalizedArchiveTag = archiveTag ? (archiveTag.startsWith('#') ? archiveTag : `#${archiveTag}`) : '';
-			const hasArchiveTagInTags = normalizedArchiveTag ? cache.tags.some((t) => t.tag === normalizedArchiveTag) : false;
+			const hasArchiveTag = normalizedArchiveTag ? allTags.includes(normalizedArchiveTag) : false;
+			if (hasArchiveTag) continue;
 			const fm = (cache as any).frontmatter ?? {};
-			const fmTagsArray: string[] = [];
-			if (Array.isArray(fm.tags)) fmTagsArray.push(...fm.tags.map((x: any) => String(x).replace(/^#/, '')));
-			else if (typeof fm.tags === 'string') fmTagsArray.push(...String(fm.tags).split(',').map((s: string) => s.trim().replace(/^#/, '')));
-			const hasArchiveTagInFrontmatter = archiveTag ? fmTagsArray.includes(archiveTag.replace(/^#/, '')) : false;
-			if (hasArchiveTagInTags || hasArchiveTagInFrontmatter) continue;
 
 			// read frontmatter values
 			let baseScore = typeof fm.pertinence_score !== 'undefined' ? Number(fm.pertinence_score) : (this.plugin as any).settings.defaultScore;
@@ -110,7 +108,9 @@ export default class ReviewModal extends Modal {
 			const ageBonusPerDay = Number((this.plugin as any).settings.ageBonusPerDay ?? 1);
 			const bonus = ageDays * ageBonusPerDay;
 			const effectiveScore = baseScore + bonus;
-			candidates.push({ file, effectiveScore, baseScore, lastReviewed: fm.last_reviewed_date });
+			// Determine if project is "new" (no pertinence_score in frontmatter)
+			const isNew = typeof fm.pertinence_score === 'undefined';
+			candidates.push({ file, effectiveScore, baseScore, lastReviewed: fm.last_reviewed_date, isNew });
 		}
 
 		if (candidates.length === 0) {
@@ -146,6 +146,11 @@ export default class ReviewModal extends Modal {
 		this.contentEl.empty();
 
 		const titleEl = this.contentEl.createEl('h2', { text: chosen.file.basename });
+		// If chosen candidate is new (no pertinence_score), show a "Nouveau" badge
+		if ((chosen as any).isNew) {
+			const badge = titleEl.createEl('span', { text: 'Nouveau', cls: 'pm-new-indicator' });
+			badge.setAttr('aria-hidden', 'true');
+		}
 		const previewContainer = this.contentEl.createEl('div', { cls: 'review-preview' });
 
 		// Create the buttons container early so the UI is present even if markdown rendering fails
