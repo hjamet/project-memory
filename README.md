@@ -1,74 +1,85 @@
-# Obsidian Sample Plugin
+# Projects Memory — Obsidian plugin
 
-This is a sample plugin for Obsidian (https://obsidian.md).
+Projects Memory is an Obsidian community plugin that helps you run lightweight, adaptive reviews of project notes inside your vault. It opens a review modal, suggests projects to review, updates frontmatter scores, and offers quick actions (e.g., deprioritize, archive).
 
-This project uses TypeScript to provide type checking and documentation.
-The repo depends on the latest plugin API (obsidian.d.ts) in TypeScript Definition format, which contains TSDoc comments describing what it does.
+This repository uses TypeScript and esbuild to produce the release artifact `main.js` which is loaded by Obsidian.
 
-This sample plugin demonstrates some of the basic functionality the plugin API can do.
-- Adds a ribbon icon, which shows a Notice when clicked.
-- Adds a command "Open Sample Modal" which opens a Modal.
-- Adds a plugin setting tab to the settings page.
-- Registers a global click event and output 'click' to the console.
-- Registers a global interval which logs 'setInterval' to the console.
+## Prerequisites & installation
 
-## First time developing plugins?
+- **Node.js** (LTS recommended, Node 18+)
+- Install dependencies:
 
-Quick starting guide for new plugin devs:
+```
+npm install
+```
 
-- Check if [someone already developed a plugin for what you want](https://obsidian.md/plugins)! There might be an existing plugin similar enough that you can partner up with.
-- Make a copy of this repo as a template with the "Use this template" button (login to GitHub if you don't see it).
-- Clone your repo to a local development folder. For convenience, you can place this folder in your `.obsidian/plugins/your-plugin-name` folder.
-- Install NodeJS, then run `npm i` in the command line under your repo folder.
-- Run `npm run dev` to compile your plugin from `main.ts` to `main.js`.
-- Make changes to `main.ts` (or create new `.ts` files). Those changes should be automatically compiled into `main.js`.
-- Reload Obsidian to load the new version of your plugin.
-- Enable plugin in settings window.
-- For updates to the Obsidian API run `npm update` in the command line under your repo folder.
+- Development (watch + build):
 
-## Releasing new releases
+```
+npm run dev
+```
 
-- Update your `manifest.json` with your new version number, such as `1.0.1`, and the minimum Obsidian version required for your latest release.
-- Update your `versions.json` file with `"new-plugin-version": "minimum-obsidian-version"` so older versions of Obsidian can download an older version of your plugin that's compatible.
-- Create new GitHub release using your new version number as the "Tag version". Use the exact version number, don't include a prefix `v`. See here for an example: https://github.com/obsidianmd/obsidian-sample-plugin/releases
-- Upload the files `manifest.json`, `main.js`, `styles.css` as binary attachments. Note: The manifest.json file must be in two places, first the root path of your repository and also in the release.
-- Publish the release.
+- Production build:
 
-> You can simplify the version bump process by running `npm version patch`, `npm version minor` or `npm version major` after updating `minAppVersion` manually in `manifest.json`.
-> The command will bump version in `manifest.json` and `package.json`, and add the entry for the new version to `versions.json`
+```
+npm run build
+```
 
-## Adding your plugin to the community plugin list
+After building, copy `main.js`, `manifest.json`, and `styles.css` to your vault under `/.obsidian/plugins/project-memory/` to test the plugin.
 
-- Check the [plugin guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines).
-- Publish an initial version.
-- Make sure you have a `README.md` file in the root of your repo.
-- Make a pull request at https://github.com/obsidianmd/obsidian-releases to add your plugin.
+## Architecture
 
-## How to use
+Root layout (important files):
 
-- Clone this repo.
-- Make sure your NodeJS is at least v16 (`node --version`).
-- `npm i` or `yarn` to install dependencies.
-- `npm run dev` to start compilation in watch mode.
+```
+src/                 # TypeScript source (modal, UI components)
+main.ts              # Plugin entry: lifecycle & command registration
+manifest.json        # Plugin manifest (id, name, version, minAppVersion)
+styles.css           # Optional plugin styles scoped to the modal
+esbuild.config.mjs   # Build configuration
+README.md            # This file
+```
 
-### Review command and settings
+Key implementation files:
+- `src/ReviewModal.ts`: UI and review logic for the modal used by the plugin.
+- `main.ts`: plugin onload/onunload and command registration.
 
-- **Command**: use the command palette and run `Review a project` (or click the ribbon icon) to start an adaptive review loop that selects projects for review.
-- **Settings added**:
-  - **`defaultScore`**: default pertinence score used when a project has no `pertinence_score` in frontmatter (default: `50`).
-  - **`archiveTag`**: tag applied when marking a project as finished (default: `projet-fini`).
-  - **`ageBonusPerDay`**: additive linear bonus added per day since last review (default: `1`).
-  - **`rapprochementFactor`**: fraction of the remaining gap closed on each click (0..1, default: `0.2`).
+## Important files & commands
 
-- **Behavior & context**: when the review modal opens, the chosen project file is opened in the currently active editor pane to provide context (no new pane is created). The modal also *remembers* the last shown project: if you close and reopen the modal, it will show the same project until you perform a review action (e.g., "Moins souvent", "Fini"), at which point the remembered project is reset and a new one will be selected on the next open.
+- **`manifest.json`**: contains `id`, `name`, `version`, and `minAppVersion`. Ensure `id` matches the plugin folder name (`project-memory`) when installing locally.
+- **Developer commands** (run via command palette while developing):
 
-Note on recent fixes:
+```
+Review a project    # opens the review modal for the selected project
+```
 
-- **Ribbon icon**: the left ribbon icon now opens the same review modal as the `Review a project` command (previously it printed results to the console).
-- **Tags suggestions in settings**: the tag picker in the settings uses a non-blocking dropdown attached to the input field (type-ahead), instead of a blocking modal.
-- **Review modal**: added numeric keyboard shortcuts (`1`–`5`) for the five review actions (Moins souvent, Fréquence OK, Plus souvent, Priorité Max, Fini); shortcuts are active only while the modal is open.
-- **Tags suggestor behavior**: the tag suggestion dropdown now closes automatically after selecting a suggestion, keeping focus in the input.
+## Settings
 
-The review modal updates `pertinence_score` and frontmatter fields when actions are performed.
+The plugin exposes a small set of settings to tune review behavior:
+- `defaultScore` — default pertinence score for notes without frontmatter score (default: 50)
+- `archiveTag` — tag applied when marking a project as finished (default: `projet-fini`)
+- `ageBonusPerDay` — linear bonus added per day since last review (default: 1)
+- `rapprochementFactor` — fraction of remaining gap closed on each action (0..1, default: 0.2)
 
-Note on styling: CSS rules were recently scoped to the review modal to avoid leaking styles into the rest of Obsidian. Files modified: `src/ReviewModal.ts` (adds `.projects-memory-review-modal` class) and `styles.css` (all selectors prefixed with `.projects-memory-review-modal`, button min-width removed, `flex-wrap` added to `.review-buttons`).
+Settings are persisted using Obsidian's `loadData()` / `saveData()` APIs.
+
+## Testing & release
+
+Manual install for testing:
+
+1. Build the plugin: `npm run build`
+2. Copy `main.js`, `manifest.json`, and `styles.css` to `<Vault>/.obsidian/plugins/project-memory/`
+3. Reload Obsidian and enable the plugin in **Settings → Community plugins**.
+
+Release checklist:
+
+- Bump `version` in `manifest.json` (SemVer) and update `versions.json` mapping.
+- Create a GitHub release whose tag exactly matches `manifest.json`'s `version` and attach `manifest.json`, `main.js`, and `styles.css`.
+
+## Contributing
+
+Keep `main.ts` minimal: delegate feature logic to modules in `src/`. When you add or change commands or settings, update this `README.md` accordingly.
+
+## License
+
+This project is licensed under the terms in `LICENSE`.

@@ -1,9 +1,9 @@
 {
-	"id": "projects-memory",
+	"id": "project-memory",
 	"name": "Projects Memory",
-	"version": "1.0.0",
+	"version": "1.2.0",
 	"minAppVersion": "0.15.0",
-	"description": "Demonstrates some of the capabilities of the Obsidian API.",
+	"description": "Adaptive review modal for project notes: suggests projects to review, updates frontmatter scores, and provides quick review actions.",
 	"author": "Obsidian",
 	"authorUrl": "https://obsidian.md",
 	"fundingUrl": "https://obsidian.md/pricing",
