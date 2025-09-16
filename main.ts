@@ -26,6 +26,8 @@ const DEFAULT_SETTINGS: ProjectsMemorySettings = {
 export default class ProjectsMemoryPlugin extends Plugin {
 	settings: ProjectsMemorySettings;
 	public lastChosenFile: TFile | null = null;
+	// Session-scoped set of ignored project file paths. Resets when plugin reloads.
+	public sessionIgnoredProjects: Set<string> = new Set<string>();
 
 	async onload() {
 		await this.loadSettings();

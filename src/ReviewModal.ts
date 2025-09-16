@@ -73,6 +73,13 @@ export default class ReviewModal extends Modal {
 		const candidates: { file: import('obsidian').TFile; effectiveScore: number; baseScore: number; lastReviewed?: string; isNew?: boolean }[] = [];
 		const now = Date.now();
 		for (const file of mdFiles) {
+			// Skip files temporarily ignored for this session
+			try {
+				const pluginAny = this.plugin as any;
+				if (pluginAny.sessionIgnoredProjects && pluginAny.sessionIgnoredProjects.has(file.path)) continue;
+			} catch (e) {
+				// if plugin does not expose the set, proceed normally
+			}
 			const cache = this.app.metadataCache.getFileCache(file);
 			if (!cache) continue;
 			// Use unified tag extraction API to include frontmatter and body tags
@@ -157,6 +164,8 @@ export default class ReviewModal extends Modal {
 		// Pomodoro container (inserted before buttonsRow in DOM flow): button + progress bar
 		const pomodoroContainer = this.contentEl.createEl('div', { cls: 'review-pomodoro' });
 		const startPomodoroBtn = pomodoroContainer.createEl('button', { text: 'Lancer le Pomodoro', cls: 'pm-start-pomodoro' });
+		// 'Passer' button: temporarily ignore this project for the session and show next
+		const skipPomodoroBtn = pomodoroContainer.createEl('button', { text: 'Passer', cls: 'pm-skip-project' });
 		const progressWrapper = pomodoroContainer.createEl('div', { cls: 'pm-progress-wrapper' });
 		progressWrapper.setAttr('style', 'display: none; width: 100%; background: #eee; height: 12px; border-radius: 6px; overflow: hidden; margin-top: 8px;');
 		const progressBar = progressWrapper.createEl('div', { cls: 'pm-progress-bar' });
@@ -166,6 +175,22 @@ export default class ReviewModal extends Modal {
 		timeDisplay.setAttr('style', 'display: none; margin-left: 0.75rem; font-weight: 600;');
 		const cancelPomodoroBtn = pomodoroContainer.createEl('button', { text: 'Annuler', cls: 'pm-cancel-pomodoro' });
 		cancelPomodoroBtn.setAttr('style', 'display: none; margin-left: 0.5rem;');
+		// Style adjustment: ensure skip button sits next to start button
+		skipPomodoroBtn.setAttr('style', 'margin-left: 0.5rem;');
+		skipPomodoroBtn.addEventListener('click', () => {
+			try {
+				const pluginAny = this.plugin as any;
+				if (!pluginAny.sessionIgnoredProjects) pluginAny.sessionIgnoredProjects = new Set<string>();
+				pluginAny.sessionIgnoredProjects.add(chosen.file.path);
+			} catch (e) {
+				console.error('Failed to mark project as skipped for this session', e);
+			}
+			// Close current modal and reopen next
+			this.close();
+			setTimeout(() => {
+				new (ReviewModal as any)(this.app, this.plugin).open();
+			}, 150);
+		});
 
 		// Create the buttons container after pomodoro so DOM order is correct
 		const buttonsRow = this.contentEl.createEl('div', { cls: 'review-buttons' });
