@@ -9,6 +9,7 @@ interface ProjectsMemorySettings {
 	archiveTag: string;
 	ageBonusPerDay: number;
 	rapprochmentFactor: number; // fraction between 0 and 1
+	recencyPenaltyWeight: number; // multiplier for temporary per-session recency penalty
 	scoresNormalised: boolean; // migration flag
 	pomodoroDuration: number; // duration in minutes for Pomodoro
 }
@@ -19,6 +20,7 @@ const DEFAULT_SETTINGS: ProjectsMemorySettings = {
 	archiveTag: 'projet-fini',
 	ageBonusPerDay: 1,
 	rapprochmentFactor: 0.2,
+	recencyPenaltyWeight: 1.0,
 	scoresNormalised: false,
 	pomodoroDuration: 25
 }
@@ -28,9 +30,13 @@ export default class ProjectsMemoryPlugin extends Plugin {
 	public lastChosenFile: TFile | null = null;
 	// Session-scoped set of ignored project file paths. Resets when plugin reloads.
 	public sessionIgnoredProjects: Set<string> = new Set<string>();
+	// Session-scoped map of review counts per file path. In-memory only; reset on plugin load.
+	public sessionReviewCounts: Map<string, number> = new Map<string, number>();
 
 	async onload() {
 		await this.loadSettings();
+		// Ensure per-session review counts are cleared on each plugin load (do not persist to disk)
+		this.sessionReviewCounts.clear();
 		// Run one-time migration to normalise existing pertinence scores into [1..100]
 		await this.migrateScores();
 

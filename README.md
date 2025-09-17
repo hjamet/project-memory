@@ -60,6 +60,7 @@ The plugin exposes a small set of settings to tune review behavior:
 - `archiveTag` — tag applied when marking a project as finished (default: `projet-fini`)
 - `ageBonusPerDay` — linear bonus added per day since last review (default: 1)
 - `rapprochementFactor` — fraction of remaining gap closed on each action (0..1, default: 0.2)
+ - `recencyPenaltyWeight` — multiplier for the temporary per-session recency penalty applied to projects reviewed during the active session (default: 1.0). Set to `0` to disable the feature.
 
 Settings are persisted using Obsidian's `loadData()` / `saveData()` APIs.
 
