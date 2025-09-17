@@ -26,6 +26,8 @@ If your plugin does not need CSS, delete this file.
     font-weight: 700;
     color: white;
     /* removed min-width to allow responsive wrapping */
+    transition: transform 0.16s cubic-bezier(.2, .9, .2, 1), box-shadow 0.16s cubic-bezier(.2, .9, .2, 1), opacity 0.12s linear, background-color 0.12s linear;
+    will-change: transform, box-shadow;
 }
 
 /* Semantic colors for each action */
@@ -62,12 +64,20 @@ If your plugin does not need CSS, delete this file.
     box-shadow: none;
 }
 
-/* Focus/hover affordances */
-.projects-memory-review-modal .review-buttons button:hover,
-.projects-memory-review-modal .review-buttons button:focus {
-    filter: brightness(0.95);
+/* Focus/hover/active affordances - modern micro-interactions */
+.projects-memory-review-modal .review-buttons button:hover {
+    transform: translateY(-3px) scale(1.02);
+    box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+}
+
+.projects-memory-review-modal .review-buttons button:active {
+    transform: translateY(0) scale(0.995);
+    box-shadow: 0 6px 16px rgba(15, 23, 42, 0.06);
+}
+
+.projects-memory-review-modal .review-buttons button:focus-visible {
     outline: none;
-    box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.06) inset;
+    box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.18);
 }
 
 /* Layout fixes: ensure modal content uses Flexbox so preview scrolls and buttons stay visible */
@@ -115,14 +125,17 @@ If your plugin does not need CSS, delete this file.
 }
 
 .projects-memory-review-modal .pm-start-pomodoro {
-    padding: 0.45rem 0.8rem;
-    border-radius: 6px;
-    border: 1px solid rgba(0, 0, 0, 0.08);
-    background-color: #8e44ad;
-    /* distinct violet */
+    padding: 0.5rem 0.9rem;
+    border-radius: 8px;
+    border: 1px solid rgba(59, 130, 246, 0.14);
+    background-color: #3b82f6;
+    /* calming blue */
     color: white;
     font-weight: 600;
     cursor: pointer;
+    box-shadow: 0 6px 18px rgba(59, 130, 246, 0.06);
+    transition: transform 0.18s cubic-bezier(.2, .9, .2, 1), box-shadow 0.18s, background-color 0.12s;
+    will-change: transform, box-shadow;
 }
 
 .projects-memory-review-modal .pm-time-display {
@@ -132,14 +145,17 @@ If your plugin does not need CSS, delete this file.
 }
 
 .projects-memory-review-modal .pm-cancel-pomodoro {
-    padding: 0.35rem 0.65rem;
-    border-radius: 6px;
-    border: 1px solid rgba(0, 0, 0, 0.08);
-    background-color: #bdc3c7;
-    /* subtle gray */
+    padding: 0.4rem 0.75rem;
+    border-radius: 8px;
+    border: 1px solid rgba(0, 0, 0, 0.06);
+    background-color: #f3f4f6;
+    /* light neutral */
     color: #222;
     font-weight: 600;
     cursor: pointer;
+    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.04);
+    transition: transform 0.16s cubic-bezier(.2, .9, .2, 1), box-shadow 0.16s, background-color 0.12s;
+    will-change: transform, box-shadow;
 }
 
 /* center the time display within pomodoro container */
@@ -150,7 +166,30 @@ If your plugin does not need CSS, delete this file.
 
 .projects-memory-review-modal .review-pomodoro .pm-start-pomodoro,
 .projects-memory-review-modal .review-pomodoro .pm-cancel-pomodoro {
-    min-width: 10rem;
+    min-width: 11rem;
+}
+
+/* Hover/active specifics for pomodoro buttons */
+.projects-memory-review-modal .pm-start-pomodoro:hover {
+    transform: translateY(-4px) scale(1.02);
+    box-shadow: 0 14px 36px rgba(59, 130, 246, 0.12);
+    background-color: #2563eb;
+}
+
+.projects-memory-review-modal .pm-start-pomodoro:active {
+    transform: translateY(0) scale(0.995);
+    box-shadow: 0 8px 20px rgba(59, 130, 246, 0.08);
+}
+
+.projects-memory-review-modal .pm-cancel-pomodoro:hover {
+    transform: translateY(-3px) scale(1.01);
+    box-shadow: 0 10px 26px rgba(15, 23, 42, 0.06);
+    background-color: #e9eef5;
+}
+
+.projects-memory-review-modal .pm-cancel-pomodoro:active {
+    transform: translateY(0) scale(0.995);
+    box-shadow: 0 6px 14px rgba(15, 23, 42, 0.05);
 }
 
 /* ensure progress wrapper has a stable base width */
@@ -178,7 +217,8 @@ If your plugin does not need CSS, delete this file.
 
 /* Progress bar styling: use calming blue and smooth transitions */
 .projects-memory-review-modal h2 {
-    font-weight: 800;
+    font-weight: 600;
+    text-align: center;
 }
 
 .projects-memory-review-modal .pm-progress-bar {
