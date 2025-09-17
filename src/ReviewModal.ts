@@ -65,17 +65,24 @@ export default class ReviewModal extends Modal {
 		// Apply temporary per-session recency penalty if configured
 		try {
 			const pluginAny = this.plugin as any;
-			const weight = Number(pluginAny.settings?.recencyPenaltyWeight ?? 1.0);
+			const weight = Number(pluginAny.settings?.recencyPenaltyWeight ?? 0.5);
 			if (isFinite(weight) && weight > 0 && pluginAny.sessionReviewCounts instanceof Map) {
 				const count = pluginAny.sessionReviewCounts.get(filePath) ?? 0;
 				if (count > 0) {
-					// Number of times to apply the "Moins souvent" penalty: round(count * weight)
-					const times = Math.round(count * weight);
+					// Allow fractional multipliers by splitting into integer and fractional parts
+					const totalMultiplier = count * weight;
+					const integerPart = Math.floor(totalMultiplier);
+					const fractionalPart = totalMultiplier - integerPart;
 					const rapprochment = Number(pluginAny.settings?.rapprochementFactor ?? 0.2);
-					for (let i = 0; i < times; i++) {
+					for (let i = 0; i < integerPart; i++) {
 						// apply same reduction as 'Moins souvent' action: reduce by rapprochment * (s - 1)
 						const perte = rapprochment * (effectiveScore - 1);
 						effectiveScore = effectiveScore - perte;
+					}
+					if (fractionalPart > 0) {
+						// apply fractional part on the already-reduced score to respect compounded effect
+						const finalPerte = rapprochment * (effectiveScore - 1);
+						effectiveScore -= finalPerte * fractionalPart;
 					}
 				}
 			}

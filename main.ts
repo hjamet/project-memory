@@ -20,7 +20,7 @@ const DEFAULT_SETTINGS: ProjectsMemorySettings = {
 	archiveTag: 'projet-fini',
 	ageBonusPerDay: 1,
 	rapprochmentFactor: 0.2,
-	recencyPenaltyWeight: 1.0,
+	recencyPenaltyWeight: 0.5,
 	scoresNormalised: false,
 	pomodoroDuration: 25
 }
@@ -283,12 +283,9 @@ class ProjectsMemorySettingTab extends PluginSettingTab {
 					.setPlaceholder('0.5')
 					.setValue(String(this.plugin.settings.recencyPenaltyWeight))
 					.onChange(async (value) => {
-						// Preserve previous value on invalid input (fail-fast validation)
-						const prev = typeof this.plugin.settings.recencyPenaltyWeight !== 'undefined' ? this.plugin.settings.recencyPenaltyWeight : 1.0;
+						// Use same validation approach as rapprochmentFactor: accept finite >= 0, otherwise fallback to default
 						const n = Number(value);
-						this.plugin.settings.recencyPenaltyWeight = isFinite(n) && n >= 0 ? n : prev;
-						// Reflect the validated/retained value in the input and persist
-						text.setValue(String(this.plugin.settings.recencyPenaltyWeight));
+						this.plugin.settings.recencyPenaltyWeight = isFinite(n) && n >= 0 ? n : 0.5;
 						await this.plugin.saveSettings();
 					});
 			});
