@@ -52,6 +52,39 @@ export default class ReviewModal extends Modal {
 		return true;
 	}
 
+	// Calculate the effective score for display/selection purposes.
+	// Replicates the logic used in onOpen's candidate loop so it can be
+	// re-invoked elsewhere (e.g. for up-to-date notifications).
+	private calculateEffectiveScore(baseScore: number, lastReviewedMillis: number, filePath: string): number {
+		const now = Date.now();
+		// use floating days for precision and user-configurable per-day bonus
+		const ageDays = (now - lastReviewedMillis) / (1000 * 60 * 60 * 24);
+		const ageBonusPerDay = Number((this.plugin as any).settings.ageBonusPerDay ?? 1);
+		const bonus = ageDays * ageBonusPerDay;
+		let effectiveScore = baseScore + bonus;
+		// Apply temporary per-session recency penalty if configured
+		try {
+			const pluginAny = this.plugin as any;
+			const weight = Number(pluginAny.settings?.recencyPenaltyWeight ?? 1.0);
+			if (isFinite(weight) && weight > 0 && pluginAny.sessionReviewCounts instanceof Map) {
+				const count = pluginAny.sessionReviewCounts.get(filePath) ?? 0;
+				if (count > 0) {
+					// Number of times to apply the "Moins souvent" penalty: round(count * weight)
+					const times = Math.round(count * weight);
+					const rapprochment = Number(pluginAny.settings?.rapprochementFactor ?? 0.2);
+					for (let i = 0; i < times; i++) {
+						// apply same reduction as 'Moins souvent' action: reduce by rapprochment * (s - 1)
+						const perte = rapprochment * (effectiveScore - 1);
+						effectiveScore = effectiveScore - perte;
+					}
+				}
+			}
+		} catch (e) {
+			// If plugin doesn't expose expected fields, ignore and proceed with base effectiveScore
+		}
+		return effectiveScore;
+	}
+
 	async onOpen() {
 		// Phase 1 - Load data (async) before touching the DOM
 		const projectTagsStr = (this.plugin as any).settings.projectTags ?? '';
@@ -110,31 +143,8 @@ export default class ReviewModal extends Modal {
 				lastReviewedMillis = file.stat.ctime;
 			}
 
-			// use floating days for precision and user-configurable per-day bonus
-			const ageDays = (now - lastReviewedMillis) / (1000 * 60 * 60 * 24);
-			const ageBonusPerDay = Number((this.plugin as any).settings.ageBonusPerDay ?? 1);
-			const bonus = ageDays * ageBonusPerDay;
-			let effectiveScore = baseScore + bonus;
-			// Apply temporary per-session recency penalty if configured
-			try {
-				const pluginAny = this.plugin as any;
-				const weight = Number(pluginAny.settings?.recencyPenaltyWeight ?? 1.0);
-				if (isFinite(weight) && weight > 0 && pluginAny.sessionReviewCounts instanceof Map) {
-					const count = pluginAny.sessionReviewCounts.get(file.path) ?? 0;
-					if (count > 0) {
-						// Number of times to apply the "Moins souvent" penalty: round(count * weight)
-						const times = Math.round(count * weight);
-						const rapprochment = Number(pluginAny.settings?.rapprochmentFactor ?? 0.2);
-						for (let i = 0; i < times; i++) {
-							// apply same reduction as 'Moins souvent' action: reduce by rapprochment * (s - 1)
-							const perte = rapprochment * (effectiveScore - 1);
-							effectiveScore = effectiveScore - perte;
-						}
-					}
-				}
-			} catch (e) {
-				// If plugin doesn't expose expected fields, ignore and proceed with base effectiveScore
-			}
+			// calculate effective score using extracted helper to keep logic consistent
+			const effectiveScore = this.calculateEffectiveScore(baseScore, Number(lastReviewedMillis), file.path);
 			// Determine if project is "new" (no pertinence_score in frontmatter)
 			const isNew = typeof fm.pertinence_score === 'undefined';
 			candidates.push({ file, effectiveScore, baseScore, lastReviewed: fm.last_reviewed_date, isNew });
@@ -274,7 +284,11 @@ export default class ReviewModal extends Modal {
 				fm.pertinence_score = newScore;
 				fm.last_reviewed_date = new Date().toISOString();
 			});
-			new Notice(`Updated score: ${Math.round(newScore * 100) / 100}`);
+			// Recalculate effective score for immediate display (do not persist)
+			const recalculated = this.calculateEffectiveScore(newScore, Date.now(), chosen.file.path);
+			const persistedRounded = Math.round(newScore);
+			const sessionRounded = Math.round(recalculated);
+			new Notice(`Score : ${persistedRounded} (réel) | ${sessionRounded} (session)`);
 		};
 
 		// Create buttons with classes and keep references for keyboard shortcuts
