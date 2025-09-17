@@ -273,5 +273,24 @@ class ProjectsMemorySettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					});
 			});
+
+		// Recency penalty weight: multiplier for per-session recency penalty
+		new Setting(containerEl)
+			.setName('Poids du malus de récence')
+			.setDesc("Multiplicateur pour le malus de récence appliqué durant la session. 1.0 équivaut à un clic sur 'Moins souvent'. Mettre à 0 pour désactiver.")
+			.addText(text => {
+				text
+					.setPlaceholder('1.0')
+					.setValue(String(this.plugin.settings.recencyPenaltyWeight))
+					.onChange(async (value) => {
+						// Preserve previous value on invalid input (fail-fast validation)
+						const prev = typeof this.plugin.settings.recencyPenaltyWeight !== 'undefined' ? this.plugin.settings.recencyPenaltyWeight : 1.0;
+						const n = Number(value);
+						this.plugin.settings.recencyPenaltyWeight = isFinite(n) && n >= 0 ? n : prev;
+						// Reflect the validated/retained value in the input and persist
+						text.setValue(String(this.plugin.settings.recencyPenaltyWeight));
+						await this.plugin.saveSettings();
+					});
+			});
 	}
 }

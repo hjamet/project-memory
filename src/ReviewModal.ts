@@ -299,8 +299,7 @@ export default class ReviewModal extends Modal {
 			if (!isFinite(s)) s = Number((this.plugin as any).settings.defaultScore ?? 50);
 			const rapprochment = Number((this.plugin as any).settings.rapprochementFactor ?? 0.2);
 			const perte = rapprochment * (s - 1);
-			await updateScore(s - perte);
-			// Update in-memory session review count for this file
+			// Update in-memory session review count for this file (must run before persisting score)
 			try {
 				const pluginAny = this.plugin as any;
 				if (!(pluginAny.sessionReviewCounts instanceof Map)) pluginAny.sessionReviewCounts = new Map<string, number>();
@@ -309,6 +308,7 @@ export default class ReviewModal extends Modal {
 			} catch (e) {
 				console.error('Failed to update session review counts', e);
 			}
+			await updateScore(s - perte);
 		}, 'pm-moins-souvent');
 
 		const btn2 = makeButton('Fréquence OK', async () => {
@@ -316,8 +316,7 @@ export default class ReviewModal extends Modal {
 			const fm = (cache as any).frontmatter ?? {};
 			let s = typeof fm.pertinence_score !== 'undefined' ? Number(fm.pertinence_score) : (this.plugin as any).settings.defaultScore;
 			if (!isFinite(s)) s = Number((this.plugin as any).settings.defaultScore ?? 50);
-			await updateScore(s);
-			// Update in-memory session review count for this file
+			// Update in-memory session review count for this file (must run before persisting score)
 			try {
 				const pluginAny = this.plugin as any;
 				if (!(pluginAny.sessionReviewCounts instanceof Map)) pluginAny.sessionReviewCounts = new Map<string, number>();
@@ -326,6 +325,7 @@ export default class ReviewModal extends Modal {
 			} catch (e) {
 				console.error('Failed to update session review counts', e);
 			}
+			await updateScore(s);
 		}, 'pm-ok');
 
 		const btn3 = makeButton('Plus souvent', async () => {
@@ -335,8 +335,7 @@ export default class ReviewModal extends Modal {
 			if (!isFinite(s)) s = Number((this.plugin as any).settings.defaultScore ?? 50);
 			const rapprochment = Number((this.plugin as any).settings.rapprochementFactor ?? 0.2);
 			const gain = rapprochment * (100 - s);
-			await updateScore(s + gain);
-			// Update in-memory session review count for this file
+			// Update in-memory session review count for this file (must run before persisting score)
 			try {
 				const pluginAny = this.plugin as any;
 				if (!(pluginAny.sessionReviewCounts instanceof Map)) pluginAny.sessionReviewCounts = new Map<string, number>();
@@ -345,11 +344,11 @@ export default class ReviewModal extends Modal {
 			} catch (e) {
 				console.error('Failed to update session review counts', e);
 			}
+			await updateScore(s + gain);
 		}, 'pm-plus-souvent');
 
 		const btn4 = makeButton('Priorité Max', async () => {
-			await updateScore(100);
-			// Update in-memory session review count for this file
+			// Update in-memory session review count for this file (must run before persisting score)
 			try {
 				const pluginAny = this.plugin as any;
 				if (!(pluginAny.sessionReviewCounts instanceof Map)) pluginAny.sessionReviewCounts = new Map<string, number>();
@@ -358,9 +357,19 @@ export default class ReviewModal extends Modal {
 			} catch (e) {
 				console.error('Failed to update session review counts', e);
 			}
+			await updateScore(100);
 		}, 'pm-prio-max');
 
 		const btn5 = makeButton('Fini', async () => {
+			// Update in-memory session review count for this file (must run before modifying frontmatter)
+			try {
+				const pluginAny = this.plugin as any;
+				if (!(pluginAny.sessionReviewCounts instanceof Map)) pluginAny.sessionReviewCounts = new Map<string, number>();
+				const prev = pluginAny.sessionReviewCounts.get(chosen.file.path) ?? 0;
+				pluginAny.sessionReviewCounts.set(chosen.file.path, prev + 1);
+			} catch (e) {
+				console.error('Failed to update session review counts', e);
+			}
 			// Remove project tags from frontmatter.tags and add archiveTag
 			await (this.app as any).fileManager.processFrontMatter(chosen.file, (fm: any) => {
 				const projectTagsStr = (this.plugin as any).settings.projectTags ?? '';
@@ -376,15 +385,6 @@ export default class ReviewModal extends Modal {
 				fm.tags = tags;
 			});
 			new Notice('Project archived');
-			// Update in-memory session review count for this file
-			try {
-				const pluginAny = this.plugin as any;
-				if (!(pluginAny.sessionReviewCounts instanceof Map)) pluginAny.sessionReviewCounts = new Map<string, number>();
-				const prev = pluginAny.sessionReviewCounts.get(chosen.file.path) ?? 0;
-				pluginAny.sessionReviewCounts.set(chosen.file.path, prev + 1);
-			} catch (e) {
-				console.error('Failed to update session review counts', e);
-			}
 		}, 'pm-fini');
 
 		// Pomodoro start handler
