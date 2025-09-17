@@ -276,11 +276,11 @@ class ProjectsMemorySettingTab extends PluginSettingTab {
 
 		// Recency penalty weight: multiplier for per-session recency penalty
 		new Setting(containerEl)
-			.setName('Poids du malus de récence')
-			.setDesc("Multiplicateur pour le malus de récence appliqué durant la session. 1.0 équivaut à un clic sur 'Moins souvent'. Mettre à 0 pour désactiver.")
+			.setName('Recency penalty weight')
+			.setDesc("Multiplicator for the recency penalty applied during the session. 1.0 is equivalent to a click on 'Less often'. Set to 0 to disable.")
 			.addText(text => {
 				text
-					.setPlaceholder('1.0')
+					.setPlaceholder('0.5')
 					.setValue(String(this.plugin.settings.recencyPenaltyWeight))
 					.onChange(async (value) => {
 						// Preserve previous value on invalid input (fail-fast validation)

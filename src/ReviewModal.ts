@@ -195,7 +195,7 @@ export default class ReviewModal extends Modal {
 		const pomodoroContainer = this.contentEl.createEl('div', { cls: 'review-pomodoro' });
 		const startPomodoroBtn = pomodoroContainer.createEl('button', { text: 'Lancer le Pomodoro', cls: 'pm-start-pomodoro' });
 		// 'Passer' button: temporarily ignore this project for the session and show next
-		const skipPomodoroBtn = pomodoroContainer.createEl('button', { text: 'Passer', cls: 'pm-skip-project' });
+		const skipPomodoroBtn = pomodoroContainer.createEl('button', { text: 'Passer', cls: 'pm-skip-project pm-skip-secondary' });
 		const progressWrapper = pomodoroContainer.createEl('div', { cls: 'pm-progress-wrapper' });
 		progressWrapper.setAttr('style', 'display: none; width: 100%; background: #eee; height: 12px; border-radius: 6px; overflow: hidden; margin-top: 8px;');
 		const progressBar = progressWrapper.createEl('div', { cls: 'pm-progress-bar' });
@@ -292,7 +292,7 @@ export default class ReviewModal extends Modal {
 		};
 
 		// Create buttons with classes and keep references for keyboard shortcuts
-		const btn1 = makeButton('Moins souvent', async () => {
+		const btn1 = makeButton('Agréable / Calme', async () => {
 			const cache = this.app.metadataCache.getFileCache(chosen.file) || {};
 			const fm = (cache as any).frontmatter ?? {};
 			let s = typeof fm.pertinence_score !== 'undefined' ? Number(fm.pertinence_score) : (this.plugin as any).settings.defaultScore;
@@ -311,7 +311,7 @@ export default class ReviewModal extends Modal {
 			await updateScore(s - perte);
 		}, 'pm-moins-souvent');
 
-		const btn2 = makeButton('Fréquence OK', async () => {
+		const btn2 = makeButton('Sous contrôle', async () => {
 			const cache = this.app.metadataCache.getFileCache(chosen.file) || {};
 			const fm = (cache as any).frontmatter ?? {};
 			let s = typeof fm.pertinence_score !== 'undefined' ? Number(fm.pertinence_score) : (this.plugin as any).settings.defaultScore;
@@ -328,7 +328,7 @@ export default class ReviewModal extends Modal {
 			await updateScore(s);
 		}, 'pm-ok');
 
-		const btn3 = makeButton('Plus souvent', async () => {
+		const btn3 = makeButton('Urgent / Stressant', async () => {
 			const cache = this.app.metadataCache.getFileCache(chosen.file) || {};
 			const fm = (cache as any).frontmatter ?? {};
 			let s = typeof fm.pertinence_score !== 'undefined' ? Number(fm.pertinence_score) : (this.plugin as any).settings.defaultScore;
@@ -347,18 +347,7 @@ export default class ReviewModal extends Modal {
 			await updateScore(s + gain);
 		}, 'pm-plus-souvent');
 
-		const btn4 = makeButton('Priorité Max', async () => {
-			// Update in-memory session review count for this file (must run before persisting score)
-			try {
-				const pluginAny = this.plugin as any;
-				if (!(pluginAny.sessionReviewCounts instanceof Map)) pluginAny.sessionReviewCounts = new Map<string, number>();
-				const prev = pluginAny.sessionReviewCounts.get(chosen.file.path) ?? 0;
-				pluginAny.sessionReviewCounts.set(chosen.file.path, prev + 1);
-			} catch (e) {
-				console.error('Failed to update session review counts', e);
-			}
-			await updateScore(100);
-		}, 'pm-prio-max');
+
 
 		const btn5 = makeButton('Fini', async () => {
 			// Update in-memory session review count for this file (must run before modifying frontmatter)
@@ -512,9 +501,6 @@ export default class ReviewModal extends Modal {
 					break;
 				case '3':
 					btn3?.click();
-					break;
-				case '4':
-					btn4?.click();
 					break;
 				case '5':
 					btn5?.click();

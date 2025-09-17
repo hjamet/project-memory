@@ -11,7 +11,7 @@ If your plugin does not need CSS, delete this file.
     display: flex;
     justify-content: center;
     gap: 0.5rem;
-    margin-top: 1rem;
+    margin-top: 1.5rem;
     flex-wrap: wrap;
     /* allow buttons to wrap on narrow viewports */
     flex-shrink: 0;
@@ -21,27 +21,27 @@ If your plugin does not need CSS, delete this file.
 .projects-memory-review-modal .review-buttons button {
     padding: 0.45rem 0.8rem;
     border: 1px solid rgba(0, 0, 0, 0.08);
-    border-radius: 6px;
+    border-radius: 8px;
     cursor: pointer;
-    font-weight: 600;
+    font-weight: 700;
     color: white;
     /* removed min-width to allow responsive wrapping */
 }
 
 /* Semantic colors for each action */
 .projects-memory-review-modal .pm-moins-souvent {
-    background-color: #2f74c0;
-    /* blue */
+    background-color: #3b82f6;
+    /* soothing blue */
 }
 
 .projects-memory-review-modal .pm-ok {
-    background-color: #2e8b57;
-    /* green */
+    background-color: #555;
+    /* neutral modern gray */
 }
 
 .projects-memory-review-modal .pm-plus-souvent {
-    background-color: #f39c12;
-    /* orange */
+    background-color: #c0392b;
+    /* urgent red (formerly prio-max) */
 }
 
 .projects-memory-review-modal .pm-prio-max {
@@ -52,6 +52,14 @@ If your plugin does not need CSS, delete this file.
 .projects-memory-review-modal .pm-fini {
     background-color: #7f8c8d;
     /* gray */
+}
+
+/* Secondary ghost-style for skip button near pomodoro */
+.projects-memory-review-modal .pm-skip-secondary {
+    background: transparent;
+    color: var(--text-faint, #666);
+    border: 1px solid rgba(100, 100, 100, 0.12);
+    box-shadow: none;
 }
 
 /* Focus/hover affordances */
@@ -149,6 +157,9 @@ If your plugin does not need CSS, delete this file.
 .projects-memory-review-modal .review-pomodoro .pm-progress-wrapper {
     flex: 0 0 35%;
     min-width: 100px;
+    background: #f7f7f8;
+    border-radius: 6px;
+    padding: 3px;
 }
 
 /* "Nouveau" badge next to title */
@@ -163,4 +174,17 @@ If your plugin does not need CSS, delete this file.
     font-size: 0.75rem;
     font-weight: 700;
     vertical-align: middle;
+}
+
+/* Progress bar styling: use calming blue and smooth transitions */
+.projects-memory-review-modal h2 {
+    font-weight: 800;
+}
+
+.projects-memory-review-modal .pm-progress-bar {
+    width: 0%;
+    height: 100%;
+    background: #3b82f6 !important;
+    border-radius: 4px;
+    transition: width 0.2s ease-out;
 }
