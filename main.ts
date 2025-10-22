@@ -96,10 +96,26 @@ export default class ProjectsMemoryPlugin extends Plugin {
 
 	onunload() {
 		// Save stats data when plugin unloads
+		// Use synchronous approach to ensure data is saved before plugin unloads
 		if (this.statsData) {
-			this.saveStatsData().catch(error => {
+			try {
+				// Force synchronous save by using the vault adapter directly
+				const statsPath = `.obsidian/plugins/${this.manifest.id}/stats.json`;
+				const content = JSON.stringify(this.statsData, null, 2);
+
+				// Ensure the plugin directory exists before writing
+				const pluginDir = `.obsidian/plugins/${this.manifest.id}`;
+				const pluginDirExists = this.app.vault.adapter.exists(pluginDir);
+				if (!pluginDirExists) {
+					this.app.vault.adapter.mkdir(pluginDir);
+					console.log('Created plugin directory:', pluginDir);
+				}
+
+				this.app.vault.adapter.write(statsPath, content);
+				console.log('Stats data saved successfully on unload to:', statsPath);
+			} catch (error) {
 				console.error('Failed to save stats data on unload:', error);
-			});
+			}
 		}
 	}
 
@@ -124,19 +140,30 @@ export default class ProjectsMemoryPlugin extends Plugin {
 	// Load stats data from stats.json
 	async loadStatsData(): Promise<StatsData> {
 		if (this.statsData) {
+			console.log('Stats data already loaded, returning cached data');
 			return this.statsData;
 		}
 
 		try {
-			const statsPath = `${this.app.vault.configDir}/plugins/${this.manifest.id}/stats.json`;
-			const statsFile = this.app.vault.getAbstractFileByPath(statsPath);
+			// Use the correct path for plugin data directory
+			const statsPath = `.obsidian/plugins/${this.manifest.id}/stats.json`;
+			console.log('Looking for stats file at:', statsPath);
+			console.log('Config dir:', this.app.vault.configDir);
 
-			if (statsFile) {
-				const content = await this.app.vault.read(statsFile as any);
+			// Use adapter.exists to check if file exists
+			const fileExists = await this.app.vault.adapter.exists(statsPath);
+			console.log('File exists check result:', fileExists);
+
+			if (fileExists) {
+				console.log('Stats file found, reading content...');
+				const content = await this.app.vault.adapter.read(statsPath);
+				console.log('Raw stats content:', content);
 				this.statsData = JSON.parse(content);
 				console.log('Stats data loaded successfully from:', statsPath);
+				console.log('Loaded stats:', this.statsData);
 			} else {
-				// Initialize empty stats
+				console.log('No stats file found at:', statsPath);
+				// Initialize empty stats only if no file exists
 				this.statsData = {
 					projects: {},
 					globalStats: {
@@ -150,16 +177,22 @@ export default class ProjectsMemoryPlugin extends Plugin {
 			}
 		} catch (error) {
 			console.error('Failed to load stats data:', error);
-			// Initialize empty stats on error
-			this.statsData = {
-				projects: {},
-				globalStats: {
-					totalReviews: 0,
-					totalPomodoroTime: 0
-				}
-			};
-			// Save the initialized empty stats to create the file
-			await this.saveStatsData();
+			console.error('Error details:', error);
+			// Only initialize empty stats if we don't have any data loaded
+			if (!this.statsData) {
+				this.statsData = {
+					projects: {},
+					globalStats: {
+						totalReviews: 0,
+						totalPomodoroTime: 0
+					}
+				};
+				console.log('Initializing empty stats due to load error');
+				// Save the initialized empty stats to create the file
+				await this.saveStatsData();
+			} else {
+				console.log('Using existing stats data despite load error');
+			}
 		}
 
 		return this.statsData!;
@@ -170,11 +203,12 @@ export default class ProjectsMemoryPlugin extends Plugin {
 		if (!this.statsData) return;
 
 		try {
-			const statsPath = `${this.app.vault.configDir}/plugins/${this.manifest.id}/stats.json`;
+			// Use the correct path for plugin data directory
+			const statsPath = `.obsidian/plugins/${this.manifest.id}/stats.json`;
 			const content = JSON.stringify(this.statsData, null, 2);
 
 			// Ensure the plugin directory exists before writing
-			const pluginDir = `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
+			const pluginDir = `.obsidian/plugins/${this.manifest.id}`;
 			const pluginDirExists = await this.app.vault.adapter.exists(pluginDir);
 			if (!pluginDirExists) {
 				await this.app.vault.adapter.mkdir(pluginDir);

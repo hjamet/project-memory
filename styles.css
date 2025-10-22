@@ -320,26 +320,44 @@ If your plugin does not need CSS, delete this file.
     max-height: 500px;
 }
 
-/* Responsive adjustments for smaller screens */
-@media (max-width: 768px) {
-    .projects-memory-stats-modal {
-        width: 95vw !important;
-        max-width: 95vw !important;
-    }
+/* Error message styling */
+.projects-memory-stats-modal .error-message {
+    text-align: center;
+    padding: 2rem;
+    background: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    margin: 1rem 0;
+}
 
-    .projects-memory-stats-modal .modal-content {
-        max-width: 95vw;
-        max-height: 95vh;
-        width: 95vw;
-        height: 95vh;
-        padding: 0.5rem;
-    }
+.projects-memory-stats-modal .error-message h3 {
+    margin-top: 0;
+    margin-bottom: 1rem;
+}
 
-    .projects-memory-stats-modal .chart-canvas {
-        height: 350px !important;
-    }
+.projects-memory-stats-modal .error-message p {
+    margin: 0.5rem 0;
+    line-height: 1.5;
+}
 
-    .projects-memory-stats-modal .stats-charts-container {
-        gap: 1.5rem;
-    }
+.projects-memory-stats-modal {
+    width: 95vw !important;
+    max-width: 95vw !important;
+}
+
+.projects-memory-stats-modal .modal-content {
+    max-width: 95vw;
+    max-height: 95vh;
+    width: 95vw;
+    height: 95vh;
+    padding: 0.5rem;
+}
+
+.projects-memory-stats-modal .chart-canvas {
+    height: 350px !important;
+}
+
+.projects-memory-stats-modal .stats-charts-container {
+    gap: 1.5rem;
+}
 }

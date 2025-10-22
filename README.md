@@ -124,8 +124,9 @@ If the total time badge shows 0 minutes after restarting Obsidian, ensure that:
 **Recent fixes:**
 - The plugin now automatically loads statistics data during the `onload()` phase
 - The plugin directory is created automatically if it doesn't exist
-- Statistics are saved when the plugin unloads to prevent data loss
+- Statistics are saved synchronously when the plugin unloads to prevent data loss
 - Empty statistics are saved immediately to create the initial `stats.json` file
+- Fixed critical bug where statistics were being reset on plugin restart due to asynchronous save operations
 
 ## Testing & release
 
