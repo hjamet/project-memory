@@ -18,6 +18,7 @@ interface ProjectStats {
 	rotationBonus: number;
 	totalReviews: number;
 	lastReviewDate: string;
+	totalPomodoroMinutes: number;
 	reviewHistory: Array<{
 		date: string;
 		action: string; // "less-often" | "ok" | "more-often" | "finished"
@@ -164,6 +165,7 @@ export default class ProjectsMemoryPlugin extends Plugin {
 				rotationBonus: 0,
 				totalReviews: 0,
 				lastReviewDate: '',
+				totalPomodoroMinutes: 0,
 				reviewHistory: []
 			};
 		}
@@ -198,6 +200,9 @@ export default class ProjectsMemoryPlugin extends Plugin {
 		projectStats.rotationBonus = 0;
 		projectStats.totalReviews++;
 		projectStats.lastReviewDate = new Date().toISOString();
+
+		// Add Pomodoro time for any action (except skip)
+		projectStats.totalPomodoroMinutes += this.settings.pomodoroDuration;
 
 		// Add to review history
 		projectStats.reviewHistory.push({

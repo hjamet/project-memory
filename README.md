@@ -72,11 +72,21 @@ The plugin uses a rotation-based bonus system instead of time-based bonuses. Whe
 
 The plugin maintains detailed statistics in a `stats.json` file located in the plugin directory (`.obsidian/plugins/project-memory/stats.json`). This file tracks:
 
-- **Per-project data**: rotation bonus, total reviews, last review date, and review history
+- **Per-project data**: rotation bonus, total reviews, last review date, total Pomodoro time, and review history
 - **Global statistics**: total reviews across all projects and Pomodoro time
 - **Review history**: detailed log of all actions taken on each project (last 100 entries per project)
 
 The statistics file is automatically created and maintained by the plugin. You can safely delete it to reset all statistics, and it will be recreated with empty data on the next plugin use.
+
+### Project Statistics Display
+
+When reviewing a project, the plugin displays three colored badges next to the project title:
+
+1. **Urgency Score Badge**: Shows the base pertinence score from frontmatter with dynamic color (green → yellow → red based on urgency level)
+2. **Session Score Badge**: Shows the current effective score including rotation bonus and recency penalty (purple badge)
+3. **Total Time Badge**: Shows accumulated Pomodoro time spent on the project across all sessions (amber badge)
+
+Each action (Agréable/Calme, Sous contrôle, Urgent/Stressant, Fini) adds the configured Pomodoro duration to the project's total time. The "Passer" action does not add time.
 
 ### Example Statistics File
 
@@ -84,6 +94,7 @@ The `stats.json.example` file shows the structure of the statistics data for ref
 - `rotationBonus`: accumulated bonus points from other projects being worked on
 - `totalReviews`: number of times this project has been reviewed
 - `lastReviewDate`: ISO timestamp of the most recent review
+- `totalPomodoroMinutes`: total Pomodoro time accumulated across all sessions
 - `reviewHistory`: array of recent actions (limited to last 100 entries)
 
 ## Testing & release

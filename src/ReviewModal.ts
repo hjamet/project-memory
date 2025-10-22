@@ -52,6 +52,32 @@ export default class ReviewModal extends Modal {
 		return true;
 	}
 
+	// Calculate urgency color based on score (green -> yellow -> red)
+	private getUrgencyColor(score: number): string {
+		// Clamp score to [1, 100] range
+		const clampedScore = Math.min(100, Math.max(1, score));
+
+		// Convert to 0-1 range
+		const normalized = (clampedScore - 1) / 99;
+
+		// Green (low urgency) -> Yellow (medium) -> Red (high urgency)
+		if (normalized <= 0.5) {
+			// Green to Yellow
+			const ratio = normalized * 2;
+			const r = Math.round(34 + (255 - 34) * ratio);
+			const g = Math.round(139 + (255 - 139) * ratio);
+			const b = Math.round(34 + (0 - 34) * ratio);
+			return `rgb(${r}, ${g}, ${b})`;
+		} else {
+			// Yellow to Red
+			const ratio = (normalized - 0.5) * 2;
+			const r = Math.round(255 + (220 - 255) * ratio);
+			const g = Math.round(255 + (20 - 255) * ratio);
+			const b = Math.round(0);
+			return `rgb(${r}, ${g}, ${b})`;
+		}
+	}
+
 	// Calculate the effective score for display/selection purposes.
 	// Replicates the logic used in onOpen's candidate loop so it can be
 	// re-invoked elsewhere (e.g. for up-to-date notifications).
@@ -184,6 +210,36 @@ export default class ReviewModal extends Modal {
 		this.contentEl.empty();
 
 		const titleEl = this.contentEl.createEl('h2', { text: chosen.file.basename });
+
+		// Create badges container
+		const badgesContainer = this.contentEl.createEl('div', { cls: 'pm-badges-container' });
+
+		// Badge 1: Score d'urgence (score de base)
+		const urgencyBadge = badgesContainer.createEl('span', {
+			text: `Score: ${Math.round(chosen.baseScore)}`,
+			cls: 'pm-stat-badge pm-badge-urgency'
+		});
+		// Dynamic color based on score (green -> yellow -> red)
+		const urgencyColor = this.getUrgencyColor(chosen.baseScore);
+		urgencyBadge.setAttr('style', `background-color: ${urgencyColor};`);
+
+		// Badge 2: Score de session (effectiveScore)
+		const sessionBadge = badgesContainer.createEl('span', {
+			text: `Session: ${Math.round(chosen.effectiveScore)}`,
+			cls: 'pm-stat-badge pm-badge-session'
+		});
+
+		// Badge 3: Temps total (minutes Pomodoro)
+		const projectStats = await (this.plugin as any).getProjectStats(chosen.file.path);
+		const totalMinutes = projectStats.totalPomodoroMinutes || 0;
+		const timeText = totalMinutes >= 60 ?
+			`${Math.floor(totalMinutes / 60)}h ${totalMinutes % 60}min` :
+			`${totalMinutes}min`;
+		const timeBadge = badgesContainer.createEl('span', {
+			text: timeText,
+			cls: 'pm-stat-badge pm-badge-time'
+		});
+
 		// If chosen candidate is new (no pertinence_score), show a "Nouveau" badge
 		if ((chosen as any).isNew) {
 			const badge = titleEl.createEl('span', { text: 'Nouveau', cls: 'pm-new-indicator' });

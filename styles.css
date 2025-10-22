@@ -215,6 +215,40 @@ If your plugin does not need CSS, delete this file.
     vertical-align: middle;
 }
 
+/* Statistics badges container */
+.projects-memory-review-modal .pm-badges-container {
+    display: flex;
+    justify-content: center;
+    gap: 0.5rem;
+    margin: 0.75rem 0 1rem 0;
+    flex-wrap: wrap;
+}
+
+/* Base badge style */
+.projects-memory-review-modal .pm-stat-badge {
+    display: inline-block;
+    color: white;
+    padding: 0.2rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    vertical-align: middle;
+    text-align: center;
+    min-width: 3rem;
+}
+
+/* Session badge (blue/violet) */
+.projects-memory-review-modal .pm-badge-session {
+    background-color: #6c5ce7;
+    /* purple-blue */
+}
+
+/* Time badge (orange/amber) */
+.projects-memory-review-modal .pm-badge-time {
+    background-color: #f39c12;
+    /* amber */
+}
+
 /* Progress bar styling: use calming blue and smooth transitions */
 .projects-memory-review-modal h2 {
     font-weight: 600;
