@@ -87,33 +87,53 @@ export default class StatsModal extends Modal {
                 resolve();
                 return;
             }
-            const script = document.createElement('script');
-            script.src = 'https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js';
 
-            script.onload = () => {
-                // Wait a bit for Chart.js to initialize on window object
-                let attempts = 0;
-                const maxAttempts = 50; // 5 seconds max
-                const checkChart = () => {
-                    attempts++;
-                    if (typeof (window as any).Chart !== 'undefined') {
-                        resolve();
-                    } else if (attempts < maxAttempts) {
-                        setTimeout(checkChart, 100);
-                    } else {
-                        console.error('StatsModal: Chart.js failed to initialize on window object after', attempts, 'attempts');
-                        reject(new Error('Chart.js failed to initialize on window object'));
-                    }
-                };
-                checkChart();
+            let scriptsLoaded = 0;
+            const totalScripts = 2;
+            let hasError = false;
+
+            const checkAllLoaded = () => {
+                scriptsLoaded++;
+                if (scriptsLoaded === totalScripts && !hasError) {
+                    // Wait a bit for Chart.js to initialize on window object
+                    let attempts = 0;
+                    const maxAttempts = 50; // 5 seconds max
+                    const checkChart = () => {
+                        attempts++;
+                        if (typeof (window as any).Chart !== 'undefined') {
+                            resolve();
+                        } else if (attempts < maxAttempts) {
+                            setTimeout(checkChart, 100);
+                        } else {
+                            console.error('StatsModal: Chart.js failed to initialize on window object after', attempts, 'attempts');
+                            reject(new Error('Chart.js failed to initialize on window object'));
+                        }
+                    };
+                    checkChart();
+                }
             };
 
-            script.onerror = () => {
+            // Load Chart.js
+            const chartScript = document.createElement('script');
+            chartScript.src = 'https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js';
+            chartScript.onload = checkAllLoaded;
+            chartScript.onerror = () => {
                 console.error('StatsModal: Failed to load Chart.js script from CDN');
+                hasError = true;
                 reject(new Error('Failed to load Chart.js from CDN'));
             };
+            document.head.appendChild(chartScript);
 
-            document.head.appendChild(script);
+            // Load date adapter
+            const dateAdapterScript = document.createElement('script');
+            dateAdapterScript.src = 'https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@2.0.0/dist/chartjs-adapter-date-fns.bundle.min.js';
+            dateAdapterScript.onload = checkAllLoaded;
+            dateAdapterScript.onerror = () => {
+                console.error('StatsModal: Failed to load Chart.js date adapter from CDN');
+                hasError = true;
+                reject(new Error('Failed to load Chart.js date adapter from CDN'));
+            };
+            document.head.appendChild(dateAdapterScript);
         });
     }
 

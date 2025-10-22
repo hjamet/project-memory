@@ -112,6 +112,8 @@ The charts are generated using Chart.js and provide interactive features like le
 - Reduced chart height to 300px for better space utilization
 - Charts now maintain proper aspect ratio and prevent horizontal overflow
 - **NEW**: Added a colorful projects list at the bottom of the statistics modal showing all projects sorted by priority with time spent and visual indicators
+- **FIXED**: Resolved Chart.js date adapter loading error (`Cannot read properties of undefined (reading '_adapters')`) by ensuring proper sequential loading of Chart.js and its date adapter
+- **FIXED**: Fixed timeline chart in day mode showing empty data by replacing Chart.js time axis with regular linear axis to avoid date adapter dependency issues
 
 ### Projects Priority List
 
