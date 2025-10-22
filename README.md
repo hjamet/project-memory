@@ -105,7 +105,12 @@ The plugin provides a dedicated statistics modal accessible via the **"View proj
 
 The charts are generated using Chart.js and provide interactive features like legend toggling and hover tooltips. Data is automatically interpolated for days without activity to create smooth, continuous visualizations.
 
-**Recent improvements:**
+**Recent improvements (v2.1.0):**
+- **NEW**: Added project count selector (Top 5, Top 10, All) to filter which projects are displayed in charts and projects list based on priority score
+- **IMPROVED**: Project count filter now applies to both charts and the projects priority list for consistent filtering experience
+- **ENHANCED**: Dynamic title in projects list shows current filter selection (e.g., "Liste des Projets par Priorité (Top 5)")
+
+**Previous improvements (v2.0.0):**
 - Fixed scrolling issues in the statistics modal - charts now properly adapt to available space
 - Optimized chart responsiveness with better CSS flexbox layout
 - Enhanced chart interactivity with improved tooltips and hover effects
@@ -130,6 +135,16 @@ The statistics modal now includes a comprehensive projects list at the bottom th
   - Color-coded borders and accents matching the project's chart color
 
 The cards are arranged in a responsive grid layout that adapts to different screen sizes, with hover effects and smooth animations for an engaging user experience.
+
+### Project Count Filter
+
+The statistics modal now includes a project count selector that allows you to filter which projects are displayed in the charts:
+
+- **Top 5**: Shows only the 5 projects with the highest priority scores (currentScore)
+- **Top 10**: Shows the 10 most priority projects (default selection)
+- **All**: Shows all projects in your vault
+
+This filter helps focus on the most important projects when you have many projects, making the charts more readable and actionable. The filter is applied to all three charts (Score Evolution, Effective Score, and Daily Actions) and the projects priority list, updating automatically when you change the selection.
 
 ### Example Statistics File
 

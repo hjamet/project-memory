@@ -1,6 +1,7 @@
 import { App, Modal, Plugin } from 'obsidian';
 
 type ViewMode = 'month' | 'week' | 'day';
+type ProjectCountFilter = 'top5' | 'top10' | 'all';
 
 interface ChartData {
     labels: string[];
@@ -24,6 +25,7 @@ export default class StatsModal extends Modal {
     plugin: Plugin;
     chartInstances: any[] = [];
     private currentViewMode: ViewMode = 'month';
+    private currentProjectFilter: ProjectCountFilter = 'top10';
 
     constructor(app: App, plugin: Plugin) {
         super(app);
@@ -41,6 +43,9 @@ export default class StatsModal extends Modal {
 
         // Create view mode selector
         this.createViewModeSelector();
+
+        // Create project count selector
+        this.createProjectCountSelector();
 
         try {
             // Load Chart.js from CDN
@@ -199,12 +204,35 @@ export default class StatsModal extends Modal {
                 break;
         }
 
-        // Process each project
-        const projectNames = Object.keys(statsData.projects);
+        // Process each project - filter by priority score first
+        const allProjectNames = Object.keys(statsData.projects);
 
-        if (projectNames.length === 0) {
+        if (allProjectNames.length === 0) {
             console.warn('StatsModal: No projects found in stats data');
             throw new Error('No projects found in statistics data');
+        }
+
+        // Sort projects by currentScore (priority score) in descending order
+        const sortedProjects = allProjectNames
+            .map(projectPath => ({
+                path: projectPath,
+                score: statsData.projects[projectPath].currentScore
+            }))
+            .sort((a, b) => b.score - a.score);
+
+        // Apply filter based on currentProjectFilter
+        let projectNames: string[];
+        switch (this.currentProjectFilter) {
+            case 'top5':
+                projectNames = sortedProjects.slice(0, 5).map(p => p.path);
+                break;
+            case 'top10':
+                projectNames = sortedProjects.slice(0, 10).map(p => p.path);
+                break;
+            case 'all':
+            default:
+                projectNames = allProjectNames;
+                break;
         }
 
         const colors = this.generateColors(projectNames.length);
@@ -658,6 +686,28 @@ export default class StatsModal extends Modal {
         });
     }
 
+    private createProjectCountSelector(): void {
+        const selectorContainer = this.contentEl.createEl('div', { cls: 'stats-project-count-selector' });
+
+        const filters: { filter: ProjectCountFilter; label: string }[] = [
+            { filter: 'top5', label: 'Top 5' },
+            { filter: 'top10', label: 'Top 10' },
+            { filter: 'all', label: 'Tous' }
+        ];
+
+        filters.forEach(({ filter, label }) => {
+            const button = selectorContainer.createEl('button', {
+                text: label,
+                cls: `project-count-btn ${this.currentProjectFilter === filter ? 'project-count-btn-active' : ''}`
+            });
+
+            button.addEventListener('click', () => {
+                this.currentProjectFilter = filter;
+                this.refreshCharts();
+            });
+        });
+    }
+
     private async refreshCharts(): Promise<void> {
         // Clear existing charts
         this.chartInstances.forEach(chart => {
@@ -668,15 +718,27 @@ export default class StatsModal extends Modal {
         this.chartInstances = [];
 
         // Update button states
-        const buttons = this.contentEl.querySelectorAll('.view-mode-btn');
-        buttons.forEach(btn => {
+        const viewModeButtons = this.contentEl.querySelectorAll('.view-mode-btn');
+        viewModeButtons.forEach(btn => {
             btn.classList.remove('view-mode-btn-active');
         });
 
-        const activeButton = this.contentEl.querySelector(`[data-mode="${this.currentViewMode}"]`) ||
-            Array.from(buttons).find(btn => btn.textContent === this.getModeLabel(this.currentViewMode));
-        if (activeButton) {
-            activeButton.classList.add('view-mode-btn-active');
+        const activeViewModeButton = this.contentEl.querySelector(`[data-mode="${this.currentViewMode}"]`) ||
+            Array.from(viewModeButtons).find(btn => btn.textContent === this.getModeLabel(this.currentViewMode));
+        if (activeViewModeButton) {
+            activeViewModeButton.classList.add('view-mode-btn-active');
+        }
+
+        // Update project count button states
+        const projectCountButtons = this.contentEl.querySelectorAll('.project-count-btn');
+        projectCountButtons.forEach(btn => {
+            btn.classList.remove('project-count-btn-active');
+        });
+
+        const activeProjectCountButton = Array.from(projectCountButtons).find(btn =>
+            btn.textContent === this.getProjectCountLabel(this.currentProjectFilter));
+        if (activeProjectCountButton) {
+            activeProjectCountButton.classList.add('project-count-btn-active');
         }
 
         // Remove existing charts container (which includes projects list)
@@ -702,6 +764,14 @@ export default class StatsModal extends Modal {
             case 'month': return 'Mois';
             case 'week': return 'Semaine';
             case 'day': return 'Jour';
+        }
+    }
+
+    private getProjectCountLabel(filter: ProjectCountFilter): string {
+        switch (filter) {
+            case 'top5': return 'Top 5';
+            case 'top10': return 'Top 10';
+            case 'all': return 'Tous';
         }
     }
 
@@ -829,9 +899,10 @@ export default class StatsModal extends Modal {
         // Create projects list container inside the charts container
         const projectsContainer = container.createEl('div', { cls: 'projects-list-container' });
 
-        // Add title
+        // Add title with filter info
+        const filterLabel = this.getProjectCountLabel(this.currentProjectFilter);
         const titleEl = projectsContainer.createEl('h3', {
-            text: 'Liste des Projets par Priorité',
+            text: `Liste des Projets par Priorité (${filterLabel})`,
             cls: 'projects-list-title'
         });
 
@@ -841,10 +912,25 @@ export default class StatsModal extends Modal {
         // Sort by priority (effective score)
         projectStats.sort((a, b) => b.effectiveScore - a.effectiveScore);
 
+        // Apply the same filter as the charts
+        let filteredProjectStats = projectStats;
+        switch (this.currentProjectFilter) {
+            case 'top5':
+                filteredProjectStats = projectStats.slice(0, 5);
+                break;
+            case 'top10':
+                filteredProjectStats = projectStats.slice(0, 10);
+                break;
+            case 'all':
+            default:
+                filteredProjectStats = projectStats;
+                break;
+        }
+
         // Create projects grid
         const projectsGrid = projectsContainer.createEl('div', { cls: 'projects-grid' });
 
-        projectStats.forEach((project, index) => {
+        filteredProjectStats.forEach((project, index) => {
             const projectCard = projectsGrid.createEl('div', {
                 cls: 'project-card'
             });
