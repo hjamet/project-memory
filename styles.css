@@ -315,6 +315,8 @@ If your plugin does not need CSS, delete this file.
     min-height: 0;
     display: flex;
     flex-direction: column;
+    box-sizing: border-box;
+    overflow: hidden;
 }
 
 .projects-memory-stats-modal .chart-title {
@@ -328,9 +330,11 @@ If your plugin does not need CSS, delete this file.
 
 .projects-memory-stats-modal .chart-canvas {
     width: 100% !important;
+    max-width: 100% !important;
     height: 300px !important;
     max-height: 300px;
     flex-shrink: 0;
+    box-sizing: border-box;
 }
 
 /* Error message styling */
@@ -391,4 +395,112 @@ If your plugin does not need CSS, delete this file.
     background-color: var(--interactive-accent-hover);
     transform: translateY(-1px);
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+}
+
+/* Projects List Styles */
+.projects-memory-stats-modal .projects-list-container {
+    margin-top: 2rem;
+    padding-top: 1.5rem;
+    border-top: 2px solid var(--background-modifier-border);
+    flex-shrink: 0;
+}
+
+.projects-memory-stats-modal .projects-list-title {
+    font-size: 1.2rem;
+    font-weight: 600;
+    text-align: center;
+    margin: 0 0 1.5rem 0;
+    color: var(--text-normal);
+}
+
+.projects-memory-stats-modal .projects-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1rem;
+    padding: 0 0.5rem;
+}
+
+.projects-memory-stats-modal .project-card {
+    background: linear-gradient(135deg, var(--project-color, #3b82f6)15, rgba(255, 255, 255, 0.1));
+    border: 2px solid var(--project-color, #3b82f6);
+    border-radius: 12px;
+    padding: 1.25rem;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+    overflow: hidden;
+}
+
+.projects-memory-stats-modal .project-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 4px;
+    background: var(--project-color, #3b82f6);
+    opacity: 0.8;
+}
+
+.projects-memory-stats-modal .project-card:hover {
+    transform: translateY(-4px) scale(1.02);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+    border-color: var(--project-color, #3b82f6);
+}
+
+.projects-memory-stats-modal .project-name {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--text-normal);
+    margin-bottom: 0.75rem;
+    text-align: center;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+.projects-memory-stats-modal .project-time {
+    font-size: 1.3rem;
+    font-weight: 600;
+    color: var(--project-color, #3b82f6);
+    text-align: center;
+    margin-bottom: 0.5rem;
+    background: rgba(255, 255, 255, 0.1);
+    padding: 0.5rem;
+    border-radius: 8px;
+    backdrop-filter: blur(10px);
+}
+
+.projects-memory-stats-modal .project-priority {
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    text-align: center;
+    margin-bottom: 0.25rem;
+}
+
+.projects-memory-stats-modal .project-reviews {
+    font-size: 0.8rem;
+    font-weight: 400;
+    color: var(--text-faint);
+    text-align: center;
+    font-style: italic;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .projects-memory-stats-modal .projects-grid {
+        grid-template-columns: 1fr;
+        gap: 0.75rem;
+    }
+
+    .projects-memory-stats-modal .project-card {
+        padding: 1rem;
+    }
+
+    .projects-memory-stats-modal .project-name {
+        font-size: 1rem;
+    }
+
+    .projects-memory-stats-modal .project-time {
+        font-size: 1.1rem;
+    }
 }

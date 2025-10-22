@@ -63,6 +63,9 @@ export default class StatsModal extends Modal {
             // Create chart containers
             this.createChartContainers(chartData);
 
+            // Create projects list at the bottom
+            this.createProjectsList(statsData);
+
         } catch (error) {
             console.error('StatsModal: Error during initialization:', error);
             const errorDiv = this.contentEl.createEl('div', {
@@ -739,5 +742,106 @@ export default class StatsModal extends Modal {
         }
 
         return Object.keys(statsData.projects).map(path => path.replace('.md', ''));
+    }
+
+    private createProjectsList(statsData: any): void {
+        if (!statsData || !statsData.projects) {
+            return;
+        }
+
+        // Create projects list container
+        const projectsContainer = this.contentEl.createEl('div', { cls: 'projects-list-container' });
+
+        // Add title
+        const titleEl = projectsContainer.createEl('h3', {
+            text: 'Liste des Projets par Priorité',
+            cls: 'projects-list-title'
+        });
+
+        // Calculate time spent and priority for each project
+        const projectStats = this.calculateProjectStats(statsData);
+
+        // Sort by priority (effective score)
+        projectStats.sort((a, b) => b.effectiveScore - a.effectiveScore);
+
+        // Create projects grid
+        const projectsGrid = projectsContainer.createEl('div', { cls: 'projects-grid' });
+
+        projectStats.forEach((project, index) => {
+            const projectCard = projectsGrid.createEl('div', {
+                cls: 'project-card'
+            });
+            projectCard.setAttribute('style', `--project-color: ${project.color}; --project-index: ${index};`);
+
+            // Project name
+            const nameEl = projectCard.createEl('div', {
+                text: project.name,
+                cls: 'project-name'
+            });
+
+            // Time spent
+            const timeEl = projectCard.createEl('div', {
+                text: this.formatTimeSpent(project.timeSpent),
+                cls: 'project-time'
+            });
+
+            // Priority score
+            const scoreEl = projectCard.createEl('div', {
+                text: `Priorité: ${project.effectiveScore.toFixed(1)}`,
+                cls: 'project-priority'
+            });
+
+            // Reviews count
+            const reviewsEl = projectCard.createEl('div', {
+                text: `${project.totalReviews} reviews`,
+                cls: 'project-reviews'
+            });
+        });
+    }
+
+    private calculateProjectStats(statsData: any): Array<{
+        name: string;
+        timeSpent: number;
+        effectiveScore: number;
+        totalReviews: number;
+        color: string;
+    }> {
+        const projectNames = Object.keys(statsData.projects);
+        const colors = this.generateColors(projectNames.length);
+
+        return projectNames.map((projectPath, index) => {
+            const project = statsData.projects[projectPath];
+            const projectName = projectPath.replace('.md', '');
+            const color = colors[index];
+
+            // Calculate time spent based on reviews (assuming 25 minutes per review)
+            const timeSpent = project.totalReviews * 25; // minutes
+
+            // Calculate effective score (current score + rotation bonus)
+            const currentScore = project.currentScore || 50;
+            const effectiveScore = currentScore + project.rotationBonus;
+
+            return {
+                name: projectName,
+                timeSpent,
+                effectiveScore,
+                totalReviews: project.totalReviews,
+                color
+            };
+        });
+    }
+
+    private formatTimeSpent(minutes: number): string {
+        if (minutes < 60) {
+            return `${minutes} min`;
+        } else if (minutes < 1440) { // less than 24 hours
+            const hours = Math.floor(minutes / 60);
+            const remainingMinutes = minutes % 60;
+            return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}min` : `${hours}h`;
+        } else {
+            const days = Math.floor(minutes / 1440);
+            const remainingHours = Math.floor((minutes % 1440) / 60);
+            return remainingHours > 0 ? `${days}j ${remainingHours}h` : `${days}j`;
+        }
     }
 }

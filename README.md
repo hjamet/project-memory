@@ -111,6 +111,23 @@ The charts are generated using Chart.js and provide interactive features like le
 - Enhanced chart interactivity with improved tooltips and hover effects
 - Reduced chart height to 300px for better space utilization
 - Charts now maintain proper aspect ratio and prevent horizontal overflow
+- **NEW**: Added a colorful projects list at the bottom of the statistics modal showing all projects sorted by priority with time spent and visual indicators
+
+### Projects Priority List
+
+The statistics modal now includes a comprehensive projects list at the bottom that displays:
+
+- **Project Cards**: Each project is shown in a colorful card with a unique color scheme
+- **Priority Sorting**: Projects are automatically sorted by their effective score (current score + rotation bonus) in descending order
+- **Time Tracking**: Shows the total time spent on each project calculated as `totalReviews × pomodoroDuration`
+- **Visual Indicators**: Each card features:
+  - Project name prominently displayed
+  - Time spent with formatted display (minutes, hours, or days)
+  - Priority score showing the effective score
+  - Number of reviews completed
+  - Color-coded borders and accents matching the project's chart color
+
+The cards are arranged in a responsive grid layout that adapts to different screen sizes, with hover effects and smooth animations for an engaging user experience.
 
 ### Example Statistics File
 
