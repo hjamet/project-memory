@@ -11,11 +11,12 @@ interface ProjectsMemorySettings {
 	rotationBonus: number; // bonus points added to other projects when one is worked on
 	rapprochmentFactor: number; // fraction between 0 and 1
 	recencyPenaltyWeight: number; // multiplier for temporary per-session recency penalty
-	scoresNormalised: boolean; // migration flag
+	scoresMigratedToStats: boolean; // migration flag for stats.json migration
 	pomodoroDuration: number; // duration in minutes for Pomodoro
 }
 
 interface ProjectStats {
+	currentScore: number; // current pertinence score stored in stats.json
 	rotationBonus: number;
 	totalReviews: number;
 	lastReviewDate: string;
@@ -43,7 +44,7 @@ const DEFAULT_SETTINGS: ProjectsMemorySettings = {
 	rotationBonus: 0.1,
 	rapprochmentFactor: 0.2,
 	recencyPenaltyWeight: 0.5,
-	scoresNormalised: false,
+	scoresMigratedToStats: false,
 	pomodoroDuration: 25
 }
 
@@ -63,8 +64,8 @@ export default class ProjectsMemoryPlugin extends Plugin {
 		await this.loadStatsData();
 		// Ensure per-session review counts are cleared on each plugin load (do not persist to disk)
 		this.sessionReviewCounts.clear();
-		// Run one-time migration to normalise existing pertinence scores into [1..100]
-		await this.migrateScores();
+		// Run one-time migration to move scores from frontmatter to stats.json
+		await this.migrateScoresToStats();
 
 		// Create an icon in the left ribbon that lists project files when clicked
 		const ribbonIconEl = this.addRibbonIcon('rocket', 'Review projects', (_evt: MouseEvent) => {
@@ -119,14 +120,6 @@ export default class ProjectsMemoryPlugin extends Plugin {
 
 	async loadSettings() {
 		const loadedData = await this.loadData();
-
-		// Migration: convert ageBonusPerDay to rotationBonus if needed
-		if (loadedData && typeof (loadedData as any).ageBonusPerDay !== 'undefined' && typeof (loadedData as any).rotationBonus === 'undefined') {
-			(loadedData as any).rotationBonus = (loadedData as any).ageBonusPerDay;
-			delete (loadedData as any).ageBonusPerDay;
-			// Save the migrated settings
-			await this.saveData(loadedData);
-		}
 
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, loadedData);
 	}
@@ -211,6 +204,7 @@ export default class ProjectsMemoryPlugin extends Plugin {
 
 		if (!stats.projects[filePath]) {
 			stats.projects[filePath] = {
+				currentScore: this.settings.defaultScore,
 				rotationBonus: 0,
 				totalReviews: 0,
 				lastReviewDate: '',
@@ -219,6 +213,23 @@ export default class ProjectsMemoryPlugin extends Plugin {
 		}
 
 		return stats.projects[filePath];
+	}
+
+	// Get the current score for a project
+	async getProjectScore(filePath: string): Promise<number> {
+		const projectStats = await this.getProjectStats(filePath);
+		return projectStats.currentScore;
+	}
+
+	// Update the current score for a project
+	async updateProjectScore(filePath: string, newScore: number): Promise<void> {
+		const stats = await this.loadStatsData();
+		const projectStats = await this.getProjectStats(filePath);
+
+		// Clamp score to [1, 100] range
+		projectStats.currentScore = Math.min(100, Math.max(1, newScore));
+
+		await this.saveStatsData();
 	}
 
 	// Increment rotation bonus for all projects except the excluded one
@@ -268,40 +279,72 @@ export default class ProjectsMemoryPlugin extends Plugin {
 		await this.saveStatsData();
 	}
 
-	// One-time data migration: normalise old pertinence_score values into the [1..100] range
-	async migrateScores() {
-		if ((this.settings as any).scoresNormalised) return;
+	// One-time migration: move scores from frontmatter to stats.json
+	async migrateScoresToStats() {
+		if (this.settings.scoresMigratedToStats) return;
 
-		// Find the maximum existing pertinence_score
-		let oldMax = 0;
-		for (const f of this.app.vault.getMarkdownFiles()) {
-			const c = this.app.metadataCache.getFileCache(f) || {};
-			const fm = (c as any).frontmatter ?? {};
-			if (typeof fm.pertinence_score !== 'undefined') {
-				const val = Number(fm.pertinence_score);
-				if (isFinite(val)) oldMax = Math.max(oldMax, val);
-			}
+		const projectTagsStr = this.settings.projectTags ?? '';
+		const tagsArray = projectTagsStr
+			.split(',')
+			.map((t: string) => t.trim())
+			.filter(Boolean)
+			.map((t: string) => (t.startsWith('#') ? t : `#${t}`));
+
+		if (tagsArray.length === 0) {
+			// No project tags configured, mark migration as complete
+			this.settings.scoresMigratedToStats = true;
+			await this.saveSettings();
+			return;
 		}
-		if (oldMax <= 0) oldMax = Number(this.settings.defaultScore) || 1;
 
-		// Second pass: rewrite each pertinence_score using linear interpolation to [1..100]
-		for (const f of this.app.vault.getMarkdownFiles()) {
-			const file = f;
-			const cache = this.app.metadataCache.getFileCache(file) || {};
+		const mdFiles = this.app.vault.getMarkdownFiles();
+		let migratedCount = 0;
+
+		for (const file of mdFiles) {
+			const cache = this.app.metadataCache.getFileCache(file);
+			if (!cache) continue;
+
+			// Use unified tag extraction API to include frontmatter and body tags
+			const allTags = this.app.metadataCache.getFileCache(file)?.tags?.map(t => t.tag) || [];
+			const hasProjectTag = allTags.some((t: string) => tagsArray.includes(t));
+			if (!hasProjectTag) continue;
+
+			// Check if project already has stats
+			const stats = await this.loadStatsData();
+			if (stats.projects[file.path]) continue;
+
+			// Read frontmatter score if it exists
 			const fm = (cache as any).frontmatter ?? {};
+			let initialScore = this.settings.defaultScore;
+
 			if (typeof fm.pertinence_score !== 'undefined') {
-				const oldScore = Number(fm.pertinence_score);
-				if (!isFinite(oldScore)) continue;
-				const newScore = 1 + (oldScore / oldMax) * 99;
-				await (this.app as any).fileManager.processFrontMatter(file, (front: any) => {
-					front.pertinence_score = newScore;
-				});
+				const frontmatterScore = Number(fm.pertinence_score);
+				if (isFinite(frontmatterScore)) {
+					// Clamp to [1, 100] range
+					initialScore = Math.min(100, Math.max(1, frontmatterScore));
+				}
 			}
+
+			// Initialize project stats with the score
+			stats.projects[file.path] = {
+				currentScore: initialScore,
+				rotationBonus: 0,
+				totalReviews: 0,
+				lastReviewDate: '',
+				reviewHistory: []
+			};
+
+			migratedCount++;
 		}
 
-		// Mark migration completed and persist settings
-		(this.settings as any).scoresNormalised = true;
+		// Save stats and mark migration as complete
+		await this.saveStatsData();
+		this.settings.scoresMigratedToStats = true;
 		await this.saveSettings();
+
+		if (migratedCount > 0) {
+			console.log(`Projects Memory: Migrated ${migratedCount} project scores to stats.json`);
+		}
 	}
 
 }

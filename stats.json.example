@@ -1,6 +1,7 @@
 {
   "projects": {
     "Projet A.md": {
+      "currentScore": 50,
       "rotationBonus": 0,
       "totalReviews": 5,
       "lastReviewDate": "2024-01-15T10:30:00.000Z",
@@ -18,6 +19,7 @@
       ]
     },
     "Projet B.md": {
+      "currentScore": 40,
       "rotationBonus": 3,
       "totalReviews": 2,
       "lastReviewDate": "2024-01-10T14:20:00.000Z",

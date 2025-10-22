@@ -141,7 +141,7 @@ export default class ReviewModal extends Modal {
 		const mdFiles = this.app.vault.getMarkdownFiles();
 
 		// Collect candidate project files
-		const candidates: { file: import('obsidian').TFile; effectiveScore: number; baseScore: number; isNew?: boolean }[] = [];
+		const candidates: { file: import('obsidian').TFile; effectiveScore: number; baseScore: number }[] = [];
 		for (const file of mdFiles) {
 			// Skip files temporarily ignored for this session
 			try {
@@ -162,19 +162,19 @@ export default class ReviewModal extends Modal {
 			const normalizedArchiveTag = archiveTag ? (archiveTag.startsWith('#') ? archiveTag : `#${archiveTag}`) : '';
 			const hasArchiveTag = normalizedArchiveTag ? allTags.includes(normalizedArchiveTag) : false;
 			if (hasArchiveTag) continue;
-			const fm = (cache as any).frontmatter ?? {};
-
-			// read frontmatter values
-			let baseScore = typeof fm.pertinence_score !== 'undefined' ? Number(fm.pertinence_score) : (this.plugin as any).settings.defaultScore;
-			if (!isFinite(baseScore)) baseScore = Number((this.plugin as any).settings.defaultScore ?? 50);
-			// Ensure baseScore is within the normalized range [1, 100]
-			baseScore = Math.min(100, Math.max(1, baseScore));
+			// Get current score from stats.json
+			let baseScore: number;
+			try {
+				const pluginAny = this.plugin as any;
+				baseScore = await pluginAny.getProjectScore(file.path);
+			} catch (e) {
+				console.error('Failed to get project score:', e);
+				baseScore = Number((this.plugin as any).settings.defaultScore ?? 50);
+			}
 
 			// calculate effective score using extracted helper to keep logic consistent
 			const effectiveScore = await this.calculateEffectiveScore(baseScore, file.path);
-			// Determine if project is "new" (no pertinence_score in frontmatter)
-			const isNew = typeof fm.pertinence_score === 'undefined';
-			candidates.push({ file, effectiveScore, baseScore, isNew });
+			candidates.push({ file, effectiveScore, baseScore });
 		}
 
 		if (candidates.length === 0) {
@@ -253,11 +253,6 @@ export default class ReviewModal extends Modal {
 			timeBadge.setText(updatedText);
 		};
 
-		// If chosen candidate is new (no pertinence_score), show a "Nouveau" badge
-		if ((chosen as any).isNew) {
-			const badge = titleEl.createEl('span', { text: 'Nouveau', cls: 'pm-new-indicator' });
-			badge.setAttr('aria-hidden', 'true');
-		}
 		const previewContainer = this.contentEl.createEl('div', { cls: 'review-preview' });
 
 		// Create the buttons container early so the UI is present even if markdown rendering fails
@@ -346,13 +341,16 @@ export default class ReviewModal extends Modal {
 			return btn;
 		};
 
-		// Helper to update frontmatter scores
+		// Helper to update scores in stats.json
 		const updateScore = async (newScore: number, action: string) => {
-			// Clamp stored base score to [1,100]
-			newScore = Math.min(100, Math.max(1, newScore));
-			await (this.app as any).fileManager.processFrontMatter(chosen.file, (fm: any) => {
-				fm.pertinence_score = newScore;
-			});
+			// Update score in stats.json
+			try {
+				const pluginAny = this.plugin as any;
+				await pluginAny.updateProjectScore(chosen.file.path, newScore);
+			} catch (e) {
+				console.error('Failed to update project score:', e);
+				return;
+			}
 
 			// Record the action in stats and increment rotation bonus for other projects
 			try {
@@ -372,10 +370,14 @@ export default class ReviewModal extends Modal {
 
 		// Create buttons with classes and keep references for keyboard shortcuts
 		const btn1 = makeButton('Agréable / Calme', async () => {
-			const cache = this.app.metadataCache.getFileCache(chosen.file) || {};
-			const fm = (cache as any).frontmatter ?? {};
-			let s = typeof fm.pertinence_score !== 'undefined' ? Number(fm.pertinence_score) : (this.plugin as any).settings.defaultScore;
-			if (!isFinite(s)) s = Number((this.plugin as any).settings.defaultScore ?? 50);
+			let s: number;
+			try {
+				const pluginAny = this.plugin as any;
+				s = await pluginAny.getProjectScore(chosen.file.path);
+			} catch (e) {
+				console.error('Failed to get project score:', e);
+				s = Number((this.plugin as any).settings.defaultScore ?? 50);
+			}
 			const rapprochment = Number((this.plugin as any).settings.rapprochementFactor ?? 0.2);
 			const perte = rapprochment * (s - 1);
 			// Update in-memory session review count for this file (must run before persisting score)
@@ -391,10 +393,14 @@ export default class ReviewModal extends Modal {
 		}, 'pm-moins-souvent');
 
 		const btn2 = makeButton('Sous contrôle', async () => {
-			const cache = this.app.metadataCache.getFileCache(chosen.file) || {};
-			const fm = (cache as any).frontmatter ?? {};
-			let s = typeof fm.pertinence_score !== 'undefined' ? Number(fm.pertinence_score) : (this.plugin as any).settings.defaultScore;
-			if (!isFinite(s)) s = Number((this.plugin as any).settings.defaultScore ?? 50);
+			let s: number;
+			try {
+				const pluginAny = this.plugin as any;
+				s = await pluginAny.getProjectScore(chosen.file.path);
+			} catch (e) {
+				console.error('Failed to get project score:', e);
+				s = Number((this.plugin as any).settings.defaultScore ?? 50);
+			}
 			// Update in-memory session review count for this file (must run before persisting score)
 			try {
 				const pluginAny = this.plugin as any;
@@ -408,10 +414,14 @@ export default class ReviewModal extends Modal {
 		}, 'pm-ok');
 
 		const btn3 = makeButton('Urgent / Stressant', async () => {
-			const cache = this.app.metadataCache.getFileCache(chosen.file) || {};
-			const fm = (cache as any).frontmatter ?? {};
-			let s = typeof fm.pertinence_score !== 'undefined' ? Number(fm.pertinence_score) : (this.plugin as any).settings.defaultScore;
-			if (!isFinite(s)) s = Number((this.plugin as any).settings.defaultScore ?? 50);
+			let s: number;
+			try {
+				const pluginAny = this.plugin as any;
+				s = await pluginAny.getProjectScore(chosen.file.path);
+			} catch (e) {
+				console.error('Failed to get project score:', e);
+				s = Number((this.plugin as any).settings.defaultScore ?? 50);
+			}
 			const rapprochment = Number((this.plugin as any).settings.rapprochementFactor ?? 0.2);
 			const gain = rapprochment * (100 - s);
 			// Update in-memory session review count for this file (must run before persisting score)

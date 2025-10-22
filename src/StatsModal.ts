@@ -1,5 +1,7 @@
 import { App, Modal, Plugin } from 'obsidian';
 
+type ViewMode = 'month' | 'week' | 'day';
+
 interface ChartData {
     labels: string[];
     datasets: Array<{
@@ -21,6 +23,7 @@ interface DailyActions {
 export default class StatsModal extends Modal {
     plugin: Plugin;
     chartInstances: any[] = [];
+    private currentViewMode: ViewMode = 'month';
 
     constructor(app: App, plugin: Plugin) {
         super(app);
@@ -34,7 +37,10 @@ export default class StatsModal extends Modal {
         // Create title
         const titleEl = this.contentEl.createEl('h2', { text: 'Statistiques des Projets' });
         titleEl.style.textAlign = 'center';
-        titleEl.style.marginBottom = '1.5rem';
+        titleEl.style.marginBottom = '1rem';
+
+        // Create view mode selector
+        this.createViewModeSelector();
 
         try {
             // Load Chart.js from CDN
@@ -127,18 +133,50 @@ export default class StatsModal extends Modal {
         dailyActionsData: ChartData;
     } {
 
-        const thirtyDaysAgo = new Date();
-        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        let startDate: Date;
+        let dateLabels: string[];
+        let dateMap: { [date: string]: number } = {};
 
-        // Generate date labels for the last 30 days
-        const dateLabels: string[] = [];
-        const dateMap: { [date: string]: number } = {};
-        for (let i = 29; i >= 0; i--) {
-            const date = new Date();
-            date.setDate(date.getDate() - i);
-            const dateStr = date.toISOString().split('T')[0];
-            dateLabels.push(dateStr);
-            dateMap[dateStr] = 29 - i;
+        // Generate date labels based on current view mode
+        switch (this.currentViewMode) {
+            case 'month':
+                startDate = new Date();
+                startDate.setDate(startDate.getDate() - 30);
+                dateLabels = [];
+                for (let i = 29; i >= 0; i--) {
+                    const date = new Date();
+                    date.setDate(date.getDate() - i);
+                    const dateStr = date.toISOString().split('T')[0];
+                    dateLabels.push(dateStr);
+                    dateMap[dateStr] = 29 - i;
+                }
+                break;
+
+            case 'week':
+                startDate = new Date();
+                startDate.setDate(startDate.getDate() - 7);
+                dateLabels = [];
+                for (let i = 6; i >= 0; i--) {
+                    const date = new Date();
+                    date.setDate(date.getDate() - i);
+                    const dateStr = date.toISOString().split('T')[0];
+                    dateLabels.push(dateStr);
+                    dateMap[dateStr] = 6 - i;
+                }
+                break;
+
+            case 'day':
+                startDate = new Date();
+                startDate.setHours(startDate.getHours() - 24);
+                dateLabels = [];
+                for (let i = 23; i >= 0; i--) {
+                    const date = new Date();
+                    date.setHours(date.getHours() - i);
+                    const hourStr = date.getHours().toString().padStart(2, '0') + ':00';
+                    dateLabels.push(hourStr);
+                    dateMap[hourStr] = 23 - i;
+                }
+                break;
         }
 
         // Process each project
@@ -175,24 +213,37 @@ export default class StatsModal extends Modal {
             const color = colors[index];
 
             // Initialize data arrays for this project
-            const realScores = new Array(30).fill(null);
-            const effectiveScores = new Array(30).fill(null);
-            const dailyActions = new Array(30).fill(0);
+            const arrayLength = dateLabels.length;
+            const realScores = new Array(arrayLength).fill(null);
+            const effectiveScores = new Array(arrayLength).fill(null);
+            const dailyActions = new Array(arrayLength).fill(0);
 
             // Process review history
             project.reviewHistory.forEach((review: any, reviewIndex: number) => {
-                const reviewDate = new Date(review.date).toISOString().split('T')[0];
-                const dayIndex = dateMap[reviewDate];
+                const reviewDate = new Date(review.date);
+                let timeKey: string;
+                let timeIndex: number;
 
-                if (dayIndex !== undefined) {
+                if (this.currentViewMode === 'day') {
+                    // For day mode, use hour as key
+                    const hour = reviewDate.getHours();
+                    timeKey = hour.toString().padStart(2, '0') + ':00';
+                    timeIndex = dateMap[timeKey];
+                } else {
+                    // For month/week modes, use date as key
+                    timeKey = reviewDate.toISOString().split('T')[0];
+                    timeIndex = dateMap[timeKey];
+                }
+
+                if (timeIndex !== undefined) {
                     // Real score
-                    realScores[dayIndex] = review.scoreAfter;
+                    realScores[timeIndex] = review.scoreAfter;
 
                     // Effective score (scoreAfter + current rotationBonus)
-                    effectiveScores[dayIndex] = review.scoreAfter + project.rotationBonus;
+                    effectiveScores[timeIndex] = review.scoreAfter + project.rotationBonus;
 
                     // Daily actions count
-                    dailyActions[dayIndex]++;
+                    dailyActions[timeIndex]++;
 
                 }
             });
@@ -429,53 +480,126 @@ export default class StatsModal extends Modal {
             }
         }));
 
-        // Daily Actions Chart
+        // Daily Actions Chart (or Timeline for day mode)
         const dailyActionsContainer = chartsContainer.createEl('div', { cls: 'chart-container' });
-        dailyActionsContainer.createEl('h3', { text: 'Actions par Jour', cls: 'chart-title' });
-        const dailyActionsCanvas = dailyActionsContainer.createEl('canvas', { cls: 'chart-canvas' });
 
-        this.chartInstances.push(new Chart(dailyActionsCanvas, {
-            type: 'bar',
-            data: chartData.dailyActionsData,
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                scales: {
-                    x: {
-                        stacked: true,
-                        grid: {
+        if (this.currentViewMode === 'day') {
+            // Create timeline chart for day mode
+            dailyActionsContainer.createEl('h3', { text: 'Chronologie des Reviews', cls: 'chart-title' });
+            const timelineCanvas = dailyActionsContainer.createEl('canvas', { cls: 'chart-canvas' });
+
+            // Generate timeline data for day mode
+            const timelineData = this.generateTimelineData();
+
+            this.chartInstances.push(new Chart(timelineCanvas, {
+                type: 'scatter',
+                data: timelineData,
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: 'hour',
+                                displayFormats: {
+                                    hour: 'HH:mm'
+                                }
+                            },
+                            title: {
+                                display: true,
+                                text: 'Heure'
+                            },
+                            grid: {
+                                display: false
+                            }
+                        },
+                        y: {
+                            type: 'category',
+                            labels: this.getProjectNames(),
+                            title: {
+                                display: true,
+                                text: 'Projet'
+                            },
+                            grid: {
+                                color: 'rgba(0, 0, 0, 0.1)'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
                             display: false
+                        },
+                        tooltip: {
+                            callbacks: {
+                                title: (context: any) => {
+                                    const point = context[0];
+                                    return `Review à ${point.parsed.x}`;
+                                },
+                                label: (context: any) => {
+                                    const point = context.parsed;
+                                    return `Projet: ${point.y}`;
+                                }
+                            }
                         }
                     },
-                    y: {
-                        stacked: true,
-                        beginAtZero: true,
-                        grid: {
-                            color: 'rgba(0, 0, 0, 0.1)'
+                    elements: {
+                        point: {
+                            radius: 6,
+                            hoverRadius: 8
                         }
-                    }
-                },
-                plugins: {
-                    legend: {
-                        display: true,
-                        position: 'top',
-                        labels: {
-                            usePointStyle: true,
-                            padding: 20
-                        }
-                    },
-                    tooltip: {
-                        mode: 'index',
-                        intersect: false
-                    }
-                },
-                elements: {
-                    bar: {
-                        borderWidth: 0
                     }
                 }
-            }
-        }));
+            }));
+        } else {
+            // Regular bar chart for month/week modes
+            const chartTitle = this.currentViewMode === 'week' ? 'Actions par Semaine' : 'Actions par Jour';
+            dailyActionsContainer.createEl('h3', { text: chartTitle, cls: 'chart-title' });
+            const dailyActionsCanvas = dailyActionsContainer.createEl('canvas', { cls: 'chart-canvas' });
+
+            this.chartInstances.push(new Chart(dailyActionsCanvas, {
+                type: 'bar',
+                data: chartData.dailyActionsData,
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            stacked: true,
+                            grid: {
+                                display: false
+                            }
+                        },
+                        y: {
+                            stacked: true,
+                            beginAtZero: true,
+                            grid: {
+                                color: 'rgba(0, 0, 0, 0.1)'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: true,
+                            position: 'top',
+                            labels: {
+                                usePointStyle: true,
+                                padding: 20
+                            }
+                        },
+                        tooltip: {
+                            mode: 'index',
+                            intersect: false
+                        }
+                    },
+                    elements: {
+                        bar: {
+                            borderWidth: 0
+                        }
+                    }
+                }
+            }));
+        }
     }
 
     onClose() {
@@ -487,5 +611,133 @@ export default class StatsModal extends Modal {
         });
         this.chartInstances = [];
         this.contentEl.empty();
+    }
+
+    private createViewModeSelector(): void {
+        const selectorContainer = this.contentEl.createEl('div', { cls: 'stats-view-selector' });
+
+        const modes: { mode: ViewMode; label: string }[] = [
+            { mode: 'month', label: 'Mois' },
+            { mode: 'week', label: 'Semaine' },
+            { mode: 'day', label: 'Jour' }
+        ];
+
+        modes.forEach(({ mode, label }) => {
+            const button = selectorContainer.createEl('button', {
+                text: label,
+                cls: `view-mode-btn ${this.currentViewMode === mode ? 'view-mode-btn-active' : ''}`
+            });
+
+            button.addEventListener('click', () => {
+                this.currentViewMode = mode;
+                this.refreshCharts();
+            });
+        });
+    }
+
+    private async refreshCharts(): Promise<void> {
+        // Clear existing charts
+        this.chartInstances.forEach(chart => {
+            if (chart && typeof chart.destroy === 'function') {
+                chart.destroy();
+            }
+        });
+        this.chartInstances = [];
+
+        // Update button states
+        const buttons = this.contentEl.querySelectorAll('.view-mode-btn');
+        buttons.forEach(btn => {
+            btn.classList.remove('view-mode-btn-active');
+        });
+
+        const activeButton = this.contentEl.querySelector(`[data-mode="${this.currentViewMode}"]`) ||
+            Array.from(buttons).find(btn => btn.textContent === this.getModeLabel(this.currentViewMode));
+        if (activeButton) {
+            activeButton.classList.add('view-mode-btn-active');
+        }
+
+        // Remove existing charts container
+        const chartsContainer = this.contentEl.querySelector('.stats-charts-container');
+        if (chartsContainer) {
+            chartsContainer.remove();
+        }
+
+        try {
+            // Reload and process data
+            const statsData = await this.loadStatsData();
+            const chartData = this.processStatsData(statsData);
+            this.createChartContainers(chartData);
+        } catch (error) {
+            console.error('StatsModal: Error refreshing charts:', error);
+        }
+    }
+
+    private getModeLabel(mode: ViewMode): string {
+        switch (mode) {
+            case 'month': return 'Mois';
+            case 'week': return 'Semaine';
+            case 'day': return 'Jour';
+        }
+    }
+
+    private generateTimelineData(): any {
+        const statsData = (this as any).plugin.loadStatsData ?
+            (this as any).plugin.loadStatsData() :
+            this.loadStatsData();
+
+        if (!statsData || !statsData.projects) {
+            return { datasets: [] };
+        }
+
+        const projectNames = Object.keys(statsData.projects);
+        const colors = this.generateColors(projectNames.length);
+        const datasets: any[] = [];
+
+        projectNames.forEach((projectPath, index) => {
+            const project = statsData.projects[projectPath];
+            const projectName = projectPath.replace('.md', '');
+            const color = colors[index];
+
+            const points: { x: string; y: string }[] = [];
+
+            // Get reviews from the last 24 hours
+            const twentyFourHoursAgo = new Date();
+            twentyFourHoursAgo.setHours(twentyFourHoursAgo.getHours() - 24);
+
+            project.reviewHistory.forEach((review: any) => {
+                const reviewDate = new Date(review.date);
+                if (reviewDate >= twentyFourHoursAgo) {
+                    points.push({
+                        x: reviewDate.toISOString(),
+                        y: projectName
+                    });
+                }
+            });
+
+            if (points.length > 0) {
+                datasets.push({
+                    label: projectName,
+                    data: points,
+                    backgroundColor: color,
+                    borderColor: color,
+                    pointRadius: 6,
+                    pointHoverRadius: 8
+                });
+            }
+        });
+
+        return { datasets };
+    }
+
+    private getProjectNames(): string[] {
+        const statsData = (this as any).plugin.loadStatsData ?
+            (this as any).plugin.loadStatsData() :
+            this.loadStatsData();
+
+        if (!statsData || !statsData.projects) {
+            return [];
+        }
+
+        return Object.keys(statsData.projects).map(path => path.replace('.md', ''));
     }
 }

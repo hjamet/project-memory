@@ -59,7 +59,7 @@ View project statistics # opens the statistics visualization modal
 ## Settings
 
 The plugin exposes a small set of settings to tune review behavior:
-- `defaultScore` — default pertinence score for notes without frontmatter score (default: 50)
+- `defaultScore` — default pertinence score for new projects (default: 50)
 - `archiveTag` — tag applied when marking a project as finished (default: `projet-fini`)
 - `rotationBonus` — points added to all other projects when one project is worked on (default: 0.1)
 - `rapprochementFactor` — fraction of remaining gap closed on each action (0..1, default: 0.2)
@@ -75,17 +75,19 @@ The plugin uses a rotation-based bonus system instead of time-based bonuses. Whe
 
 The plugin maintains detailed statistics in a `stats.json` file located in the plugin directory (`.obsidian/plugins/project-memory/stats.json`). This file is automatically ignored by Git (see `.gitignore`) as it contains user-specific data. The file tracks:
 
-- **Per-project data**: rotation bonus, total reviews, last review date, total Pomodoro time, and review history
+- **Per-project data**: current pertinence score, rotation bonus, total reviews, last review date, total Pomodoro time, and review history
 - **Global statistics**: total reviews across all projects and Pomodoro time
 - **Review history**: detailed log of all actions taken on each project (last 100 entries per project)
 
-The statistics file is automatically created and maintained by the plugin. You can safely delete it to reset all statistics, and it will be recreated with empty data on the next plugin use.
+**Important**: The plugin now stores all pertinence scores exclusively in `stats.json`. Existing `pertinence_score` values in frontmatter are preserved for reference but are no longer used by the plugin. New projects automatically receive the `defaultScore` value.
+
+The statistics file is automatically created and maintained by the plugin. You can safely delete it to reset all statistics, and it will be recreated with empty data on the next plugin use. On first run after installation, the plugin automatically migrates existing `pertinence_score` values from frontmatter to `stats.json`.
 
 ### Project Statistics Display
 
 When reviewing a project, the plugin displays three colored badges next to the project title:
 
-1. **Urgency Score Badge**: Shows the base pertinence score from frontmatter with dynamic color (green → yellow → red based on urgency level)
+1. **Urgency Score Badge**: Shows the current pertinence score from stats.json with dynamic color (green → yellow → red based on urgency level)
 2. **Session Score Badge**: Shows the current effective score including rotation bonus and recency penalty (purple badge)
 3. **Total Time Badge**: Shows accumulated Pomodoro time spent on the project across all sessions (amber badge)
 
@@ -113,6 +115,7 @@ The charts are generated using Chart.js and provide interactive features like le
 ### Example Statistics File
 
 The `stats.json.example` file shows the structure of the statistics data for reference. Each project entry includes:
+- `currentScore`: the current pertinence score stored in stats.json
 - `rotationBonus`: accumulated bonus points from other projects being worked on
 - `totalReviews`: number of times this project has been reviewed
 - `lastReviewDate`: ISO timestamp of the most recent review
