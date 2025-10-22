@@ -12,3 +12,10 @@ diff
 
 # Plugin
 data.json
+# Cursor Memory Bank
+.cursor/mcp
+.cursor/mcp.json
+.cursor/screenshots
+tomd.py
+repo.md
+diff

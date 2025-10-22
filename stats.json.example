@@ -1,0 +1,37 @@
+{
+  "projects": {
+    "Projet A.md": {
+      "rotationBonus": 0,
+      "totalReviews": 5,
+      "lastReviewDate": "2024-01-15T10:30:00.000Z",
+      "reviewHistory": [
+        {
+          "date": "2024-01-15T10:30:00.000Z",
+          "action": "ok",
+          "scoreAfter": 50
+        },
+        {
+          "date": "2024-01-14T09:15:00.000Z",
+          "action": "more-often",
+          "scoreAfter": 60
+        }
+      ]
+    },
+    "Projet B.md": {
+      "rotationBonus": 3,
+      "totalReviews": 2,
+      "lastReviewDate": "2024-01-10T14:20:00.000Z",
+      "reviewHistory": [
+        {
+          "date": "2024-01-10T14:20:00.000Z",
+          "action": "less-often",
+          "scoreAfter": 40
+        }
+      ]
+    }
+  },
+  "globalStats": {
+    "totalReviews": 7,
+    "totalPomodoroTime": 125
+  }
+}

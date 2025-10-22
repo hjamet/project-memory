@@ -55,13 +55,18 @@ export default class ReviewModal extends Modal {
 	// Calculate the effective score for display/selection purposes.
 	// Replicates the logic used in onOpen's candidate loop so it can be
 	// re-invoked elsewhere (e.g. for up-to-date notifications).
-	private calculateEffectiveScore(baseScore: number, lastReviewedMillis: number, filePath: string): number {
-		const now = Date.now();
-		// use floating days for precision and user-configurable per-day bonus
-		const ageDays = (now - lastReviewedMillis) / (1000 * 60 * 60 * 24);
-		const ageBonusPerDay = Number((this.plugin as any).settings.ageBonusPerDay ?? 1);
-		const bonus = ageDays * ageBonusPerDay;
-		let effectiveScore = baseScore + bonus;
+	private async calculateEffectiveScore(baseScore: number, filePath: string): Promise<number> {
+		let effectiveScore = baseScore;
+
+		// Add rotation bonus from stats
+		try {
+			const pluginAny = this.plugin as any;
+			const projectStats = await pluginAny.getProjectStats(filePath);
+			effectiveScore += projectStats.rotationBonus;
+		} catch (e) {
+			// If plugin doesn't expose expected fields, ignore and proceed with base effectiveScore
+		}
+
 		// Apply temporary per-session recency penalty if configured
 		try {
 			const pluginAny = this.plugin as any;
@@ -110,8 +115,7 @@ export default class ReviewModal extends Modal {
 		const mdFiles = this.app.vault.getMarkdownFiles();
 
 		// Collect candidate project files
-		const candidates: { file: import('obsidian').TFile; effectiveScore: number; baseScore: number; lastReviewed?: string; isNew?: boolean }[] = [];
-		const now = Date.now();
+		const candidates: { file: import('obsidian').TFile; effectiveScore: number; baseScore: number; isNew?: boolean }[] = [];
 		for (const file of mdFiles) {
 			// Skip files temporarily ignored for this session
 			try {
@@ -140,21 +144,11 @@ export default class ReviewModal extends Modal {
 			// Ensure baseScore is within the normalized range [1, 100]
 			baseScore = Math.min(100, Math.max(1, baseScore));
 
-			let lastReviewedMillis: number | null = null;
-			if (fm.last_reviewed_date) {
-				const parsed = Date.parse(String(fm.last_reviewed_date));
-				if (!isNaN(parsed)) lastReviewedMillis = parsed;
-			}
-			if (!lastReviewedMillis) {
-				// fall back to file ctime
-				lastReviewedMillis = file.stat.ctime;
-			}
-
 			// calculate effective score using extracted helper to keep logic consistent
-			const effectiveScore = this.calculateEffectiveScore(baseScore, Number(lastReviewedMillis), file.path);
+			const effectiveScore = await this.calculateEffectiveScore(baseScore, file.path);
 			// Determine if project is "new" (no pertinence_score in frontmatter)
 			const isNew = typeof fm.pertinence_score === 'undefined';
-			candidates.push({ file, effectiveScore, baseScore, lastReviewed: fm.last_reviewed_date, isNew });
+			candidates.push({ file, effectiveScore, baseScore, isNew });
 		}
 
 		if (candidates.length === 0) {
@@ -284,15 +278,24 @@ export default class ReviewModal extends Modal {
 		};
 
 		// Helper to update frontmatter scores
-		const updateScore = async (newScore: number) => {
+		const updateScore = async (newScore: number, action: string) => {
 			// Clamp stored base score to [1,100]
 			newScore = Math.min(100, Math.max(1, newScore));
 			await (this.app as any).fileManager.processFrontMatter(chosen.file, (fm: any) => {
 				fm.pertinence_score = newScore;
-				fm.last_reviewed_date = new Date().toISOString();
 			});
+
+			// Record the action in stats and increment rotation bonus for other projects
+			try {
+				const pluginAny = this.plugin as any;
+				await pluginAny.incrementRotationBonus(chosen.file.path);
+				await pluginAny.recordReviewAction(chosen.file.path, action, newScore);
+			} catch (e) {
+				console.error('Failed to update stats:', e);
+			}
+
 			// Recalculate effective score for immediate display (do not persist)
-			const recalculated = this.calculateEffectiveScore(newScore, Date.now(), chosen.file.path);
+			const recalculated = await this.calculateEffectiveScore(newScore, chosen.file.path);
 			const persistedRounded = Math.round(newScore);
 			const sessionRounded = Math.round(recalculated);
 			new Notice(`Score : ${persistedRounded} (réel) | ${sessionRounded} (session)`);
@@ -315,7 +318,7 @@ export default class ReviewModal extends Modal {
 			} catch (e) {
 				console.error('Failed to update session review counts', e);
 			}
-			await updateScore(s - perte);
+			await updateScore(s - perte, 'less-often');
 		}, 'pm-moins-souvent');
 
 		const btn2 = makeButton('Sous contrôle', async () => {
@@ -332,7 +335,7 @@ export default class ReviewModal extends Modal {
 			} catch (e) {
 				console.error('Failed to update session review counts', e);
 			}
-			await updateScore(s);
+			await updateScore(s, 'ok');
 		}, 'pm-ok');
 
 		const btn3 = makeButton('Urgent / Stressant', async () => {
@@ -351,7 +354,7 @@ export default class ReviewModal extends Modal {
 			} catch (e) {
 				console.error('Failed to update session review counts', e);
 			}
-			await updateScore(s + gain);
+			await updateScore(s + gain, 'more-often');
 		}, 'pm-plus-souvent');
 
 
@@ -366,6 +369,16 @@ export default class ReviewModal extends Modal {
 			} catch (e) {
 				console.error('Failed to update session review counts', e);
 			}
+
+			// Record the action in stats and increment rotation bonus for other projects
+			try {
+				const pluginAny = this.plugin as any;
+				await pluginAny.incrementRotationBonus(chosen.file.path);
+				await pluginAny.recordReviewAction(chosen.file.path, 'finished', 0);
+			} catch (e) {
+				console.error('Failed to update stats:', e);
+			}
+
 			// Remove project tags from frontmatter.tags and add archiveTag
 			await (this.app as any).fileManager.processFrontMatter(chosen.file, (fm: any) => {
 				const projectTagsStr = (this.plugin as any).settings.projectTags ?? '';

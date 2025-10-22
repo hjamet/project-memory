@@ -1,0 +1,116 @@
+{
+  "projects": {
+    "test 2.md": {
+      "rotationBonus": 0,
+      "totalReviews": 1,
+      "lastReviewDate": "2025-10-22T15:41:35.236Z",
+      "reviewHistory": [
+        {
+          "date": "2025-10-22T15:41:35.236Z",
+          "action": "ok",
+          "scoreAfter": 12.88018018844672
+        }
+      ]
+    },
+    "test 3.md": {
+      "rotationBonus": 7.5,
+      "totalReviews": 1,
+      "lastReviewDate": "2025-10-22T15:41:27.130Z",
+      "reviewHistory": [
+        {
+          "date": "2025-10-22T15:41:27.130Z",
+          "action": "ok",
+          "scoreAfter": 27.3468351488
+        }
+      ]
+    },
+    "test 4.md": {
+      "rotationBonus": 1.5,
+      "totalReviews": 10,
+      "lastReviewDate": "2025-10-22T15:41:30.798Z",
+      "reviewHistory": [
+        {
+          "date": "2025-10-22T15:41:10.732Z",
+          "action": "more-often",
+          "scoreAfter": 93.2891136
+        },
+        {
+          "date": "2025-10-22T15:41:11.579Z",
+          "action": "more-often",
+          "scoreAfter": 94.63129088
+        },
+        {
+          "date": "2025-10-22T15:41:12.407Z",
+          "action": "more-often",
+          "scoreAfter": 95.70503270399999
+        },
+        {
+          "date": "2025-10-22T15:41:14.487Z",
+          "action": "more-often",
+          "scoreAfter": 96.5640261632
+        },
+        {
+          "date": "2025-10-22T15:41:19.642Z",
+          "action": "more-often",
+          "scoreAfter": 97.25122093056
+        },
+        {
+          "date": "2025-10-22T15:41:23.005Z",
+          "action": "ok",
+          "scoreAfter": 97.25122093056
+        },
+        {
+          "date": "2025-10-22T15:41:23.782Z",
+          "action": "ok",
+          "scoreAfter": 97.25122093056
+        },
+        {
+          "date": "2025-10-22T15:41:26.146Z",
+          "action": "ok",
+          "scoreAfter": 97.25122093056
+        },
+        {
+          "date": "2025-10-22T15:41:29.120Z",
+          "action": "ok",
+          "scoreAfter": 97.25122093056
+        },
+        {
+          "date": "2025-10-22T15:41:30.798Z",
+          "action": "ok",
+          "scoreAfter": 97.25122093056
+        }
+      ]
+    },
+    "test 1.md": {
+      "rotationBonus": 3,
+      "totalReviews": 4,
+      "lastReviewDate": "2025-10-22T15:41:30.093Z",
+      "reviewHistory": [
+        {
+          "date": "2025-10-22T15:41:21.299Z",
+          "action": "ok",
+          "scoreAfter": 51.111539247696584
+        },
+        {
+          "date": "2025-10-22T15:41:25.130Z",
+          "action": "ok",
+          "scoreAfter": 51.111539247696584
+        },
+        {
+          "date": "2025-10-22T15:41:27.991Z",
+          "action": "ok",
+          "scoreAfter": 51.111539247696584
+        },
+        {
+          "date": "2025-10-22T15:41:30.093Z",
+          "action": "ok",
+          "scoreAfter": 51.111539247696584
+        }
+      ]
+    }
+  },
+  "globalStats": {
+    "totalReviews": 16,
+    "totalPomodoroTime": 0
+  }
+}

@@ -7,18 +7,39 @@ interface ProjectsMemorySettings {
 	projectTags: string;
 	defaultScore: number;
 	archiveTag: string;
-	ageBonusPerDay: number;
+	rotationBonus: number; // bonus points added to other projects when one is worked on
 	rapprochmentFactor: number; // fraction between 0 and 1
 	recencyPenaltyWeight: number; // multiplier for temporary per-session recency penalty
 	scoresNormalised: boolean; // migration flag
 	pomodoroDuration: number; // duration in minutes for Pomodoro
 }
 
+interface ProjectStats {
+	rotationBonus: number;
+	totalReviews: number;
+	lastReviewDate: string;
+	reviewHistory: Array<{
+		date: string;
+		action: string; // "less-often" | "ok" | "more-often" | "finished"
+		scoreAfter: number;
+	}>;
+}
+
+interface GlobalStats {
+	totalReviews: number;
+	totalPomodoroTime: number; // in minutes
+}
+
+interface StatsData {
+	projects: { [filePath: string]: ProjectStats };
+	globalStats: GlobalStats;
+}
+
 const DEFAULT_SETTINGS: ProjectsMemorySettings = {
 	projectTags: 'projet',
 	defaultScore: 50,
 	archiveTag: 'projet-fini',
-	ageBonusPerDay: 1,
+	rotationBonus: 0.1,
 	rapprochmentFactor: 0.2,
 	recencyPenaltyWeight: 0.5,
 	scoresNormalised: false,
@@ -32,6 +53,8 @@ export default class ProjectsMemoryPlugin extends Plugin {
 	public sessionIgnoredProjects: Set<string> = new Set<string>();
 	// Session-scoped map of review counts per file path. In-memory only; reset on plugin load.
 	public sessionReviewCounts: Map<string, number> = new Map<string, number>();
+	// Stats data loaded from stats.json
+	private statsData: StatsData | null = null;
 
 	async onload() {
 		await this.loadSettings();
@@ -64,11 +87,131 @@ export default class ProjectsMemoryPlugin extends Plugin {
 	}
 
 	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		const loadedData = await this.loadData();
+
+		// Migration: convert ageBonusPerDay to rotationBonus if needed
+		if (loadedData && typeof (loadedData as any).ageBonusPerDay !== 'undefined' && typeof (loadedData as any).rotationBonus === 'undefined') {
+			(loadedData as any).rotationBonus = (loadedData as any).ageBonusPerDay;
+			delete (loadedData as any).ageBonusPerDay;
+			// Save the migrated settings
+			await this.saveData(loadedData);
+		}
+
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, loadedData);
 	}
 
 	async saveSettings() {
 		await this.saveData(this.settings);
+	}
+
+	// Load stats data from stats.json
+	async loadStatsData(): Promise<StatsData> {
+		if (this.statsData) {
+			return this.statsData;
+		}
+
+		try {
+			const statsPath = `${this.app.vault.configDir}/plugins/${this.manifest.id}/stats.json`;
+			const statsFile = this.app.vault.getAbstractFileByPath(statsPath);
+
+			if (statsFile) {
+				const content = await this.app.vault.read(statsFile as any);
+				this.statsData = JSON.parse(content);
+			} else {
+				// Initialize empty stats
+				this.statsData = {
+					projects: {},
+					globalStats: {
+						totalReviews: 0,
+						totalPomodoroTime: 0
+					}
+				};
+			}
+		} catch (error) {
+			console.error('Failed to load stats data:', error);
+			// Initialize empty stats on error
+			this.statsData = {
+				projects: {},
+				globalStats: {
+					totalReviews: 0,
+					totalPomodoroTime: 0
+				}
+			};
+		}
+
+		return this.statsData!;
+	}
+
+	// Save stats data to stats.json
+	async saveStatsData(): Promise<void> {
+		if (!this.statsData) return;
+
+		try {
+			const statsPath = `${this.app.vault.configDir}/plugins/${this.manifest.id}/stats.json`;
+			const content = JSON.stringify(this.statsData, null, 2);
+			await this.app.vault.adapter.write(statsPath, content);
+		} catch (error) {
+			console.error('Failed to save stats data:', error);
+		}
+	}
+
+	// Get or create project stats
+	async getProjectStats(filePath: string): Promise<ProjectStats> {
+		const stats = await this.loadStatsData();
+
+		if (!stats.projects[filePath]) {
+			stats.projects[filePath] = {
+				rotationBonus: 0,
+				totalReviews: 0,
+				lastReviewDate: '',
+				reviewHistory: []
+			};
+		}
+
+		return stats.projects[filePath];
+	}
+
+	// Increment rotation bonus for all projects except the excluded one
+	async incrementRotationBonus(excludedPath: string): Promise<void> {
+		const stats = await this.loadStatsData();
+		const bonusAmount = this.settings.rotationBonus;
+
+		// Add bonus to all projects except the excluded one
+		for (const filePath in stats.projects) {
+			if (filePath !== excludedPath) {
+				stats.projects[filePath].rotationBonus += bonusAmount;
+			}
+		}
+
+		// Increment global stats
+		stats.globalStats.totalReviews++;
+
+		await this.saveStatsData();
+	}
+
+	// Record a review action for a project
+	async recordReviewAction(filePath: string, action: string, scoreAfter: number): Promise<void> {
+		const stats = await this.loadStatsData();
+		const projectStats = await this.getProjectStats(filePath);
+
+		// Reset rotation bonus for the worked project
+		projectStats.rotationBonus = 0;
+		projectStats.totalReviews++;
+		projectStats.lastReviewDate = new Date().toISOString();
+
+		// Add to review history
+		projectStats.reviewHistory.push({
+			date: new Date().toISOString(),
+			action: action,
+			scoreAfter: scoreAfter
+		});
+
+		// Keep only last 100 entries to prevent file from growing too large
+		if (projectStats.reviewHistory.length > 100) {
+			projectStats.reviewHistory = projectStats.reviewHistory.slice(-100);
+		}
+
+		await this.saveStatsData();
 	}
 
 	// One-time data migration: normalise old pertinence_score values into the [1..100] range
@@ -231,15 +374,15 @@ class ProjectsMemorySettingTab extends PluginSettingTab {
 
 		// New configurable factors for scoring
 		new Setting(containerEl)
-			.setName('Age bonus per day')
-			.setDesc('Additive linear bonus added per day since last review (default: 1).')
+			.setName('Rotation Bonus')
+			.setDesc('Points de bonus ajoutés aux autres projets à chaque review (défaut: 0.1).')
 			.addText(text => {
 				text
-					.setPlaceholder('1')
-					.setValue(String(this.plugin.settings.ageBonusPerDay))
+					.setPlaceholder('0.1')
+					.setValue(String(this.plugin.settings.rotationBonus))
 					.onChange(async (value) => {
 						const n = Number(value);
-						this.plugin.settings.ageBonusPerDay = isFinite(n) ? n : 1;
+						this.plugin.settings.rotationBonus = isFinite(n) ? n : 0.1;
 						await this.plugin.saveSettings();
 					});
 			});

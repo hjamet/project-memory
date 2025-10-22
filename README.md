@@ -58,11 +58,33 @@ Review a project    # opens the review modal for the selected project
 The plugin exposes a small set of settings to tune review behavior:
 - `defaultScore` — default pertinence score for notes without frontmatter score (default: 50)
 - `archiveTag` — tag applied when marking a project as finished (default: `projet-fini`)
-- `ageBonusPerDay` — linear bonus added per day since last review (default: 1)
+- `rotationBonus` — points added to all other projects when one project is worked on (default: 0.1)
 - `rapprochementFactor` — fraction of remaining gap closed on each action (0..1, default: 0.2)
  - `recencyPenaltyWeight` — multiplier for the temporary per-session recency penalty applied to projects reviewed during the active session (default: 1.0). Set to `0` to disable the feature.
 
 Settings are persisted using Obsidian's `loadData()` / `saveData()` APIs.
+
+## Rotation Bonus System
+
+The plugin uses a rotation-based bonus system instead of time-based bonuses. When you work on a project (click any action button except "Passer"), all other projects gain bonus points equal to the `rotationBonus` setting. This ensures that neglected projects gradually become more likely to be selected for review.
+
+### Statistics Tracking
+
+The plugin maintains detailed statistics in a `stats.json` file located in the plugin directory (`.obsidian/plugins/project-memory/stats.json`). This file tracks:
+
+- **Per-project data**: rotation bonus, total reviews, last review date, and review history
+- **Global statistics**: total reviews across all projects and Pomodoro time
+- **Review history**: detailed log of all actions taken on each project (last 100 entries per project)
+
+The statistics file is automatically created and maintained by the plugin. You can safely delete it to reset all statistics, and it will be recreated with empty data on the next plugin use.
+
+### Example Statistics File
+
+The `stats.json.example` file shows the structure of the statistics data for reference. Each project entry includes:
+- `rotationBonus`: accumulated bonus points from other projects being worked on
+- `totalReviews`: number of times this project has been reviewed
+- `lastReviewDate`: ISO timestamp of the most recent review
+- `reviewHistory`: array of recent actions (limited to last 100 entries)
 
 ## Testing & release
 
