@@ -1,5 +1,6 @@
 import { App, Plugin, PluginSettingTab, Setting, AbstractInputSuggest, TFile } from 'obsidian';
 import ReviewModal from './src/ReviewModal';
+import StatsModal from './src/StatsModal';
 
 // Projects Memory plugin: settings and UI for comma-separated project tags
 
@@ -18,7 +19,6 @@ interface ProjectStats {
 	rotationBonus: number;
 	totalReviews: number;
 	lastReviewDate: string;
-	totalPomodoroMinutes: number;
 	reviewHistory: Array<{
 		date: string;
 		action: string; // "less-often" | "ok" | "more-often" | "finished"
@@ -59,12 +59,12 @@ export default class ProjectsMemoryPlugin extends Plugin {
 
 	async onload() {
 		await this.loadSettings();
+		// Load stats data at startup to ensure it's available when needed
+		await this.loadStatsData();
 		// Ensure per-session review counts are cleared on each plugin load (do not persist to disk)
 		this.sessionReviewCounts.clear();
 		// Run one-time migration to normalise existing pertinence scores into [1..100]
 		await this.migrateScores();
-		// Run one-time migration to fix stats consistency
-		await this.migrateStatsConsistency();
 
 		// Create an icon in the left ribbon that lists project files when clicked
 		const ribbonIconEl = this.addRibbonIcon('rocket', 'Review projects', (_evt: MouseEvent) => {
@@ -81,12 +81,26 @@ export default class ProjectsMemoryPlugin extends Plugin {
 			}
 		});
 
+		// Register stats visualization command
+		this.addCommand({
+			id: 'view-stats',
+			name: 'View project statistics',
+			callback: () => {
+				new StatsModal(this.app, this as any).open();
+			}
+		});
+
 		// Settings tab
 		this.addSettingTab(new ProjectsMemorySettingTab(this.app, this));
 	}
 
 	onunload() {
-
+		// Save stats data when plugin unloads
+		if (this.statsData) {
+			this.saveStatsData().catch(error => {
+				console.error('Failed to save stats data on unload:', error);
+			});
+		}
 	}
 
 	async loadSettings() {
@@ -120,6 +134,7 @@ export default class ProjectsMemoryPlugin extends Plugin {
 			if (statsFile) {
 				const content = await this.app.vault.read(statsFile as any);
 				this.statsData = JSON.parse(content);
+				console.log('Stats data loaded successfully from:', statsPath);
 			} else {
 				// Initialize empty stats
 				this.statsData = {
@@ -129,6 +144,9 @@ export default class ProjectsMemoryPlugin extends Plugin {
 						totalPomodoroTime: 0
 					}
 				};
+				console.log('No stats file found, initializing empty stats');
+				// Save the initialized empty stats to create the file
+				await this.saveStatsData();
 			}
 		} catch (error) {
 			console.error('Failed to load stats data:', error);
@@ -140,6 +158,8 @@ export default class ProjectsMemoryPlugin extends Plugin {
 					totalPomodoroTime: 0
 				}
 			};
+			// Save the initialized empty stats to create the file
+			await this.saveStatsData();
 		}
 
 		return this.statsData!;
@@ -152,7 +172,17 @@ export default class ProjectsMemoryPlugin extends Plugin {
 		try {
 			const statsPath = `${this.app.vault.configDir}/plugins/${this.manifest.id}/stats.json`;
 			const content = JSON.stringify(this.statsData, null, 2);
+
+			// Ensure the plugin directory exists before writing
+			const pluginDir = `${this.app.vault.configDir}/plugins/${this.manifest.id}`;
+			const pluginDirExists = await this.app.vault.adapter.exists(pluginDir);
+			if (!pluginDirExists) {
+				await this.app.vault.adapter.mkdir(pluginDir);
+				console.log('Created plugin directory:', pluginDir);
+			}
+
 			await this.app.vault.adapter.write(statsPath, content);
+			console.log('Stats data saved successfully to:', statsPath);
 		} catch (error) {
 			console.error('Failed to save stats data:', error);
 		}
@@ -167,7 +197,6 @@ export default class ProjectsMemoryPlugin extends Plugin {
 				rotationBonus: 0,
 				totalReviews: 0,
 				lastReviewDate: '',
-				totalPomodoroMinutes: 0,
 				reviewHistory: []
 			};
 		}
@@ -203,9 +232,8 @@ export default class ProjectsMemoryPlugin extends Plugin {
 		projectStats.totalReviews++;
 		projectStats.lastReviewDate = new Date().toISOString();
 
-		// Add Pomodoro time for any action (except skip)
-		const pomodoroDuration = this.settings.pomodoroDuration || 25; // fallback to 25 if undefined
-		projectStats.totalPomodoroMinutes += pomodoroDuration;
+		// Debug: log the increment
+		console.log(`Incrementing totalReviews for ${filePath}: ${projectStats.totalReviews} (action: ${action})`);
 
 		// Add to review history
 		projectStats.reviewHistory.push({
@@ -261,34 +289,6 @@ export default class ProjectsMemoryPlugin extends Plugin {
 		await this.saveSettings();
 	}
 
-	// One-time migration to fix stats consistency
-	async migrateStatsConsistency() {
-		if ((this.settings as any).statsMigrated) return;
-
-		const stats = await this.loadStatsData();
-		const pomodoroDuration = this.settings.pomodoroDuration || 25;
-		let needsUpdate = false;
-
-		// Fix each project's totalPomodoroMinutes to be consistent with totalReviews
-		for (const filePath in stats.projects) {
-			const project = stats.projects[filePath];
-			const expectedMinutes = project.totalReviews * pomodoroDuration;
-
-			if (project.totalPomodoroMinutes !== expectedMinutes) {
-				console.log(`Migrating stats for ${filePath}: ${project.totalPomodoroMinutes} -> ${expectedMinutes} minutes`);
-				project.totalPomodoroMinutes = expectedMinutes;
-				needsUpdate = true;
-			}
-		}
-
-		if (needsUpdate) {
-			await this.saveStatsData();
-		}
-
-		// Mark migration completed
-		(this.settings as any).statsMigrated = true;
-		await this.saveSettings();
-	}
 }
 
 // Simple debouncer utility

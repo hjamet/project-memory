@@ -12,6 +12,7 @@ diff
 
 # Plugin
 data.json
+stats.json
 # Cursor Memory Bank
 .cursor/mcp
 .cursor/mcp.json

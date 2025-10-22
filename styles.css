@@ -262,3 +262,84 @@ If your plugin does not need CSS, delete this file.
     border-radius: 4px;
     transition: width 0.2s ease-out;
 }
+
+/* Statistics Modal Styles */
+.projects-memory-stats-modal {
+    width: 90vw !important;
+    max-width: 90vw !important;
+}
+
+.projects-memory-stats-modal .modal-content {
+    max-width: 90vw;
+    max-height: 90vh;
+    width: 90vw;
+    height: 90vh;
+    overflow-y: auto;
+}
+
+.projects-memory-stats-modal h2 {
+    font-weight: 600;
+    text-align: center;
+    margin-bottom: 1.5rem;
+    color: var(--text-normal);
+}
+
+.projects-memory-stats-modal .no-data-message {
+    text-align: center;
+    color: var(--text-muted);
+    font-style: italic;
+    padding: 2rem;
+}
+
+.projects-memory-stats-modal .stats-charts-container {
+    display: flex;
+    flex-direction: column;
+    gap: 2.5rem;
+    padding: 1.5rem 0;
+}
+
+.projects-memory-stats-modal .chart-container {
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.projects-memory-stats-modal .chart-title {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin: 0 0 1rem 0;
+    color: var(--text-normal);
+    text-align: center;
+}
+
+.projects-memory-stats-modal .chart-canvas {
+    width: 100% !important;
+    height: 500px !important;
+    max-height: 500px;
+}
+
+/* Responsive adjustments for smaller screens */
+@media (max-width: 768px) {
+    .projects-memory-stats-modal {
+        width: 95vw !important;
+        max-width: 95vw !important;
+    }
+
+    .projects-memory-stats-modal .modal-content {
+        max-width: 95vw;
+        max-height: 95vh;
+        width: 95vw;
+        height: 95vh;
+        padding: 0.5rem;
+    }
+
+    .projects-memory-stats-modal .chart-canvas {
+        height: 350px !important;
+    }
+
+    .projects-memory-stats-modal .stats-charts-container {
+        gap: 1.5rem;
+    }
+}

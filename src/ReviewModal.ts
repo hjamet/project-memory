@@ -229,9 +229,14 @@ export default class ReviewModal extends Modal {
 			cls: 'pm-stat-badge pm-badge-session'
 		});
 
-		// Badge 3: Temps total (minutes Pomodoro)
+		// Badge 3: Temps total (calculé dynamiquement)
 		const projectStats = await (this.plugin as any).getProjectStats(chosen.file.path);
-		const totalMinutes = projectStats.totalPomodoroMinutes || 0;
+		const pomodoroDuration = (this.plugin as any).settings.pomodoroDuration || 25;
+		const totalMinutes = projectStats.totalReviews * pomodoroDuration;
+
+		// Debug: log the calculation
+		console.log(`Time calculation for ${chosen.file.path}: ${projectStats.totalReviews} reviews × ${pomodoroDuration} min = ${totalMinutes} min`);
+
 		const timeText = totalMinutes >= 60 ?
 			`${Math.floor(totalMinutes / 60)}h ${totalMinutes % 60}min` :
 			`${totalMinutes}min`;
@@ -239,6 +244,17 @@ export default class ReviewModal extends Modal {
 			text: timeText,
 			cls: 'pm-stat-badge pm-badge-time'
 		});
+
+		// Function to update the time badge
+		const updateTimeBadge = async () => {
+			const updatedStats = await (this.plugin as any).getProjectStats(chosen.file.path);
+			const updatedMinutes = updatedStats.totalReviews * pomodoroDuration;
+			const updatedText = updatedMinutes >= 60 ?
+				`${Math.floor(updatedMinutes / 60)}h ${updatedMinutes % 60}min` :
+				`${updatedMinutes}min`;
+			timeBadge.setText(updatedText);
+			console.log(`Updated time badge: ${updatedStats.totalReviews} reviews × ${pomodoroDuration} min = ${updatedMinutes} min`);
+		};
 
 		// If chosen candidate is new (no pertinence_score), show a "Nouveau" badge
 		if ((chosen as any).isNew) {
@@ -346,6 +362,9 @@ export default class ReviewModal extends Modal {
 				const pluginAny = this.plugin as any;
 				await pluginAny.incrementRotationBonus(chosen.file.path);
 				await pluginAny.recordReviewAction(chosen.file.path, action, newScore);
+
+				// Update the time badge after recording the action
+				await updateTimeBadge();
 			} catch (e) {
 				console.error('Failed to update stats:', e);
 			}
