@@ -103,6 +103,13 @@ The plugin provides a dedicated statistics modal accessible via the **"View proj
 
 The charts are generated using Chart.js and provide interactive features like legend toggling and hover tooltips. Data is automatically interpolated for days without activity to create smooth, continuous visualizations.
 
+**Recent improvements:**
+- Fixed scrolling issues in the statistics modal - charts now properly adapt to available space
+- Optimized chart responsiveness with better CSS flexbox layout
+- Enhanced chart interactivity with improved tooltips and hover effects
+- Reduced chart height to 300px for better space utilization
+- Charts now maintain proper aspect ratio and prevent horizontal overflow
+
 ### Example Statistics File
 
 The `stats.json.example` file shows the structure of the statistics data for reference. Each project entry includes:

@@ -89,14 +89,40 @@ export default class StatsModal extends Modal {
         return new Promise((resolve, reject) => {
             // Check if Chart.js is already loaded
             if (typeof (window as any).Chart !== 'undefined') {
+                console.log('StatsModal: Chart.js already loaded');
                 resolve();
                 return;
             }
 
+            console.log('StatsModal: Loading Chart.js from CDN...');
             const script = document.createElement('script');
-            script.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.min.js';
-            script.onload = () => resolve();
-            script.onerror = () => reject(new Error('Failed to load Chart.js'));
+            script.src = 'https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js';
+
+            script.onload = () => {
+                console.log('StatsModal: Chart.js script loaded, waiting for initialization...');
+                // Wait a bit for Chart.js to initialize on window object
+                let attempts = 0;
+                const maxAttempts = 50; // 5 seconds max
+                const checkChart = () => {
+                    attempts++;
+                    if (typeof (window as any).Chart !== 'undefined') {
+                        console.log('StatsModal: Chart.js successfully initialized on window object');
+                        resolve();
+                    } else if (attempts < maxAttempts) {
+                        setTimeout(checkChart, 100);
+                    } else {
+                        console.error('StatsModal: Chart.js failed to initialize on window object after', attempts, 'attempts');
+                        reject(new Error('Chart.js failed to initialize on window object'));
+                    }
+                };
+                checkChart();
+            };
+
+            script.onerror = () => {
+                console.error('StatsModal: Failed to load Chart.js script from CDN');
+                reject(new Error('Failed to load Chart.js from CDN'));
+            };
+
             document.head.appendChild(script);
         });
     }
@@ -356,16 +382,42 @@ export default class StatsModal extends Modal {
                 responsive: true,
                 maintainAspectRatio: false,
                 scales: {
+                    x: {
+                        display: true,
+                        grid: {
+                            display: false
+                        }
+                    },
                     y: {
                         beginAtZero: false,
                         min: 0,
-                        max: 100
+                        max: 100,
+                        grid: {
+                            color: 'rgba(0, 0, 0, 0.1)'
+                        }
                     }
                 },
                 plugins: {
                     legend: {
                         display: true,
-                        position: 'top'
+                        position: 'top',
+                        labels: {
+                            usePointStyle: true,
+                            padding: 20
+                        }
+                    },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false
+                    }
+                },
+                elements: {
+                    point: {
+                        radius: 3,
+                        hoverRadius: 6
+                    },
+                    line: {
+                        borderWidth: 2
                     }
                 }
             }
@@ -386,15 +438,41 @@ export default class StatsModal extends Modal {
                 responsive: true,
                 maintainAspectRatio: false,
                 scales: {
+                    x: {
+                        display: true,
+                        grid: {
+                            display: false
+                        }
+                    },
                     y: {
                         beginAtZero: false,
-                        min: 0
+                        min: 0,
+                        grid: {
+                            color: 'rgba(0, 0, 0, 0.1)'
+                        }
                     }
                 },
                 plugins: {
                     legend: {
                         display: true,
-                        position: 'top'
+                        position: 'top',
+                        labels: {
+                            usePointStyle: true,
+                            padding: 20
+                        }
+                    },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false
+                    }
+                },
+                elements: {
+                    point: {
+                        radius: 3,
+                        hoverRadius: 6
+                    },
+                    line: {
+                        borderWidth: 2
                     }
                 }
             }
@@ -416,17 +494,36 @@ export default class StatsModal extends Modal {
                 maintainAspectRatio: false,
                 scales: {
                     x: {
-                        stacked: true
+                        stacked: true,
+                        grid: {
+                            display: false
+                        }
                     },
                     y: {
                         stacked: true,
-                        beginAtZero: true
+                        beginAtZero: true,
+                        grid: {
+                            color: 'rgba(0, 0, 0, 0.1)'
+                        }
                     }
                 },
                 plugins: {
                     legend: {
                         display: true,
-                        position: 'top'
+                        position: 'top',
+                        labels: {
+                            usePointStyle: true,
+                            padding: 20
+                        }
+                    },
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false
+                    }
+                },
+                elements: {
+                    bar: {
+                        borderWidth: 0
                     }
                 }
             }

@@ -265,16 +265,19 @@ If your plugin does not need CSS, delete this file.
 
 /* Statistics Modal Styles */
 .projects-memory-stats-modal {
-    width: 90vw !important;
-    max-width: 90vw !important;
+    width: 95vw !important;
+    max-width: 95vw !important;
 }
 
 .projects-memory-stats-modal .modal-content {
-    max-width: 90vw;
-    max-height: 90vh;
-    width: 90vw;
-    height: 90vh;
+    max-width: 95vw;
+    max-height: 95vh;
+    width: 95vw;
+    height: 95vh;
+    padding: 0.5rem;
     overflow-y: auto;
+    display: flex;
+    flex-direction: column;
 }
 
 .projects-memory-stats-modal h2 {
@@ -282,6 +285,7 @@ If your plugin does not need CSS, delete this file.
     text-align: center;
     margin-bottom: 1.5rem;
     color: var(--text-normal);
+    flex-shrink: 0;
 }
 
 .projects-memory-stats-modal .no-data-message {
@@ -294,8 +298,11 @@ If your plugin does not need CSS, delete this file.
 .projects-memory-stats-modal .stats-charts-container {
     display: flex;
     flex-direction: column;
-    gap: 2.5rem;
-    padding: 1.5rem 0;
+    gap: 1.5rem;
+    padding: 1rem 0;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
 }
 
 .projects-memory-stats-modal .chart-container {
@@ -304,6 +311,10 @@ If your plugin does not need CSS, delete this file.
     border-radius: 8px;
     padding: 1.5rem;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    flex-shrink: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
 }
 
 .projects-memory-stats-modal .chart-title {
@@ -312,12 +323,14 @@ If your plugin does not need CSS, delete this file.
     margin: 0 0 1rem 0;
     color: var(--text-normal);
     text-align: center;
+    flex-shrink: 0;
 }
 
 .projects-memory-stats-modal .chart-canvas {
     width: 100% !important;
-    height: 500px !important;
-    max-height: 500px;
+    height: 300px !important;
+    max-height: 300px;
+    flex-shrink: 0;
 }
 
 /* Error message styling */
@@ -338,26 +351,4 @@ If your plugin does not need CSS, delete this file.
 .projects-memory-stats-modal .error-message p {
     margin: 0.5rem 0;
     line-height: 1.5;
-}
-
-.projects-memory-stats-modal {
-    width: 95vw !important;
-    max-width: 95vw !important;
-}
-
-.projects-memory-stats-modal .modal-content {
-    max-width: 95vw;
-    max-height: 95vh;
-    width: 95vw;
-    height: 95vh;
-    padding: 0.5rem;
-}
-
-.projects-memory-stats-modal .chart-canvas {
-    height: 350px !important;
-}
-
-.projects-memory-stats-modal .stats-charts-container {
-    gap: 1.5rem;
-}
 }
