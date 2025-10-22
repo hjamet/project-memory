@@ -63,6 +63,8 @@ export default class ProjectsMemoryPlugin extends Plugin {
 		this.sessionReviewCounts.clear();
 		// Run one-time migration to normalise existing pertinence scores into [1..100]
 		await this.migrateScores();
+		// Run one-time migration to fix stats consistency
+		await this.migrateStatsConsistency();
 
 		// Create an icon in the left ribbon that lists project files when clicked
 		const ribbonIconEl = this.addRibbonIcon('rocket', 'Review projects', (_evt: MouseEvent) => {
@@ -185,8 +187,8 @@ export default class ProjectsMemoryPlugin extends Plugin {
 			}
 		}
 
-		// Increment global stats
-		stats.globalStats.totalReviews++;
+		// Note: totalReviews is incremented in recordReviewAction, not here
+		// to avoid double counting
 
 		await this.saveStatsData();
 	}
@@ -202,7 +204,8 @@ export default class ProjectsMemoryPlugin extends Plugin {
 		projectStats.lastReviewDate = new Date().toISOString();
 
 		// Add Pomodoro time for any action (except skip)
-		projectStats.totalPomodoroMinutes += this.settings.pomodoroDuration;
+		const pomodoroDuration = this.settings.pomodoroDuration || 25; // fallback to 25 if undefined
+		projectStats.totalPomodoroMinutes += pomodoroDuration;
 
 		// Add to review history
 		projectStats.reviewHistory.push({
@@ -215,6 +218,9 @@ export default class ProjectsMemoryPlugin extends Plugin {
 		if (projectStats.reviewHistory.length > 100) {
 			projectStats.reviewHistory = projectStats.reviewHistory.slice(-100);
 		}
+
+		// Increment global stats
+		stats.globalStats.totalReviews++;
 
 		await this.saveStatsData();
 	}
@@ -252,6 +258,35 @@ export default class ProjectsMemoryPlugin extends Plugin {
 
 		// Mark migration completed and persist settings
 		(this.settings as any).scoresNormalised = true;
+		await this.saveSettings();
+	}
+
+	// One-time migration to fix stats consistency
+	async migrateStatsConsistency() {
+		if ((this.settings as any).statsMigrated) return;
+
+		const stats = await this.loadStatsData();
+		const pomodoroDuration = this.settings.pomodoroDuration || 25;
+		let needsUpdate = false;
+
+		// Fix each project's totalPomodoroMinutes to be consistent with totalReviews
+		for (const filePath in stats.projects) {
+			const project = stats.projects[filePath];
+			const expectedMinutes = project.totalReviews * pomodoroDuration;
+
+			if (project.totalPomodoroMinutes !== expectedMinutes) {
+				console.log(`Migrating stats for ${filePath}: ${project.totalPomodoroMinutes} -> ${expectedMinutes} minutes`);
+				project.totalPomodoroMinutes = expectedMinutes;
+				needsUpdate = true;
+			}
+		}
+
+		if (needsUpdate) {
+			await this.saveStatsData();
+		}
+
+		// Mark migration completed
+		(this.settings as any).statsMigrated = true;
 		await this.saveSettings();
 	}
 }

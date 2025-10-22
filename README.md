@@ -88,6 +88,8 @@ When reviewing a project, the plugin displays three colored badges next to the p
 
 Each action (Agréable/Calme, Sous contrôle, Urgent/Stressant, Fini) adds the configured Pomodoro duration to the project's total time. The "Passer" action does not add time.
 
+**Note**: The plugin automatically migrates existing statistics to ensure consistency between `totalReviews` and `totalPomodoroMinutes` (totalPomodoroMinutes = totalReviews × pomodoroDuration).
+
 ### Example Statistics File
 
 The `stats.json.example` file shows the structure of the statistics data for reference. Each project entry includes:
