@@ -60,11 +60,8 @@ export default class StatsModal extends Modal {
             // Process data for charts
             const chartData = this.processStatsData(statsData);
 
-            // Create chart containers
-            this.createChartContainers(chartData);
-
-            // Create projects list at the bottom
-            this.createProjectsList(statsData);
+            // Create chart containers (includes projects list at the top)
+            this.createChartContainers(chartData, statsData);
 
         } catch (error) {
             console.error('StatsModal: Error during initialization:', error);
@@ -364,7 +361,7 @@ export default class StatsModal extends Modal {
         realScoreData: ChartData;
         effectiveScoreData: ChartData;
         dailyActionsData: ChartData;
-    }): void {
+    }, statsData: any): void {
 
         // Verify Chart.js is available - Fail-Fast approach
         if (typeof (window as any).Chart === 'undefined') {
@@ -377,6 +374,9 @@ export default class StatsModal extends Modal {
 
         // Create containers for each chart
         const chartsContainer = this.contentEl.createEl('div', { cls: 'stats-charts-container' });
+
+        // Create projects list at the top of the charts container
+        this.createProjectsListInContainer(statsData, chartsContainer);
 
         // Real Score Chart
         const realScoreContainer = chartsContainer.createEl('div', { cls: 'chart-container' });
@@ -659,7 +659,7 @@ export default class StatsModal extends Modal {
             activeButton.classList.add('view-mode-btn-active');
         }
 
-        // Remove existing charts container
+        // Remove existing charts container (which includes projects list)
         const chartsContainer = this.contentEl.querySelector('.stats-charts-container');
         if (chartsContainer) {
             chartsContainer.remove();
@@ -669,7 +669,9 @@ export default class StatsModal extends Modal {
             // Reload and process data
             const statsData = await this.loadStatsData();
             const chartData = this.processStatsData(statsData);
-            this.createChartContainers(chartData);
+
+            // Create chart containers (includes projects list at the top)
+            this.createChartContainers(chartData, statsData);
         } catch (error) {
             console.error('StatsModal: Error refreshing charts:', error);
         }
@@ -751,6 +753,61 @@ export default class StatsModal extends Modal {
 
         // Create projects list container
         const projectsContainer = this.contentEl.createEl('div', { cls: 'projects-list-container' });
+
+        // Add title
+        const titleEl = projectsContainer.createEl('h3', {
+            text: 'Liste des Projets par Priorité',
+            cls: 'projects-list-title'
+        });
+
+        // Calculate time spent and priority for each project
+        const projectStats = this.calculateProjectStats(statsData);
+
+        // Sort by priority (effective score)
+        projectStats.sort((a, b) => b.effectiveScore - a.effectiveScore);
+
+        // Create projects grid
+        const projectsGrid = projectsContainer.createEl('div', { cls: 'projects-grid' });
+
+        projectStats.forEach((project, index) => {
+            const projectCard = projectsGrid.createEl('div', {
+                cls: 'project-card'
+            });
+            projectCard.setAttribute('style', `--project-color: ${project.color}; --project-index: ${index};`);
+
+            // Project name
+            const nameEl = projectCard.createEl('div', {
+                text: project.name,
+                cls: 'project-name'
+            });
+
+            // Time spent
+            const timeEl = projectCard.createEl('div', {
+                text: this.formatTimeSpent(project.timeSpent),
+                cls: 'project-time'
+            });
+
+            // Priority score
+            const scoreEl = projectCard.createEl('div', {
+                text: `Priorité: ${project.effectiveScore.toFixed(1)}`,
+                cls: 'project-priority'
+            });
+
+            // Reviews count
+            const reviewsEl = projectCard.createEl('div', {
+                text: `${project.totalReviews} reviews`,
+                cls: 'project-reviews'
+            });
+        });
+    }
+
+    private createProjectsListInContainer(statsData: any, container: HTMLElement): void {
+        if (!statsData || !statsData.projects) {
+            return;
+        }
+
+        // Create projects list container inside the charts container
+        const projectsContainer = container.createEl('div', { cls: 'projects-list-container' });
 
         // Add title
         const titleEl = projectsContainer.createEl('h3', {

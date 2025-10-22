@@ -399,9 +399,9 @@ If your plugin does not need CSS, delete this file.
 
 /* Projects List Styles */
 .projects-memory-stats-modal .projects-list-container {
-    margin-top: 2rem;
-    padding-top: 1.5rem;
-    border-top: 2px solid var(--background-modifier-border);
+    margin-bottom: 2rem;
+    padding-bottom: 1.5rem;
+    border-bottom: 2px solid var(--background-modifier-border);
     flex-shrink: 0;
 }
 
