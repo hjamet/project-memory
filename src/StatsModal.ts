@@ -37,20 +37,13 @@ export default class StatsModal extends Modal {
         titleEl.style.marginBottom = '1.5rem';
 
         try {
-            console.log('StatsModal: Starting initialization...');
-
             // Load Chart.js from CDN
-            console.log('StatsModal: Loading Chart.js...');
             await this.loadChartJS();
-            console.log('StatsModal: Chart.js loaded successfully');
 
             // Load and process stats data
-            console.log('StatsModal: Loading stats data...');
             const statsData = await this.loadStatsData();
-            console.log('StatsModal: Stats data loaded:', statsData);
 
             if (!statsData || Object.keys(statsData.projects).length === 0) {
-                console.log('StatsModal: No project data found');
                 this.contentEl.createEl('p', {
                     text: 'Aucune donnée statistique disponible. Utilisez le système de review pour générer des données.',
                     cls: 'no-data-message'
@@ -59,14 +52,10 @@ export default class StatsModal extends Modal {
             }
 
             // Process data for charts
-            console.log('StatsModal: Processing stats data...');
             const chartData = this.processStatsData(statsData);
-            console.log('StatsModal: Chart data processed:', chartData);
 
             // Create chart containers
-            console.log('StatsModal: Creating chart containers...');
             this.createChartContainers(chartData);
-            console.log('StatsModal: Charts created successfully');
 
         } catch (error) {
             console.error('StatsModal: Error during initialization:', error);
@@ -89,24 +78,19 @@ export default class StatsModal extends Modal {
         return new Promise((resolve, reject) => {
             // Check if Chart.js is already loaded
             if (typeof (window as any).Chart !== 'undefined') {
-                console.log('StatsModal: Chart.js already loaded');
                 resolve();
                 return;
             }
-
-            console.log('StatsModal: Loading Chart.js from CDN...');
             const script = document.createElement('script');
             script.src = 'https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js';
 
             script.onload = () => {
-                console.log('StatsModal: Chart.js script loaded, waiting for initialization...');
                 // Wait a bit for Chart.js to initialize on window object
                 let attempts = 0;
                 const maxAttempts = 50; // 5 seconds max
                 const checkChart = () => {
                     attempts++;
                     if (typeof (window as any).Chart !== 'undefined') {
-                        console.log('StatsModal: Chart.js successfully initialized on window object');
                         resolve();
                     } else if (attempts < maxAttempts) {
                         setTimeout(checkChart, 100);
@@ -142,8 +126,6 @@ export default class StatsModal extends Modal {
         effectiveScoreData: ChartData;
         dailyActionsData: ChartData;
     } {
-        console.log('StatsModal: Starting data processing...');
-        console.log('StatsModal: Raw stats data:', statsData);
 
         const thirtyDaysAgo = new Date();
         thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
@@ -158,11 +140,9 @@ export default class StatsModal extends Modal {
             dateLabels.push(dateStr);
             dateMap[dateStr] = 29 - i;
         }
-        console.log('StatsModal: Generated date labels:', dateLabels);
 
         // Process each project
         const projectNames = Object.keys(statsData.projects);
-        console.log('StatsModal: Found projects:', projectNames);
 
         if (projectNames.length === 0) {
             console.warn('StatsModal: No projects found in stats data');
@@ -170,7 +150,6 @@ export default class StatsModal extends Modal {
         }
 
         const colors = this.generateColors(projectNames.length);
-        console.log('StatsModal: Generated colors:', colors);
 
         // Real score data (scoreAfter from reviewHistory)
         const realScoreData: ChartData = {
@@ -191,12 +170,9 @@ export default class StatsModal extends Modal {
         };
 
         projectNames.forEach((projectPath, index) => {
-            console.log(`StatsModal: Processing project ${index + 1}/${projectNames.length}: ${projectPath}`);
             const project = statsData.projects[projectPath];
             const projectName = projectPath.replace('.md', '');
             const color = colors[index];
-
-            console.log(`StatsModal: Project ${projectName} data:`, project);
 
             // Initialize data arrays for this project
             const realScores = new Array(30).fill(null);
@@ -204,9 +180,7 @@ export default class StatsModal extends Modal {
             const dailyActions = new Array(30).fill(0);
 
             // Process review history
-            console.log(`StatsModal: Processing ${project.reviewHistory.length} reviews for ${projectName}`);
             project.reviewHistory.forEach((review: any, reviewIndex: number) => {
-                console.log(`StatsModal: Review ${reviewIndex + 1}:`, review);
                 const reviewDate = new Date(review.date).toISOString().split('T')[0];
                 const dayIndex = dateMap[reviewDate];
 
@@ -220,21 +194,12 @@ export default class StatsModal extends Modal {
                     // Daily actions count
                     dailyActions[dayIndex]++;
 
-                    console.log(`StatsModal: Added review data for day ${dayIndex} (${reviewDate}): score=${review.scoreAfter}, effective=${review.scoreAfter + project.rotationBonus}`);
-                } else {
-                    console.log(`StatsModal: Review date ${reviewDate} is outside 30-day window, skipping`);
                 }
             });
 
             // Interpolate missing values for line charts
-            console.log(`StatsModal: Interpolating missing values for ${projectName}`);
-            console.log(`StatsModal: Real scores before interpolation:`, realScores);
             this.interpolateMissingValues(realScores);
-            console.log(`StatsModal: Real scores after interpolation:`, realScores);
-
-            console.log(`StatsModal: Effective scores before interpolation:`, effectiveScores);
             this.interpolateMissingValues(effectiveScores);
-            console.log(`StatsModal: Effective scores after interpolation:`, effectiveScores);
 
             // Add datasets
             const realScoreDataset = {
@@ -246,7 +211,6 @@ export default class StatsModal extends Modal {
                 tension: 0.1
             };
             realScoreData.datasets.push(realScoreDataset);
-            console.log(`StatsModal: Added real score dataset for ${projectName}:`, realScoreDataset);
 
             const effectiveScoreDataset = {
                 label: projectName,
@@ -257,7 +221,6 @@ export default class StatsModal extends Modal {
                 tension: 0.1
             };
             effectiveScoreData.datasets.push(effectiveScoreDataset);
-            console.log(`StatsModal: Added effective score dataset for ${projectName}:`, effectiveScoreDataset);
 
             const dailyActionsDataset = {
                 label: projectName,
@@ -266,13 +229,8 @@ export default class StatsModal extends Modal {
                 backgroundColor: color + '80'
             };
             dailyActionsData.datasets.push(dailyActionsDataset);
-            console.log(`StatsModal: Added daily actions dataset for ${projectName}:`, dailyActionsDataset);
         });
 
-        console.log('StatsModal: Final processed data:');
-        console.log('StatsModal: Real score data:', realScoreData);
-        console.log('StatsModal: Effective score data:', effectiveScoreData);
-        console.log('StatsModal: Daily actions data:', dailyActionsData);
 
         // Verify datasets are not empty
         if (realScoreData.datasets.length === 0) {
@@ -353,7 +311,6 @@ export default class StatsModal extends Modal {
         effectiveScoreData: ChartData;
         dailyActionsData: ChartData;
     }): void {
-        console.log('StatsModal: Checking Chart.js availability...');
 
         // Verify Chart.js is available - Fail-Fast approach
         if (typeof (window as any).Chart === 'undefined') {
@@ -363,14 +320,11 @@ export default class StatsModal extends Modal {
         }
 
         const Chart = (window as any).Chart;
-        console.log('StatsModal: Chart.js is available, creating charts...');
 
         // Create containers for each chart
         const chartsContainer = this.contentEl.createEl('div', { cls: 'stats-charts-container' });
 
         // Real Score Chart
-        console.log('StatsModal: Creating Real Score Chart...');
-        console.log('StatsModal: Real Score Data:', chartData.realScoreData);
         const realScoreContainer = chartsContainer.createEl('div', { cls: 'chart-container' });
         realScoreContainer.createEl('h3', { text: 'Évolution du Score Réel', cls: 'chart-title' });
         const realScoreCanvas = realScoreContainer.createEl('canvas', { cls: 'chart-canvas' });
@@ -422,11 +376,8 @@ export default class StatsModal extends Modal {
                 }
             }
         }));
-        console.log('StatsModal: Real Score Chart created');
 
         // Effective Score Chart
-        console.log('StatsModal: Creating Effective Score Chart...');
-        console.log('StatsModal: Effective Score Data:', chartData.effectiveScoreData);
         const effectiveScoreContainer = chartsContainer.createEl('div', { cls: 'chart-container' });
         effectiveScoreContainer.createEl('h3', { text: 'Évolution du Score Effectif', cls: 'chart-title' });
         const effectiveScoreCanvas = effectiveScoreContainer.createEl('canvas', { cls: 'chart-canvas' });
@@ -477,11 +428,8 @@ export default class StatsModal extends Modal {
                 }
             }
         }));
-        console.log('StatsModal: Effective Score Chart created');
 
         // Daily Actions Chart
-        console.log('StatsModal: Creating Daily Actions Chart...');
-        console.log('StatsModal: Daily Actions Data:', chartData.dailyActionsData);
         const dailyActionsContainer = chartsContainer.createEl('div', { cls: 'chart-container' });
         dailyActionsContainer.createEl('h3', { text: 'Actions par Jour', cls: 'chart-title' });
         const dailyActionsCanvas = dailyActionsContainer.createEl('canvas', { cls: 'chart-canvas' });
@@ -528,7 +476,6 @@ export default class StatsModal extends Modal {
                 }
             }
         }));
-        console.log('StatsModal: Daily Actions Chart created');
     }
 
     onClose() {

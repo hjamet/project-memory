@@ -108,11 +108,9 @@ export default class ProjectsMemoryPlugin extends Plugin {
 				const pluginDirExists = this.app.vault.adapter.exists(pluginDir);
 				if (!pluginDirExists) {
 					this.app.vault.adapter.mkdir(pluginDir);
-					console.log('Created plugin directory:', pluginDir);
 				}
 
 				this.app.vault.adapter.write(statsPath, content);
-				console.log('Stats data saved successfully on unload to:', statsPath);
 			} catch (error) {
 				console.error('Failed to save stats data on unload:', error);
 			}
@@ -140,29 +138,20 @@ export default class ProjectsMemoryPlugin extends Plugin {
 	// Load stats data from stats.json
 	async loadStatsData(): Promise<StatsData> {
 		if (this.statsData) {
-			console.log('Stats data already loaded, returning cached data');
 			return this.statsData;
 		}
 
 		try {
 			// Use the correct path for plugin data directory
 			const statsPath = `.obsidian/plugins/${this.manifest.id}/stats.json`;
-			console.log('Looking for stats file at:', statsPath);
-			console.log('Config dir:', this.app.vault.configDir);
 
 			// Use adapter.exists to check if file exists
 			const fileExists = await this.app.vault.adapter.exists(statsPath);
-			console.log('File exists check result:', fileExists);
 
 			if (fileExists) {
-				console.log('Stats file found, reading content...');
 				const content = await this.app.vault.adapter.read(statsPath);
-				console.log('Raw stats content:', content);
 				this.statsData = JSON.parse(content);
-				console.log('Stats data loaded successfully from:', statsPath);
-				console.log('Loaded stats:', this.statsData);
 			} else {
-				console.log('No stats file found at:', statsPath);
 				// Initialize empty stats only if no file exists
 				this.statsData = {
 					projects: {},
@@ -171,7 +160,6 @@ export default class ProjectsMemoryPlugin extends Plugin {
 						totalPomodoroTime: 0
 					}
 				};
-				console.log('No stats file found, initializing empty stats');
 				// Save the initialized empty stats to create the file
 				await this.saveStatsData();
 			}
@@ -187,11 +175,8 @@ export default class ProjectsMemoryPlugin extends Plugin {
 						totalPomodoroTime: 0
 					}
 				};
-				console.log('Initializing empty stats due to load error');
 				// Save the initialized empty stats to create the file
 				await this.saveStatsData();
-			} else {
-				console.log('Using existing stats data despite load error');
 			}
 		}
 
@@ -212,11 +197,9 @@ export default class ProjectsMemoryPlugin extends Plugin {
 			const pluginDirExists = await this.app.vault.adapter.exists(pluginDir);
 			if (!pluginDirExists) {
 				await this.app.vault.adapter.mkdir(pluginDir);
-				console.log('Created plugin directory:', pluginDir);
 			}
 
 			await this.app.vault.adapter.write(statsPath, content);
-			console.log('Stats data saved successfully to:', statsPath);
 		} catch (error) {
 			console.error('Failed to save stats data:', error);
 		}
@@ -266,8 +249,6 @@ export default class ProjectsMemoryPlugin extends Plugin {
 		projectStats.totalReviews++;
 		projectStats.lastReviewDate = new Date().toISOString();
 
-		// Debug: log the increment
-		console.log(`Incrementing totalReviews for ${filePath}: ${projectStats.totalReviews} (action: ${action})`);
 
 		// Add to review history
 		projectStats.reviewHistory.push({

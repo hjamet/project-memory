@@ -234,8 +234,6 @@ export default class ReviewModal extends Modal {
 		const pomodoroDuration = (this.plugin as any).settings.pomodoroDuration || 25;
 		const totalMinutes = projectStats.totalReviews * pomodoroDuration;
 
-		// Debug: log the calculation
-		console.log(`Time calculation for ${chosen.file.path}: ${projectStats.totalReviews} reviews × ${pomodoroDuration} min = ${totalMinutes} min`);
 
 		const timeText = totalMinutes >= 60 ?
 			`${Math.floor(totalMinutes / 60)}h ${totalMinutes % 60}min` :
@@ -253,7 +251,6 @@ export default class ReviewModal extends Modal {
 				`${Math.floor(updatedMinutes / 60)}h ${updatedMinutes % 60}min` :
 				`${updatedMinutes}min`;
 			timeBadge.setText(updatedText);
-			console.log(`Updated time badge: ${updatedStats.totalReviews} reviews × ${pomodoroDuration} min = ${updatedMinutes} min`);
 		};
 
 		// If chosen candidate is new (no pertinence_score), show a "Nouveau" badge
@@ -371,9 +368,6 @@ export default class ReviewModal extends Modal {
 
 			// Recalculate effective score for immediate display (do not persist)
 			const recalculated = await this.calculateEffectiveScore(newScore, chosen.file.path);
-			const persistedRounded = Math.round(newScore);
-			const sessionRounded = Math.round(recalculated);
-			new Notice(`Score : ${persistedRounded} (réel) | ${sessionRounded} (session)`);
 		};
 
 		// Create buttons with classes and keep references for keyboard shortcuts
