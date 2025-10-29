@@ -60,8 +60,6 @@ export default class ProjectsMemoryPlugin extends Plugin {
 
 	async onload() {
 		await this.loadSettings();
-		// Load stats data at startup to ensure it's available when needed
-		await this.loadStatsData();
 		// Ensure per-session review counts are cleared on each plugin load (do not persist to disk)
 		this.sessionReviewCounts.clear();
 		// Run one-time migration to move scores from frontmatter to stats.json
@@ -96,26 +94,8 @@ export default class ProjectsMemoryPlugin extends Plugin {
 	}
 
 	onunload() {
-		// Save stats data when plugin unloads
-		// Use synchronous approach to ensure data is saved before plugin unloads
-		if (this.statsData) {
-			try {
-				// Force synchronous save by using the vault adapter directly
-				const statsPath = `.obsidian/plugins/${this.manifest.id}/stats.json`;
-				const content = JSON.stringify(this.statsData, null, 2);
-
-				// Ensure the plugin directory exists before writing
-				const pluginDir = `.obsidian/plugins/${this.manifest.id}`;
-				const pluginDirExists = this.app.vault.adapter.exists(pluginDir);
-				if (!pluginDirExists) {
-					this.app.vault.adapter.mkdir(pluginDir);
-				}
-
-				this.app.vault.adapter.write(statsPath, content);
-			} catch (error) {
-				console.error('Failed to save stats data on unload:', error);
-			}
-		}
+		// No-op: stats are saved after each modification (load→modify→save pattern).
+		// Keeping onunload minimal avoids overwriting freshly-synced files during shutdown.
 	}
 
 	async loadSettings() {
@@ -130,68 +110,41 @@ export default class ProjectsMemoryPlugin extends Plugin {
 
 	// Load stats data from stats.json
 	async loadStatsData(): Promise<StatsData> {
-		if (this.statsData) {
-			return this.statsData;
-		}
-
+		// Always read from disk to avoid stale in-memory cache when syncing between devices.
 		try {
-			// Use the correct path for plugin data directory
 			const statsPath = `.obsidian/plugins/${this.manifest.id}/stats.json`;
-
-			// Use adapter.exists to check if file exists
 			const fileExists = await this.app.vault.adapter.exists(statsPath);
-
 			if (fileExists) {
 				const content = await this.app.vault.adapter.read(statsPath);
-				this.statsData = JSON.parse(content);
+				const parsed: StatsData = JSON.parse(content);
+				return parsed;
 			} else {
-				// Initialize empty stats only if no file exists
-				this.statsData = {
+				const initial: StatsData = {
 					projects: {},
-					globalStats: {
-						totalReviews: 0,
-						totalPomodoroTime: 0
-					}
+					globalStats: { totalReviews: 0, totalPomodoroTime: 0 }
 				};
-				// Save the initialized empty stats to create the file
-				await this.saveStatsData();
+				// Ensure plugin dir exists then write initial file
+				const pluginDir = `.obsidian/plugins/${this.manifest.id}`;
+				const pluginDirExists = await this.app.vault.adapter.exists(pluginDir);
+				if (!pluginDirExists) await this.app.vault.adapter.mkdir(pluginDir);
+				await this.saveStatsData(initial);
+				return initial;
 			}
 		} catch (error) {
 			console.error('Failed to load stats data:', error);
-			console.error('Error details:', error);
-			// Only initialize empty stats if we don't have any data loaded
-			if (!this.statsData) {
-				this.statsData = {
-					projects: {},
-					globalStats: {
-						totalReviews: 0,
-						totalPomodoroTime: 0
-					}
-				};
-				// Save the initialized empty stats to create the file
-				await this.saveStatsData();
-			}
+			// Return an empty default to allow plugin to continue operating
+			return { projects: {}, globalStats: { totalReviews: 0, totalPomodoroTime: 0 } };
 		}
-
-		return this.statsData!;
 	}
 
 	// Save stats data to stats.json
-	async saveStatsData(): Promise<void> {
-		if (!this.statsData) return;
-
+	async saveStatsData(data: StatsData): Promise<void> {
 		try {
-			// Use the correct path for plugin data directory
 			const statsPath = `.obsidian/plugins/${this.manifest.id}/stats.json`;
-			const content = JSON.stringify(this.statsData, null, 2);
-
-			// Ensure the plugin directory exists before writing
+			const content = JSON.stringify(data, null, 2);
 			const pluginDir = `.obsidian/plugins/${this.manifest.id}`;
 			const pluginDirExists = await this.app.vault.adapter.exists(pluginDir);
-			if (!pluginDirExists) {
-				await this.app.vault.adapter.mkdir(pluginDir);
-			}
-
+			if (!pluginDirExists) await this.app.vault.adapter.mkdir(pluginDir);
 			await this.app.vault.adapter.write(statsPath, content);
 		} catch (error) {
 			console.error('Failed to save stats data:', error);
@@ -201,7 +154,6 @@ export default class ProjectsMemoryPlugin extends Plugin {
 	// Get or create project stats
 	async getProjectStats(filePath: string): Promise<ProjectStats> {
 		const stats = await this.loadStatsData();
-
 		if (!stats.projects[filePath]) {
 			stats.projects[filePath] = {
 				currentScore: this.settings.defaultScore,
@@ -210,8 +162,9 @@ export default class ProjectsMemoryPlugin extends Plugin {
 				lastReviewDate: '',
 				reviewHistory: []
 			};
+			// Persist the created entry
+			await this.saveStatsData(stats);
 		}
-
 		return stats.projects[filePath];
 	}
 
@@ -224,59 +177,68 @@ export default class ProjectsMemoryPlugin extends Plugin {
 	// Update the current score for a project
 	async updateProjectScore(filePath: string, newScore: number): Promise<void> {
 		const stats = await this.loadStatsData();
-		const projectStats = await this.getProjectStats(filePath);
+		let projectStats = stats.projects[filePath];
+		if (!projectStats) {
+			projectStats = {
+				currentScore: this.settings.defaultScore,
+				rotationBonus: 0,
+				totalReviews: 0,
+				lastReviewDate: '',
+				reviewHistory: []
+			};
+			stats.projects[filePath] = projectStats;
+		}
 
 		// Clamp score to [1, 100] range
 		projectStats.currentScore = Math.min(100, Math.max(1, newScore));
 
-		await this.saveStatsData();
+		await this.saveStatsData(stats);
 	}
 
 	// Increment rotation bonus for all projects except the excluded one
 	async incrementRotationBonus(excludedPath: string): Promise<void> {
 		const stats = await this.loadStatsData();
 		const bonusAmount = this.settings.rotationBonus;
-
-		// Add bonus to all projects except the excluded one
 		for (const filePath in stats.projects) {
 			if (filePath !== excludedPath) {
-				stats.projects[filePath].rotationBonus += bonusAmount;
+				stats.projects[filePath].rotationBonus = (stats.projects[filePath].rotationBonus || 0) + bonusAmount;
 			}
 		}
-
-		// Note: totalReviews is incremented in recordReviewAction, not here
-		// to avoid double counting
-
-		await this.saveStatsData();
+		await this.saveStatsData(stats);
 	}
 
 	// Record a review action for a project
 	async recordReviewAction(filePath: string, action: string, scoreAfter: number): Promise<void> {
 		const stats = await this.loadStatsData();
-		const projectStats = await this.getProjectStats(filePath);
+		let projectStats = stats.projects[filePath];
+		if (!projectStats) {
+			projectStats = {
+				currentScore: this.settings.defaultScore,
+				rotationBonus: 0,
+				totalReviews: 0,
+				lastReviewDate: '',
+				reviewHistory: []
+			};
+			stats.projects[filePath] = projectStats;
+		}
 
-		// Reset rotation bonus for the worked project
 		projectStats.rotationBonus = 0;
 		projectStats.totalReviews++;
 		projectStats.lastReviewDate = new Date().toISOString();
 
-
-		// Add to review history
 		projectStats.reviewHistory.push({
 			date: new Date().toISOString(),
 			action: action,
 			scoreAfter: scoreAfter
 		});
 
-		// Keep only last 100 entries to prevent file from growing too large
 		if (projectStats.reviewHistory.length > 100) {
 			projectStats.reviewHistory = projectStats.reviewHistory.slice(-100);
 		}
 
-		// Increment global stats
 		stats.globalStats.totalReviews++;
 
-		await this.saveStatsData();
+		await this.saveStatsData(stats);
 	}
 
 	// One-time migration: move scores from frontmatter to stats.json
@@ -291,7 +253,6 @@ export default class ProjectsMemoryPlugin extends Plugin {
 			.map((t: string) => (t.startsWith('#') ? t : `#${t}`));
 
 		if (tagsArray.length === 0) {
-			// No project tags configured, mark migration as complete
 			this.settings.scoresMigratedToStats = true;
 			await this.saveSettings();
 			return;
@@ -300,32 +261,28 @@ export default class ProjectsMemoryPlugin extends Plugin {
 		const mdFiles = this.app.vault.getMarkdownFiles();
 		let migratedCount = 0;
 
+		const stats = await this.loadStatsData();
+
 		for (const file of mdFiles) {
 			const cache = this.app.metadataCache.getFileCache(file);
 			if (!cache) continue;
 
-			// Use unified tag extraction API to include frontmatter and body tags
 			const allTags = this.app.metadataCache.getFileCache(file)?.tags?.map(t => t.tag) || [];
 			const hasProjectTag = allTags.some((t: string) => tagsArray.includes(t));
 			if (!hasProjectTag) continue;
 
-			// Check if project already has stats
-			const stats = await this.loadStatsData();
 			if (stats.projects[file.path]) continue;
 
-			// Read frontmatter score if it exists
 			const fm = (cache as any).frontmatter ?? {};
 			let initialScore = this.settings.defaultScore;
 
 			if (typeof fm.pertinence_score !== 'undefined') {
 				const frontmatterScore = Number(fm.pertinence_score);
 				if (isFinite(frontmatterScore)) {
-					// Clamp to [1, 100] range
 					initialScore = Math.min(100, Math.max(1, frontmatterScore));
 				}
 			}
 
-			// Initialize project stats with the score
 			stats.projects[file.path] = {
 				currentScore: initialScore,
 				rotationBonus: 0,
@@ -337,8 +294,7 @@ export default class ProjectsMemoryPlugin extends Plugin {
 			migratedCount++;
 		}
 
-		// Save stats and mark migration as complete
-		await this.saveStatsData();
+		await this.saveStatsData(stats);
 		this.settings.scoresMigratedToStats = true;
 		await this.saveSettings();
 

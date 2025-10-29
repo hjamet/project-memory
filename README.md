@@ -81,7 +81,20 @@ The plugin maintains detailed statistics in a `stats.json` file located in the p
 
 **Important**: The plugin now stores all pertinence scores exclusively in `stats.json`. Existing `pertinence_score` values in frontmatter are preserved for reference but are no longer used by the plugin. New projects automatically receive the `defaultScore` value.
 
+
 The statistics file is automatically created and maintained by the plugin. You can safely delete it to reset all statistics, and it will be recreated with empty data on the next plugin use. On first run after installation, the plugin automatically migrates existing `pertinence_score` values from frontmatter to `stats.json`.
+
+#### Sync & data freshness (important)
+
+To avoid race conditions when using Obsidian Sync or other file-sync tools, the plugin now reads `stats.json` from disk on every access (load → modify → save) instead of keeping a long-lived in-memory cache. This reduces the risk that an out-of-date file (loaded before sync completes) will be written back and overwrite newer data from another device.
+
+Notes and recommendations:
+
+- **No startup cache**: the plugin no longer relies on a cached `stats.json` loaded at startup; reads are performed when needed and writes follow immediately after modifications.
+- **Avoid editing `stats.json` manually while sync is in progress**: if you manually edit the file on one device, wait for sync to complete before using the plugin on another device to avoid transient conflicts.
+- **If you suspect conflicts**: check the file modification times and the Obsidian Sync status. In case of conflict, prefer the most recent file or use your sync tool's conflict resolution UI.
+
+The change reduces accidental overwrites across devices but does not eliminate sync-level conflicts—use your sync provider's conflict resolution when needed.
 
 ### Project Statistics Display
 
