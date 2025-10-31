@@ -37,7 +37,8 @@ main.ts              # Plugin entry: lifecycle & command registration
 manifest.json        # Plugin manifest (id, name, version, minAppVersion)
 styles.css           # Optional plugin styles scoped to the modal
 esbuild.config.mjs   # Build configuration
-stats.json           # Statistics data (auto-generated, ignored by Git)
+data.json            # Plugin data blob (settings + stats, auto-generated)
+stats.json.example   # Reference structure for the statistics payload
 README.md            # This file
 ```
 
@@ -73,34 +74,33 @@ The plugin uses a rotation-based bonus system instead of time-based bonuses. Whe
 
 ### Statistics Tracking
 
-The plugin maintains detailed statistics in a `stats.json` file located in the plugin directory (`.obsidian/plugins/project-memory/stats.json`). This file is automatically ignored by Git (see `.gitignore`) as it contains user-specific data. The file tracks:
+The plugin now persists all statistics inside the Obsidian-managed plugin data blob (`data.json`) through the `saveData()` / `loadData()` APIs. Settings and statistics share this file: settings live at the root level, while the statistics payload is stored under the `stats` key.
 
 - **Per-project data**: current pertinence score, rotation bonus, total reviews, last review date, total Pomodoro time, and review history
-- **Global statistics**: total reviews across all projects and Pomodoro time
-- **Review history**: detailed log of all actions taken on each project (last 100 entries per project)
+- **Global statistics**: total reviews across all projects and aggregated Pomodoro time
+- **Review history**: detailed log of actions taken on each project (last 100 entries per project)
 
-**Important**: The plugin now stores all pertinence scores exclusively in `stats.json`. Existing `pertinence_score` values in frontmatter are preserved for reference but are no longer used by the plugin. New projects automatically receive the `defaultScore` value.
+`stats.json.example` documents the persisted structure and can be used for reference without touching the live data file.
 
-
-The statistics file is automatically created and maintained by the plugin. You can safely delete it to reset all statistics, and it will be recreated with empty data on the next plugin use. On first run after installation, the plugin automatically migrates existing `pertinence_score` values from frontmatter to `stats.json`.
+The data blob is created and maintained automatically. Deleting `data.json` resets all statistics; the plugin recreates an empty payload on the next launch. Existing `pertinence_score` values in frontmatter are still migrated into the statistics payload on first run.
 
 #### Sync & data freshness (important)
 
-To avoid race conditions when using Obsidian Sync or other file-sync tools, the plugin now reads `stats.json` from disk on every access (load → modify → save) instead of keeping a long-lived in-memory cache. This reduces the risk that an out-of-date file (loaded before sync completes) will be written back and overwrite newer data from another device.
+Because the plugin relies entirely on Obsidian's persistence layer, statistics now sync automatically across devices (as long as **Plugin data** is enabled in Obsidian Sync). Each modification follows a load → modify → save cycle to ensure the latest synced snapshot is used before writing.
 
 Notes and recommendations:
 
-- **No startup cache**: the plugin no longer relies on a cached `stats.json` loaded at startup; reads are performed when needed and writes follow immediately after modifications.
-- **Avoid editing `stats.json` manually while sync is in progress**: if you manually edit the file on one device, wait for sync to complete before using the plugin on another device to avoid transient conflicts.
-- **If you suspect conflicts**: check the file modification times and the Obsidian Sync status. In case of conflict, prefer the most recent file or use your sync tool's conflict resolution UI.
+- **One-time migration**: upgrading from previous versions automatically imports the legacy `.obsidian/plugins/project-memory/stats.json` file and removes it after a successful transfer.
+- **Do not edit `data.json` while sync is pending**: wait for Sync to finish before making manual changes, just like any other vault file.
+- **Need a schema reference?** Open `stats.json.example` instead of the live data file.
 
-The change reduces accidental overwrites across devices but does not eliminate sync-level conflicts—use your sync provider's conflict resolution when needed.
+This change removes the cross-device race condition caused by the standalone `stats.json` file and keeps the statistics aligned on every device.
 
 ### Project Statistics Display
 
 When reviewing a project, the plugin displays three colored badges next to the project title:
 
-1. **Urgency Score Badge**: Shows the current pertinence score from stats.json with dynamic color (green → yellow → red based on urgency level)
+1. **Urgency Score Badge**: Shows the current pertinence score from the statistics payload (`data.json` → `stats` entry) with dynamic color (green → yellow → red based on urgency level)
 2. **Session Score Badge**: Shows the current effective score including rotation bonus and recency penalty (purple badge)
 3. **Total Time Badge**: Shows accumulated Pomodoro time spent on the project across all sessions (amber badge)
 
@@ -161,8 +161,8 @@ This filter helps focus on the most important projects when you have many projec
 
 ### Example Statistics File
 
-The `stats.json.example` file shows the structure of the statistics data for reference. Each project entry includes:
-- `currentScore`: the current pertinence score stored in stats.json
+The `stats.json.example` file shows the structure of the statistics payload that is stored under the `stats` key in `data.json`. Each project entry includes:
+- `currentScore`: the current pertinence score tracked for the project
 - `rotationBonus`: accumulated bonus points from other projects being worked on
 - `totalReviews`: number of times this project has been reviewed
 - `lastReviewDate`: ISO timestamp of the most recent review
@@ -175,14 +175,14 @@ The `stats.json.example` file shows the structure of the statistics data for ref
 If the total time badge shows 0 minutes after restarting Obsidian, ensure that:
 
 1. The plugin loads statistics data at startup (fixed in recent versions)
-2. The `stats.json` file exists in the plugin directory
+2. The plugin data blob (`.obsidian/plugins/project-memory/data.json`) contains a `stats` entry
 3. Check the browser console for any error messages during plugin initialization
 
 **Recent fixes:**
-- The plugin now automatically loads statistics data during the `onload()` phase
-- The plugin directory is created automatically if it doesn't exist
-- Statistics are saved synchronously when the plugin unloads to prevent data loss
-- Empty statistics are saved immediately to create the initial `stats.json` file
+- Statistics now load during the `onload()` phase before any review command runs
+- Settings and statistics share the Obsidian-managed `data.json` file, removing custom file handling
+- Empty statistics payloads are persisted immediately to seed the `stats` key
+- Legacy `stats.json` data is migrated into `data.json` automatically during upgrade
 - Fixed critical bug where statistics were being reset on plugin restart due to asynchronous save operations
 
 ## Testing & release
