@@ -6,6 +6,19 @@ Quand l'utilisateur tape `/task` avec une description de tâche, tu dois créer 
 
 **INTERDICTION ABSOLUE**: Tu ne dois JAMAIS commencer à implémenter ou planifier l'implémentation de la tâche nouvellement créée. La planification/implémentation appartiennent exclusivement à `/agent` après discussion avec l'utilisateur.
 
+**CRITIQUE - CE QUE TU NE DOIS ABSOLUMENT PAS FAIRE** :
+- ❌ Implémenter la modification demandée par l'utilisateur
+- ❌ Planifier l'implémentation de cette modification
+- ❌ Réfléchir à la solution technique pour cette modification
+- ❌ Commencer quoi que ce soit lié à la modification demandée
+- ❌ Modifier le code en rapport avec la tâche créée
+- ❌ Proposer des solutions ou des approches d'implémentation
+- ❌ Examiner les fichiers qui seraient modifiés pour cette tâche
+
+**CE QUE TU DOIS UNIQUEMENT FAIRE** :
+- ✅ Créer la tâche dans la roadmap avec le contexte nécessaire
+- ✅ Reprendre immédiatement ton travail précédent comme si rien ne s'était passé
+
 ## Principe Fondamental
 
 **CRITIQUE** : Cette commande est une **interruption non-bloquante**. Tu ne dois **JAMAIS** :
@@ -13,13 +26,39 @@ Quand l'utilisateur tape `/task` avec une description de tâche, tu dois créer 
 - Démarrer l'implémentation de la nouvelle tâche
 - Changer de contexte ou de focus
 - Abandonner tes todos en cours
+- **Effectuer la modification demandée par l'utilisateur** (l'utilisateur demande une modification, mais tu ne dois QUE créer une tâche, PAS l'implémenter)
+- **Réfléchir à comment implémenter la modification** (cela appartient à l'agent qui traitera la tâche via `/agent`)
+- **Modifier le code en rapport avec la modification demandée** (même si tu as des idées, tu ne dois rien changer)
 
 Tu dois simplement **enregistrer la tâche** pour qu'un autre agent (via `/agent`) puisse la traiter plus tard, puis **reprendre immédiatement** ton travail précédent.
 
+**IMPORTANT** : Quand l'utilisateur dit `/task optimiser les performances`, il demande que cette optimisation soit faite, mais toi tu ne dois QUE créer une tâche dans la roadmap. L'implémentation de l'optimisation sera faite plus tard par un autre agent (via `/agent`).
+
 ### Interdictions absolues (rappel)
-- Ne pas créer de plan de transition pour cette nouvelle tâche
-- Ne pas modifier, refactorer ou amorcer un correctif relatif à la nouvelle tâche
-- Ne pas changer de contexte, d'onglet ou de fichier hors de ton travail en cours
+
+**CRITIQUE - Rappel explicite de ce qui est INTERDIT** :
+
+- ❌ Ne PAS créer de plan de transition pour cette nouvelle tâche
+- ❌ Ne PAS modifier, refactorer ou amorcer un correctif relatif à la nouvelle tâche
+- ❌ Ne PAS changer de contexte, d'onglet ou de fichier hors de ton travail en cours
+- ❌ Ne PAS implémenter la modification demandée par l'utilisateur (même si elle semble simple)
+- ❌ Ne PAS planifier comment implémenter cette modification
+- ❌ Ne PAS réfléchir à la solution technique
+- ❌ Ne PAS examiner les fichiers qui seraient modifiés pour cette tâche
+- ❌ Ne PAS proposer des solutions ou des approches
+- ❌ Ne PAS modifier le code en rapport avec la modification demandée
+
+**EXEMPLE CONCRET** : Si l'utilisateur tape `/task améliorer la validation des emails`, tu dois :
+- ✅ Créer la tâche "Améliorer la validation des emails" dans la roadmap
+- ✅ Mentionner les fichiers de ton travail actuel dans "Fichiers Concernés"
+- ✅ Confirmer : "✅ Tâche ajoutée (task-X)"
+- ✅ Reprendre ton travail précédent
+
+Tu ne dois PAS :
+- ❌ Aller voir le code de validation des emails
+- ❌ Réfléchir à comment améliorer la validation
+- ❌ Commencer à modifier le code de validation
+- ❌ Proposer une solution technique
 
 ## Priorité et Temporalité
 
@@ -38,24 +77,50 @@ Tu dois simplement **enregistrer la tâche** pour qu'un autre agent (via `/agent
 
 Lorsque l'utilisateur tape `/task [description de la tâche]`, tu dois :
 
-### Étape 1 : Analyser la Demande
+### Étape 1 : Analyser la Demande et Préparer les Métadonnées
 
 1. **Extraire la description** de la tâche fournie par l'utilisateur
 2. **Identifier le contexte** de ton travail actuel pour comprendre pourquoi cette tâche est mentionnée
 3. **Déterminer les métadonnées** :
    - Titre descriptif et actionnable
    - **IMPORTANT** : Vérifier que le titre est unique dans la roadmap pour éviter les collisions de noms de fichiers
-   - Priorité (1-5, 3 par défaut)
-   - Dépendances éventuelles (si le travail actuel doit être terminé d'abord)
+  - **Description courte** : Générer une description de 3 phrases maximum qui résume l'objectif de la tâche. Cette description sera utilisée pour l'analyse automatique des dépendances avec les autres tâches
+  - Dépendances éventuelles (si le travail actuel doit être terminé d'abord)
 
-### Étape 2 : Générer le Nom de Fichier
+### Étape 2 : Lire la Roadmap et Générer l'ID
+
+1. **Lire** `.cursor/agents/roadmap.yaml` pour obtenir toutes les tâches existantes
+2. **Générer un ID unique** : Identifier le plus grand ID existant et incrémenter (ex: `task-1`, `task-2`, etc.)
+
+### Étape 3 : Analyser les Dépendances Bidirectionnelles
+
+**CRITIQUE** : Cette étape utilise les données lues à l'Étape 2.
+
+1. **Pour chaque tâche existante** :
+   - Lire son champ `description` (court résumé de 3 phrases max)
+   - Comparer avec la description de la nouvelle tâche
+   - Analyser les relations logiques :
+     - **Tâches dont la nouvelle tâche dépend** : Tâches qui fournissent une infrastructure/base nécessaire, qui résolvent un problème bloquant, qui créent des fichiers/modules requis, ou qui établissent des conventions/patterns à suivre
+     - **Tâches qui dépendent de la nouvelle tâche** : Tâches qui nécessitent ce que la nouvelle tâche va produire, qui sont bloquées par un problème que la nouvelle tâche résout, ou qui étendent/utilisent ce que la nouvelle tâche va créer
+2. **Construire deux listes** :
+   - `dependencies_new_task` : IDs des tâches dont la nouvelle tâche dépend
+   - `dependencies_existing_tasks` : Liste des IDs des tâches existantes qui doivent dépendre de la nouvelle tâche
+
+**Points importants** :
+- Ne PAS lire les fichiers de tâches complets, utiliser uniquement le champ `description` de roadmap.yaml
+- L'analyse doit être contextuelle et intelligente, pas exhaustive
+- Si aucune dépendance n'est détectée, les listes restent vides (c'est normal)
+- Ne PAS encore modifier roadmap.yaml à cette étape (ce sera fait à l'Étape 6)
+- En cas d'erreur lors de l'analyse, **ÉCHOUER EXPLICITEMENT** avec message clair, mais reprendre le travail après avoir informé l'utilisateur
+
+### Étape 4 : Générer le Nom de Fichier
 
 1. Convertir le titre en format kebab-case
 2. **IMPORTANT** : Vérifier que le titre est unique dans la roadmap pour éviter les collisions
 3. Nom du fichier de tâche : `{titre-kebab-case}.md`
 4. Nom du fichier de résultat : `rapport-{titre-kebab-case}.md`
 
-### Étape 3 : Créer le Fichier de Tâche
+### Étape 5 : Créer le Fichier de Tâche
 
 Créer le fichier `.cursor/agents/{nom-fichier-tache}.md` avec les 4 sections obligatoires :
 
@@ -90,30 +155,44 @@ Instructions impératives pour l'agent qui traitera cette tâche (via `/agent`) 
 - DOIT discuter avec l'utilisateur avant implémentation
 - DOIT écrire le rapport final dans le fichier output
 
-### Étape 4 : Ajouter à la Roadmap
+### Étape 6 : Ajouter à la Roadmap
 
-1. **Lire** `.cursor/agents/roadmap.yaml`
-2. **Générer un ID unique** : Identifier le plus grand ID existant et incrémenter (ex: `task-1`, `task-2`, etc.)
-3. **Ajouter l'entrée** dans la liste `tasks` :
+1. **Déterminer la position d'insertion** :
+   - Analyser les dépendances de la nouvelle tâche (liste `dependencies_new_task` de l'Étape 3)
+   - Si la nouvelle tâche a des dépendances :
+     - Parcourir le tableau `tasks` existant
+     - Identifier la position la plus basse (plus loin dans le tableau) de toutes les tâches dont elle dépend
+     - Insérer la nouvelle tâche juste après cette position (respectant ainsi l'ordre : les dépendances sont toujours avant la tâche qui en dépend)
+   - Si la nouvelle tâche n'a pas de dépendances :
+     - Insérer la nouvelle tâche au début du tableau `tasks` (première position)
+   - **Principe** : La position dans le tableau définit l'ordre de traitement. La première tâche est la plus urgente, la dernière est la moins urgente.
+
+2. **Ajouter l'entrée** dans la liste `tasks` à la position déterminée :
 
 ```yaml
 - id: "task-{unique-id}"
   title: "Titre descriptif de la tâche"
-  priority: 3  # 1-5, ajuster selon l'importance
-  dependencies: []  # Liste d'IDs de tâches ou []
+  description: "Description courte de l'objectif de la tâche (3 phrases max)"  # Utilisé pour l'analyse de dépendances
+  state: "todo"  # "todo" ou "in-progress" (toujours "todo" pour les nouvelles tâches)
+  dependencies: []  # Liste d'IDs de tâches détectées lors de l'Étape 3
+  dependencies-results: []  # Liste de noms de fichiers de rapports de dépendances terminées (format: liste de strings avec noms de fichiers uniquement, ex: ["rapport-tache-1.md"])
   task_file: "{nom-fichier-tache}.md"
   output_file: "rapport-{nom-fichier-tache}.md"
   deadline: null  # Optionnel
 ```
 
+3. **Mettre à jour les dépendances bidirectionnelles** :
+   - Remplir le champ `dependencies` de la nouvelle tâche avec `dependencies_new_task` de l'Étape 3
+   - Pour chaque tâche existante dans `dependencies_existing_tasks` de l'Étape 3, ajouter l'ID de la nouvelle tâche à son champ `dependencies`
+
 4. **Valider** :
    - Le fichier `task_file` existe (que tu viens de créer)
-   - Les dépendances mentionnées existent dans la roadmap (si spécifiées)
+   - Les dépendances mentionnées existent dans la roadmap
    - Si validation échoue → **ÉCHOUER EXPLICITEMENT** avec message clair
 
 5. **Sauvegarder** le fichier `roadmap.yaml`
 
-### Étape 5 : Confirmation et Reprise
+### Étape 7 : Confirmation et Reprise
 
 **CRITIQUE** : Après avoir créé la tâche, tu dois :
 
@@ -126,6 +205,12 @@ Instructions impératives pour l'agent qui traitera cette tâche (via `/agent`) 
    - Continuer tes todos en cours
    - Reprendre exactement là où tu t'étais arrêté
    - Ne pas mentionner la nouvelle tâche (elle est déléguée à un autre agent)
+   - **NE PAS** commencer à implémenter la modification demandée
+   - **NE PAS** réfléchir à la solution technique
+   - **NE PAS** examiner les fichiers concernés par la modification
+   - **NE PAS** proposer d'approches ou de solutions
+
+**RAPPEL FORT** : L'utilisateur a demandé une modification via `/task`, mais cette modification sera implémentée PLUS TARD par un autre agent (via `/agent`). Toi, tu as UNIQUEMENT créé la tâche dans la roadmap. Tu ne dois rien faire d'autre concernant cette modification.
 
 ## Format de Réponse Minimal
 
@@ -150,10 +235,22 @@ Si une étape échoue :
 
 **Actions** :
 1. ✅ Analyser : "Optimiser les performances d'authentification" est une tâche future
-2. ✅ Créer le fichier `optimiser-performances-auth.md` avec les 4 sections (vérifier l'unicité du titre)
-3. ✅ Ajouter l'entrée dans `roadmap.yaml` avec ID `task-1`
-4. ✅ Confirmer : "✅ Tâche ajoutée (task-1)"
-5. ✅ Reprendre immédiatement l'implémentation de l'authentification
+   - Titre : "Optimiser les performances d'authentification"
+   - Description : "Améliorer le temps de réponse du système d'authentification en optimisant les requêtes de base de données et en implémentant un cache pour les tokens JWT"
+2. ✅ Lire roadmap.yaml et générer l'ID unique (task-1)
+3. ✅ Analyser les dépendances bidirectionnelles avec les tâches existantes
+4. ✅ Générer les noms de fichiers : `optimiser-performances-auth.md` et `rapport-optimiser-performances-auth.md`
+5. ✅ Créer le fichier `optimiser-performances-auth.md` avec les 4 sections
+6. ✅ Déterminer la position d'insertion et ajouter l'entrée dans `roadmap.yaml` avec les dépendances détectées
+7. ✅ Confirmer : "✅ Tâche ajoutée (task-1)"
+8. ✅ Reprendre immédiatement l'implémentation de l'authentification
+
+**Ce que tu NE dois PAS faire** :
+- ❌ Commencer à optimiser les performances maintenant
+- ❌ Réfléchir à comment implémenter le cache
+- ❌ Examiner le code d'authentification pour voir où optimiser
+- ❌ Proposer des solutions d'optimisation
+- ❌ Modifier quoi que ce soit lié aux performances
 
 **Résultat** : La tâche est créée, un autre agent peut la traiter via `/agent`, et tu continues ton travail actuel sans interruption.
 
@@ -185,6 +282,9 @@ L'utilisateur tape `/agent /task optimiser les performances` :
 - **Pas d'interruption** : Cette commande ne doit jamais interrompre le flux de travail
 - **Délégation** : La tâche est créée pour être traitée par un autre agent (via `/agent`)
 - **Jamais d'implémentation immédiate** : Aucune action d'implémentation ni de planification ne doit suivre la création de la tâche
+- **Ne jamais effectuer la modification demandée** : L'utilisateur demande une modification, mais tu ne dois QUE créer une tâche, PAS l'implémenter. L'implémentation sera faite plus tard par un autre agent.
+- **Ne jamais planifier l'implémentation** : Même si tu sais comment faire, tu ne dois pas planifier. La planification appartient à l'agent qui traitera la tâche via `/agent`.
+- **Ne jamais modifier le code** : Même si la modification semble simple, tu ne dois rien changer. Crée juste la tâche.
 - **Contexte préservé** : Les fichiers de ton travail actuel sont mentionnés dans la section "Fichiers Concernés"
 - **Format cohérent** : Suivre exactement le même format que les autres fichiers de tâches
 - **Français** : Tout le contenu doit être en français

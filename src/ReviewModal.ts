@@ -183,8 +183,37 @@ export default class ReviewModal extends Modal {
 			return;
 		}
 
-		// Determine chosen file: pick highest effectiveScore
-		const chosen = candidates.reduce((prev, cur) => cur.effectiveScore > prev.effectiveScore ? cur : prev, candidates[0]);
+		// Separate candidates into new projects (totalReviews === 0) and existing projects
+		const newProjects: { file: import('obsidian').TFile; effectiveScore: number; baseScore: number }[] = [];
+		const existingProjects: { file: import('obsidian').TFile; effectiveScore: number; baseScore: number }[] = [];
+
+		for (const candidate of candidates) {
+			try {
+				const pluginAny = this.plugin as any;
+				const projectStats = await pluginAny.getProjectStats(candidate.file.path);
+				if (projectStats.totalReviews === 0) {
+					newProjects.push(candidate);
+				} else {
+					existingProjects.push(candidate);
+				}
+			} catch (e) {
+				// If we can't get stats, treat as existing project
+				existingProjects.push(candidate);
+			}
+		}
+
+		// Determine chosen file: prioritize new projects, sorted alphabetically
+		// If no new projects, pick from existing projects by highest effectiveScore
+		let chosen: { file: import('obsidian').TFile; effectiveScore: number; baseScore: number };
+		if (newProjects.length > 0) {
+			// Sort new projects alphabetically by file basename
+			newProjects.sort((a, b) => a.file.basename.localeCompare(b.file.basename));
+			chosen = newProjects[0];
+		} else {
+			// Sort existing projects by effectiveScore descending
+			existingProjects.sort((a, b) => b.effectiveScore - a.effectiveScore);
+			chosen = existingProjects[0];
+		}
 		// Open the chosen file in the currently active editor pane (do not create a new leaf)
 		try {
 			const leaf = this.app.workspace.getLeaf(false);
@@ -211,6 +240,17 @@ export default class ReviewModal extends Modal {
 
 		const titleEl = this.contentEl.createEl('h2', { text: chosen.file.basename });
 
+		// Get project stats early to check if it's a new project
+		const projectStats = await (this.plugin as any).getProjectStats(chosen.file.path);
+		
+		// Add "Nouveau" badge if this is a new project (totalReviews === 0)
+		if (projectStats.totalReviews === 0) {
+			const newBadge = this.contentEl.createEl('span', {
+				text: 'Nouveau',
+				cls: 'pm-new-indicator'
+			});
+		}
+
 		// Create badges container
 		const badgesContainer = this.contentEl.createEl('div', { cls: 'pm-badges-container' });
 
@@ -230,7 +270,6 @@ export default class ReviewModal extends Modal {
 		});
 
 		// Badge 3: Temps total (calculé dynamiquement)
-		const projectStats = await (this.plugin as any).getProjectStats(chosen.file.path);
 		const pomodoroDuration = (this.plugin as any).settings.pomodoroDuration || 25;
 		const totalMinutes = projectStats.totalReviews * pomodoroDuration;
 
@@ -343,12 +382,30 @@ export default class ReviewModal extends Modal {
 
 		// Helper to update scores in stats.json
 		const updateScore = async (newScore: number, action: string) => {
+			// Get project stats to check if this is the first review
+			let isFirstReview = false;
+			try {
+				const pluginAny = this.plugin as any;
+				const currentProjectStats = await pluginAny.getProjectStats(chosen.file.path);
+				isFirstReview = currentProjectStats.totalReviews === 0;
+			} catch (e) {
+				// If we can't get stats, assume it's not the first review
+				console.error('Failed to get project stats:', e);
+			}
+
 			// Update score in stats.json
 			try {
 				const pluginAny = this.plugin as any;
 				await pluginAny.updateProjectScore(chosen.file.path, newScore);
 			} catch (e) {
 				console.error('Failed to update project score:', e);
+				return;
+			}
+
+			// If this is the first review, only update the score, don't record statistics
+			if (isFirstReview) {
+				// Recalculate effective score for immediate display (do not persist)
+				const recalculated = await this.calculateEffectiveScore(newScore, chosen.file.path);
 				return;
 			}
 
@@ -449,13 +506,26 @@ export default class ReviewModal extends Modal {
 				console.error('Failed to update session review counts', e);
 			}
 
-			// Record the action in stats and increment rotation bonus for other projects
+			// Check if this is the first review
+			let isFirstReview = false;
 			try {
 				const pluginAny = this.plugin as any;
-				await pluginAny.incrementRotationBonus(chosen.file.path);
-				await pluginAny.recordReviewAction(chosen.file.path, 'finished', 0);
+				const currentProjectStats = await pluginAny.getProjectStats(chosen.file.path);
+				isFirstReview = currentProjectStats.totalReviews === 0;
 			} catch (e) {
-				console.error('Failed to update stats:', e);
+				console.error('Failed to get project stats:', e);
+			}
+
+			// Record the action in stats and increment rotation bonus for other projects
+			// Skip statistics for first review (only fix the score, don't record stats)
+			if (!isFirstReview) {
+				try {
+					const pluginAny = this.plugin as any;
+					await pluginAny.incrementRotationBonus(chosen.file.path);
+					await pluginAny.recordReviewAction(chosen.file.path, 'finished', 0);
+				} catch (e) {
+					console.error('Failed to update stats:', e);
+				}
 			}
 
 			// Remove project tags from frontmatter.tags and add archiveTag

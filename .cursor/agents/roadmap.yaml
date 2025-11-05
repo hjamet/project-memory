@@ -1,0 +1,12 @@
+version: "1.0"
+tasks:
+  - id: "task-1"
+    title: "Prioriser les nouveaux projets avec badge orange 'Nouveau'"
+    description: "Modifier le système de sélection des projets dans la modale de revue pour présenter les nouveaux projets (totalReviews === 0) en premier et ajouter un badge orange 'Nouveau' pour les identifier visuellement"
+    state: "in-progress"
+    dependencies: []
+    dependencies-results: []
+    task_file: "prioriser-nouveaux-projets-avec-badge.md"
+    output_file: "rapport-prioriser-nouveaux-projets-avec-badge.md"
+    deadline: null
+
