@@ -9,4 +9,13 @@ tasks:
     task_file: "prioriser-nouveaux-projets-avec-badge.md"
     output_file: "rapport-prioriser-nouveaux-projets-avec-badge.md"
     deadline: null
+  - id: "task-2"
+    title: "Corriger le bug où les nouveaux projets restent indéfiniment"
+    description: "Corriger le comportement où les nouveaux projets (totalReviews === 0) restent sélectionnés indéfiniment lors des reviews car le premier clic sur un bouton d'action ne comptabilise pas les statistiques. Au premier clic, le projet doit cesser d'être considéré comme nouveau."
+    state: "in-progress"
+    dependencies: []
+    dependencies-results: []
+    task_file: "corriger-bug-nouveaux-projets-reste-indefiniment.md"
+    output_file: "rapport-corriger-bug-nouveaux-projets-reste-indefiniment.md"
+    deadline: null
 

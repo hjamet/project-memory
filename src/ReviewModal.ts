@@ -402,8 +402,22 @@ export default class ReviewModal extends Modal {
 				return;
 			}
 
-			// If this is the first review, only update the score, don't record statistics
+			// If this is the first review, only update the score and mark as reviewed (increment totalReviews to 1)
+			// but don't record statistics (no history, no rotation bonus)
 			if (isFirstReview) {
+				// Increment totalReviews to 1 so the project is no longer considered "new"
+				// This ensures the project won't be selected again as a new project in future reviews
+				try {
+					const pluginAny = this.plugin as any;
+					const stats = await pluginAny.loadStatsData();
+					const projectStats = stats.projects[chosen.file.path];
+					if (projectStats) {
+						projectStats.totalReviews = 1;
+						await pluginAny.saveStatsData(stats);
+					}
+				} catch (e) {
+					console.error('Failed to mark project as reviewed:', e);
+				}
 				// Recalculate effective score for immediate display (do not persist)
 				const recalculated = await this.calculateEffectiveScore(newScore, chosen.file.path);
 				return;
@@ -516,9 +530,22 @@ export default class ReviewModal extends Modal {
 				console.error('Failed to get project stats:', e);
 			}
 
-			// Record the action in stats and increment rotation bonus for other projects
-			// Skip statistics for first review (only fix the score, don't record stats)
-			if (!isFirstReview) {
+			// If this is the first review, mark as reviewed (increment totalReviews to 1)
+			// but don't record statistics (no history, no rotation bonus)
+			if (isFirstReview) {
+				try {
+					const pluginAny = this.plugin as any;
+					const stats = await pluginAny.loadStatsData();
+					const projectStats = stats.projects[chosen.file.path];
+					if (projectStats) {
+						projectStats.totalReviews = 1;
+						await pluginAny.saveStatsData(stats);
+					}
+				} catch (e) {
+					console.error('Failed to mark project as reviewed:', e);
+				}
+			} else {
+				// Record the action in stats and increment rotation bonus for other projects
 				try {
 					const pluginAny = this.plugin as any;
 					await pluginAny.incrementRotationBonus(chosen.file.path);
