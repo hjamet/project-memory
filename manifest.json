@@ -1,7 +1,7 @@
 {
   "id": "project-memory",
   "name": "Projects Memory",
-  "version": "2.3.1",
+  "version": "2.4.0",
   "minAppVersion": "0.15.0",
   "description": "Adaptive review modal for project notes: suggests projects to review, updates frontmatter scores, and provides quick review actions.",
   "author": "Obsidian",
