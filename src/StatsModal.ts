@@ -24,6 +24,8 @@ interface DailyActions {
 export default class StatsModal extends Modal {
     plugin: Plugin;
     chartInstances: any[] = [];
+    private deadlines: { [path: string]: string } = {};
+
     private currentViewMode: ViewMode = 'month';
     private currentProjectFilter: ProjectCountFilter = 'top10';
 
@@ -50,6 +52,17 @@ export default class StatsModal extends Modal {
         try {
             // Load Chart.js from CDN
             await this.loadChartJS();
+
+            // Load deadlines
+            this.deadlines = {};
+            this.plugin.app.vault.getMarkdownFiles().forEach(file => {
+                const cache = this.plugin.app.metadataCache.getFileCache(file);
+                const fm = (cache as any)?.frontmatter;
+                const deadlineProp = (this.plugin as any).settings.deadlineProperty || 'deadline';
+                if (fm && fm[deadlineProp]) {
+                    this.deadlines[file.path] = fm[deadlineProp];
+                }
+            });
 
             // Load and process stats data
             const statsData = await this.loadStatsData();
@@ -213,10 +226,11 @@ export default class StatsModal extends Modal {
         }
 
         // Sort projects by currentScore (priority score) in descending order
+        // Use effective score for sorting if possible, or just current score + current bonus
         const sortedProjects = allProjectNames
             .map(projectPath => ({
                 path: projectPath,
-                score: statsData.projects[projectPath].currentScore
+                score: statsData.projects[projectPath].currentScore + statsData.projects[projectPath].rotationBonus
             }))
             .sort((a, b) => b.score - a.score);
 
@@ -237,13 +251,13 @@ export default class StatsModal extends Modal {
 
         const colors = this.generateColors(projectNames.length);
 
-        // Real score data (scoreAfter from reviewHistory)
+        // Real score data
         const realScoreData: ChartData = {
             labels: dateLabels,
             datasets: []
         };
 
-        // Effective score data (scoreAfter + rotationBonus)
+        // Effective score data
         const effectiveScoreData: ChartData = {
             labels: dateLabels,
             datasets: []
@@ -255,55 +269,164 @@ export default class StatsModal extends Modal {
             datasets: []
         };
 
+        // --- REPLAY LOGIC START ---
+
+        // 1. Gather all events
+        interface ReviewEvent {
+            date: Date;
+            projectPath: string;
+            scoreAfter: number;
+        }
+        const allEvents: ReviewEvent[] = [];
+        Object.keys(statsData.projects).forEach(path => {
+            const proj = statsData.projects[path];
+            proj.reviewHistory.forEach((r: any) => {
+                allEvents.push({
+                    date: new Date(r.date),
+                    projectPath: path,
+                    scoreAfter: r.scoreAfter
+                });
+            });
+        });
+        allEvents.sort((a, b) => a.date.getTime() - b.date.getTime());
+
+        // 2. Setup replay state
+        const projectStates: { [path: string]: { currentScore: number, bonusSnapshot: number } } = {};
+        Object.keys(statsData.projects).forEach(p => {
+            projectStates[p] = {
+                currentScore: (this.plugin as any).settings.defaultScore || 50,
+                bonusSnapshot: 0
+            };
+        });
+        let globalRotationAccumulator = 0;
+        const rotationBonusAmount = (this.plugin as any).settings.rotationBonus || 0.1;
+
+        // 3. Prepare datasets maps
+        const realScoreMap: { [path: string]: (number | null)[] } = {};
+        const effectiveScoreMap: { [path: string]: (number | null)[] } = {};
+        const dailyActionsMap: { [path: string]: number[] } = {};
+
+        projectNames.forEach(p => {
+            const len = dateLabels.length;
+            realScoreMap[p] = new Array(len).fill(null);
+            effectiveScoreMap[p] = new Array(len).fill(null);
+            dailyActionsMap[p] = new Array(len).fill(0);
+        });
+
+        // 4. Generate Time Steps (matching dateLabels)
+        // We need the end of each bucket to snapshot state
+        const timeSteps: Date[] = [];
+        const now = new Date();
+
+        if (this.currentViewMode === 'day') {
+            for (let i = 23; i >= 0; i--) {
+                const d = new Date();
+                d.setHours(d.getHours() - i);
+                d.setMinutes(59, 59, 999); // End of the hour
+                timeSteps.push(d);
+            }
+        } else if (this.currentViewMode === 'week') {
+            for (let i = 6; i >= 0; i--) {
+                const d = new Date();
+                d.setDate(d.getDate() - i);
+                d.setHours(23, 59, 59, 999);
+                timeSteps.push(d);
+            }
+        } else { // month
+            for (let i = 29; i >= 0; i--) {
+                const d = new Date();
+                d.setDate(d.getDate() - i);
+                d.setHours(23, 59, 59, 999);
+                timeSteps.push(d);
+            }
+        }
+
+        // 5. Replay
+        let currentEventIdx = 0;
+
+        timeSteps.forEach((stepDate, timeIndex) => {
+            // Apply all events up to this stepDate
+            while (currentEventIdx < allEvents.length && allEvents[currentEventIdx].date <= stepDate) {
+                const event = allEvents[currentEventIdx];
+
+                // Update state
+                if (!projectStates[event.projectPath]) {
+                    projectStates[event.projectPath] = {
+                        currentScore: (this.plugin as any).settings.defaultScore || 50,
+                        bonusSnapshot: globalRotationAccumulator
+                    };
+                }
+
+                projectStates[event.projectPath].currentScore = event.scoreAfter;
+                projectStates[event.projectPath].bonusSnapshot = globalRotationAccumulator;
+
+                // Logic: "stats.projects[filePath].rotationBonus = ... + bonusAmount;" for all except current
+                // In relative model: Score = Base + (Global - Snapshot).
+                // If we increase Global, everyone's bonus increases. 
+                // Since this project just reset snapshot to Global, its bonus is 0.
+                globalRotationAccumulator += rotationBonusAmount;
+
+                // Count actions for dailyActions graph
+                if (projectNames.includes(event.projectPath)) {
+                    // Find which bucket this event belongs to
+                    let bucketIndex = -1;
+                    if (this.currentViewMode === 'day') {
+                        // Match hour
+                        const h = event.date.getHours().toString().padStart(2, '0') + ':00';
+                        if (dateMap[h] !== undefined) bucketIndex = dateMap[h];
+                    } else {
+                        // Match date
+                        const d = event.date.toISOString().split('T')[0];
+                        if (dateMap[d] !== undefined) bucketIndex = dateMap[d];
+                    }
+
+                    if (bucketIndex !== -1 && dailyActionsMap[event.projectPath]) {
+                        dailyActionsMap[event.projectPath][bucketIndex]++;
+                    }
+                }
+
+                currentEventIdx++;
+            }
+
+            // Snapshot scores
+            projectNames.forEach(path => {
+                const state = projectStates[path];
+
+                // Calculate Rotation Bonus
+                // Careful: if the project was never initialized (no events ever), 
+                // it should perhaps start with bonus 0?
+                // In my logic, I init them with `bonusSnapshot: 0`.
+                // If `globalRotationAccumulator` has grown to 100, then `100 - 0 = 100` bonus. 
+                // This implies existing projects accumulate bonus even before first review? 
+                // Yes, that's how the plugin works (incrementRotationBonus iterates all projects).
+
+                const rotationBonus = globalRotationAccumulator - state.bonusSnapshot;
+
+                // Calculate Deadline Bonus
+                const deadline = this.deadlines[path];
+                const deadlineBonus = this.calculateDeadlineBonus(state.currentScore, stepDate, deadline);
+
+                const effective = state.currentScore + rotationBonus + deadlineBonus;
+
+                effectiveScoreMap[path][timeIndex] = effective;
+                realScoreMap[path][timeIndex] = state.currentScore;
+            });
+        });
+
+        // --- REPLAY LOGIC END ---
+
         projectNames.forEach((projectPath, index) => {
-            const project = statsData.projects[projectPath];
-            const projectName = projectPath.replace('.md', '');
+            const projectName = projectPath.split('/').pop()?.replace('.md', '') || projectPath;
             const color = colors[index];
 
-            // Initialize data arrays for this project
-            const arrayLength = dateLabels.length;
-            const realScores = new Array(arrayLength).fill(null);
-            const effectiveScores = new Array(arrayLength).fill(null);
-            const dailyActions = new Array(arrayLength).fill(0);
-
-            // Process review history
-            project.reviewHistory.forEach((review: any, reviewIndex: number) => {
-                const reviewDate = new Date(review.date);
-                let timeKey: string;
-                let timeIndex: number;
-
-                if (this.currentViewMode === 'day') {
-                    // For day mode, use hour as key
-                    const hour = reviewDate.getHours();
-                    timeKey = hour.toString().padStart(2, '0') + ':00';
-                    timeIndex = dateMap[timeKey];
-                } else {
-                    // For month/week modes, use date as key
-                    timeKey = reviewDate.toISOString().split('T')[0];
-                    timeIndex = dateMap[timeKey];
-                }
-
-                if (timeIndex !== undefined) {
-                    // Real score
-                    realScores[timeIndex] = review.scoreAfter;
-
-                    // Effective score (scoreAfter + current rotationBonus)
-                    effectiveScores[timeIndex] = review.scoreAfter + project.rotationBonus;
-
-                    // Daily actions count
-                    dailyActions[timeIndex]++;
-
-                }
-            });
-
-            // Interpolate missing values for line charts
-            this.interpolateMissingValues(realScores);
-            this.interpolateMissingValues(effectiveScores);
+            const realScores = realScoreMap[projectPath];
+            const effectiveScores = effectiveScoreMap[projectPath];
+            const dailyActions = dailyActionsMap[projectPath];
 
             // Add datasets
             const realScoreDataset = {
                 label: projectName,
-                data: realScores,
+                data: realScores as number[],
                 borderColor: color,
                 backgroundColor: color + '20',
                 fill: false,
@@ -313,7 +436,7 @@ export default class StatsModal extends Modal {
 
             const effectiveScoreDataset = {
                 label: projectName,
-                data: effectiveScores,
+                data: effectiveScores as number[],
                 borderColor: color,
                 backgroundColor: color + '20',
                 fill: false,
@@ -790,7 +913,7 @@ export default class StatsModal extends Modal {
 
         projectNames.forEach((projectPath, index) => {
             const project = statsData.projects[projectPath];
-            const projectName = projectPath.replace('.md', '');
+            const projectName = projectPath.split('/').pop()?.replace('.md', '') || projectPath;
             const color = colors[index];
 
             const points: { x: string; y: string }[] = [];
@@ -833,7 +956,7 @@ export default class StatsModal extends Modal {
             return [];
         }
 
-        return Object.keys(statsData.projects).map(path => path.replace('.md', ''));
+        return Object.keys(statsData.projects).map(path => path.split('/').pop()?.replace('.md', '') || path);
     }
 
     private createProjectsList(statsData: any): void {
@@ -974,7 +1097,7 @@ export default class StatsModal extends Modal {
 
         return projectNames.map((projectPath, index) => {
             const project = statsData.projects[projectPath];
-            const projectName = projectPath.replace('.md', '');
+            const projectName = projectPath.split('/').pop()?.replace('.md', '') || projectPath;
             const color = colors[index];
 
             // Calculate time spent based on reviews (assuming 25 minutes per review)
@@ -1006,5 +1129,31 @@ export default class StatsModal extends Modal {
             const remainingHours = Math.floor((minutes % 1440) / 60);
             return remainingHours > 0 ? `${days}j ${remainingHours}h` : `${days}j`;
         }
+    }
+
+    private calculateDeadlineBonus(baseScore: number, currentDate: Date, deadlineStr?: string): number {
+        if (!deadlineStr) return 0;
+
+        const deadlineDate = new Date(deadlineStr);
+        if (isNaN(deadlineDate.getTime())) return 0;
+
+        // Reset time parts for day diff calculation
+        const today = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate());
+        const deadlineDay = new Date(deadlineDate.getFullYear(), deadlineDate.getMonth(), deadlineDate.getDate());
+
+        const diffTime = deadlineDay.getTime() - today.getTime();
+        const daysRemaining = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+        let factor = 1.0;
+        if (daysRemaining > 0) {
+            factor = Math.exp(-0.1 * daysRemaining);
+        }
+        // If daysRemaining <= 0, factor is 1.0 (max urgency)
+
+        const gap = 100 - baseScore;
+        if (gap > 0) {
+            return gap * factor;
+        }
+        return 0;
     }
 }
