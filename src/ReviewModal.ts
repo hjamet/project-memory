@@ -110,7 +110,7 @@ export default class ReviewModal extends Modal {
 				}
 				// If deadline is today or past, factor stays 1.0 (max urgency)
 
-				const gap = 100 - baseScore;
+				const gap = 100 - effectiveScore;
 				if (gap > 0) {
 					effectiveScore += gap * factor;
 				}
