@@ -242,7 +242,7 @@ export default class ReviewModal extends Modal {
 
 		// Get project stats early to check if it's a new project
 		const projectStats = await (this.plugin as any).getProjectStats(chosen.file.path);
-		
+
 		// Add "Nouveau" badge if this is a new project (totalReviews === 0)
 		if (projectStats.totalReviews === 0) {
 			const newBadge = this.contentEl.createEl('span', {
