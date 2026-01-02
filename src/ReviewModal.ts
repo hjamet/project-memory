@@ -79,9 +79,7 @@ export default class ReviewModal extends Modal {
 	}
 
 	// Calculate the effective score for display/selection purposes.
-	// Replicates the logic used in onOpen's candidate loop so it can be
-	// re-invoked elsewhere (e.g. for up-to-date notifications).
-	private async calculateEffectiveScore(baseScore: number, filePath: string): Promise<number> {
+	private async calculateEffectiveScore(baseScore: number, filePath: string, deadline?: string): Promise<number> {
 		let effectiveScore = baseScore;
 
 		// Add rotation bonus from stats
@@ -91,6 +89,32 @@ export default class ReviewModal extends Modal {
 			effectiveScore += projectStats.rotationBonus;
 		} catch (e) {
 			// If plugin doesn't expose expected fields, ignore and proceed with base effectiveScore
+		}
+
+		// Apply deadline bonus (gap-based)
+		// Bonus = (100 - baseScore) * exp(-0.1 * daysRemaining)
+		if (deadline) {
+			const deadlineDate = new Date(deadline);
+			if (!isNaN(deadlineDate.getTime())) {
+				const now = new Date();
+				// Reset time part to ensure clean day calculation
+				const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+				const deadlineDay = new Date(deadlineDate.getFullYear(), deadlineDate.getMonth(), deadlineDate.getDate());
+
+				const diffTime = deadlineDay.getTime() - today.getTime();
+				const daysRemaining = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+				let factor = 1.0;
+				if (daysRemaining > 0) {
+					factor = Math.exp(-0.1 * daysRemaining);
+				}
+				// If deadline is today or past, factor stays 1.0 (max urgency)
+
+				const gap = 100 - baseScore;
+				if (gap > 0) {
+					effectiveScore += gap * factor;
+				}
+			}
 		}
 
 		// Apply temporary per-session recency penalty if configured
@@ -141,7 +165,7 @@ export default class ReviewModal extends Modal {
 		const mdFiles = this.app.vault.getMarkdownFiles();
 
 		// Collect candidate project files
-		const candidates: { file: import('obsidian').TFile; effectiveScore: number; baseScore: number }[] = [];
+		const candidates: { file: import('obsidian').TFile; effectiveScore: number; baseScore: number, deadline?: string }[] = [];
 		for (const file of mdFiles) {
 			// Skip files temporarily ignored for this session
 			try {
@@ -172,9 +196,22 @@ export default class ReviewModal extends Modal {
 				baseScore = Number((this.plugin as any).settings.defaultScore ?? 50);
 			}
 
+			// Get deadline from frontmatter (if any)
+			let deadline: string | undefined;
+			try {
+				const pluginAny = this.plugin as any;
+				const deadlineProp = pluginAny.settings.deadlineProperty || 'deadline';
+				const fm = (cache as any).frontmatter;
+				if (fm && fm[deadlineProp]) {
+					deadline = String(fm[deadlineProp]);
+				}
+			} catch (e) {
+				// ignore invalid deadline
+			}
+
 			// calculate effective score using extracted helper to keep logic consistent
-			const effectiveScore = await this.calculateEffectiveScore(baseScore, file.path);
-			candidates.push({ file, effectiveScore, baseScore });
+			const effectiveScore = await this.calculateEffectiveScore(baseScore, file.path, deadline);
+			candidates.push({ file, effectiveScore, baseScore, deadline });
 		}
 
 		if (candidates.length === 0) {
@@ -184,8 +221,8 @@ export default class ReviewModal extends Modal {
 		}
 
 		// Separate candidates into new projects (totalReviews === 0) and existing projects
-		const newProjects: { file: import('obsidian').TFile; effectiveScore: number; baseScore: number }[] = [];
-		const existingProjects: { file: import('obsidian').TFile; effectiveScore: number; baseScore: number }[] = [];
+		const newProjects: { file: import('obsidian').TFile; effectiveScore: number; baseScore: number, deadline?: string }[] = [];
+		const existingProjects: { file: import('obsidian').TFile; effectiveScore: number; baseScore: number, deadline?: string }[] = [];
 
 		for (const candidate of candidates) {
 			try {
@@ -204,7 +241,7 @@ export default class ReviewModal extends Modal {
 
 		// Determine chosen file: prioritize new projects, sorted alphabetically
 		// If no new projects, pick from existing projects by highest effectiveScore
-		let chosen: { file: import('obsidian').TFile; effectiveScore: number; baseScore: number };
+		let chosen: { file: import('obsidian').TFile; effectiveScore: number; baseScore: number, deadline?: string };
 		if (newProjects.length > 0) {
 			// Sort new projects alphabetically by file basename
 			newProjects.sort((a, b) => a.file.basename.localeCompare(b.file.basename));
@@ -419,7 +456,7 @@ export default class ReviewModal extends Modal {
 					console.error('Failed to mark project as reviewed:', e);
 				}
 				// Recalculate effective score for immediate display (do not persist)
-				const recalculated = await this.calculateEffectiveScore(newScore, chosen.file.path);
+				const recalculated = await this.calculateEffectiveScore(newScore, chosen.file.path, chosen.deadline);
 				return;
 			}
 
@@ -436,7 +473,7 @@ export default class ReviewModal extends Modal {
 			}
 
 			// Recalculate effective score for immediate display (do not persist)
-			const recalculated = await this.calculateEffectiveScore(newScore, chosen.file.path);
+			const recalculated = await this.calculateEffectiveScore(newScore, chosen.file.path, chosen.deadline);
 		};
 
 		// Create buttons with classes and keep references for keyboard shortcuts

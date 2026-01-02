@@ -14,6 +14,7 @@ interface ProjectsMemorySettings {
 	scoresMigratedToStats: boolean; // migration flag for statistics payload migration
 	pomodoroDuration: number; // duration in minutes for Pomodoro
 	statsStoredInData: boolean; // migration flag indicating stats are persisted via saveData
+	deadlineProperty: string; // frontmatter property key for deadline (default: 'deadline')
 }
 
 interface ProjectStats {
@@ -59,7 +60,8 @@ const DEFAULT_SETTINGS: ProjectsMemorySettings = {
 	recencyPenaltyWeight: 0.5,
 	scoresMigratedToStats: false,
 	pomodoroDuration: 25,
-	statsStoredInData: false
+	statsStoredInData: false,
+	deadlineProperty: 'deadline'
 }
 
 export default class ProjectsMemoryPlugin extends Plugin {
@@ -521,6 +523,20 @@ class ProjectsMemorySettingTab extends PluginSettingTab {
 						// Use same validation approach as rapprochmentFactor: accept finite >= 0, otherwise fallback to default
 						const n = Number(value);
 						this.plugin.settings.recencyPenaltyWeight = isFinite(n) && n >= 0 ? n : 0.5;
+						await this.plugin.saveSettings();
+					});
+			});
+
+		// Deadline property configuration
+		new Setting(containerEl)
+			.setName('Deadline property')
+			.setDesc('Frontmatter property used to determine the project deadline (default: deadline).')
+			.addText(text => {
+				text
+					.setPlaceholder('deadline')
+					.setValue(this.plugin.settings.deadlineProperty)
+					.onChange(async (value) => {
+						this.plugin.settings.deadlineProperty = value || 'deadline';
 						await this.plugin.saveSettings();
 					});
 			});
