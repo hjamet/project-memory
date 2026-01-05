@@ -60,7 +60,7 @@ View project statistics # opens the statistics visualization modal
 ## Settings
 
 The plugin exposes a small set of settings to tune review behavior:
-- `defaultScore` — default pertinence score for new projects (default: 50)
+- `defaultScore` — default pertinence score for new projects (default: 100)
 - `archiveTag` — tag applied when marking a project as finished (default: `projet-fini`)
 - `rotationBonus` — points added to all other projects when one project is worked on (default: 0.1)
 - `rapprochementFactor` — fraction of remaining gap closed on each action (0..1, default: 0.2)

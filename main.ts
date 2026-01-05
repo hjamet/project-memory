@@ -53,7 +53,7 @@ function createEmptyStatsData(): StatsData {
 
 const DEFAULT_SETTINGS: ProjectsMemorySettings = {
 	projectTags: 'projet',
-	defaultScore: 50,
+	defaultScore: 100,
 	archiveTag: 'projet-fini',
 	rotationBonus: 0.1,
 	rapprochmentFactor: 0.2,
@@ -537,6 +537,21 @@ class ProjectsMemorySettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.deadlineProperty)
 					.onChange(async (value) => {
 						this.plugin.settings.deadlineProperty = value || 'deadline';
+						await this.plugin.saveSettings();
+					});
+			});
+
+		// Default Score configuration
+		new Setting(containerEl)
+			.setName('Default Score')
+			.setDesc('Score initial pour les nouveaux projets (min: 1, max: 100, défaut: 100).')
+			.addText(text => {
+				text
+					.setPlaceholder('100')
+					.setValue(String(this.plugin.settings.defaultScore))
+					.onChange(async (value) => {
+						const n = Number(value);
+						this.plugin.settings.defaultScore = isFinite(n) ? Math.min(100, Math.max(1, n)) : 100;
 						await this.plugin.saveSettings();
 					});
 			});
