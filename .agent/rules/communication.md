@@ -7,8 +7,8 @@ description: "Règle de communication — réponses claires, structurées et agr
 # Communication Protocol
 
 ## Language Rules 🇫🇷/🇬🇧
-1. **Chat & Artifacts**: ALWAYS in **French**. (User interaction, task lists, walkthroughs, Implementation Plan etc.).
-2. **Code & Documentation**: ALWAYS in **English**. (Variable names, comments, commit messages, in-code docs).
+1. **Chat & Artifacts**: IMMÉDIATEMENT et OBLIGATOIREMENT en **Français**. C'est une règle absolue. (User interaction, task lists, walkthroughs, Implementation Plan, brainstorming.md etc.).
+2. **Code & Documentation Technique (in-code)**: ALWAYS in **English**. (Variable names, comments, commit messages).
 
 ## Style
 - **Concise**: Short sentences, bullet points.
