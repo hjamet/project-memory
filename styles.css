@@ -215,6 +215,40 @@ If your plugin does not need CSS, delete this file.
     vertical-align: middle;
 }
 
+/* Statistics badges container */
+.projects-memory-review-modal .pm-badges-container {
+    display: flex;
+    justify-content: center;
+    gap: 0.5rem;
+    margin: 0.75rem 0 1rem 0;
+    flex-wrap: wrap;
+}
+
+/* Base badge style */
+.projects-memory-review-modal .pm-stat-badge {
+    display: inline-block;
+    color: white;
+    padding: 0.2rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    vertical-align: middle;
+    text-align: center;
+    min-width: 3rem;
+}
+
+/* Session badge (blue/violet) */
+.projects-memory-review-modal .pm-badge-session {
+    background-color: #6c5ce7;
+    /* purple-blue */
+}
+
+/* Time badge (orange/amber) */
+.projects-memory-review-modal .pm-badge-time {
+    background-color: #f39c12;
+    /* amber */
+}
+
 /* Progress bar styling: use calming blue and smooth transitions */
 .projects-memory-review-modal h2 {
     font-weight: 600;
@@ -227,4 +261,286 @@ If your plugin does not need CSS, delete this file.
     background: #3b82f6 !important;
     border-radius: 4px;
     transition: width 0.2s ease-out;
+}
+
+/* Statistics Modal Styles */
+.projects-memory-stats-modal {
+    width: 95vw !important;
+    max-width: 95vw !important;
+}
+
+.projects-memory-stats-modal .modal-content {
+    max-width: 95vw;
+    max-height: 95vh;
+    width: 95vw;
+    height: 95vh;
+    padding: 0.5rem;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+}
+
+.projects-memory-stats-modal h2 {
+    font-weight: 600;
+    text-align: center;
+    margin-bottom: 1.5rem;
+    color: var(--text-normal);
+    flex-shrink: 0;
+}
+
+.projects-memory-stats-modal .no-data-message {
+    text-align: center;
+    color: var(--text-muted);
+    font-style: italic;
+    padding: 2rem;
+}
+
+.projects-memory-stats-modal .stats-charts-container {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+    padding: 1rem 0;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.projects-memory-stats-modal .chart-container {
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    flex-shrink: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+    overflow: hidden;
+}
+
+.projects-memory-stats-modal .chart-title {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin: 0 0 1rem 0;
+    color: var(--text-normal);
+    text-align: center;
+    flex-shrink: 0;
+}
+
+.projects-memory-stats-modal .chart-canvas {
+    width: 100% !important;
+    max-width: 100% !important;
+    height: 300px !important;
+    max-height: 300px;
+    flex-shrink: 0;
+    box-sizing: border-box;
+}
+
+/* Error message styling */
+.projects-memory-stats-modal .error-message {
+    text-align: center;
+    padding: 2rem;
+    background: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    margin: 1rem 0;
+}
+
+.projects-memory-stats-modal .error-message h3 {
+    margin-top: 0;
+    margin-bottom: 1rem;
+}
+
+.projects-memory-stats-modal .error-message p {
+    margin: 0.5rem 0;
+    line-height: 1.5;
+}
+
+/* View Mode Selector Styles */
+.projects-memory-stats-modal .stats-view-selector {
+    display: flex;
+    justify-content: center;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    padding: 0.5rem;
+}
+
+.projects-memory-stats-modal .view-mode-btn {
+    padding: 0.5rem 1rem;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    background-color: var(--background-secondary);
+    color: var(--text-normal);
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    font-size: 0.9rem;
+}
+
+.projects-memory-stats-modal .view-mode-btn:hover {
+    background-color: var(--background-modifier-hover);
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.projects-memory-stats-modal .view-mode-btn-active {
+    background-color: var(--interactive-accent);
+    color: var(--text-on-accent);
+    border-color: var(--interactive-accent);
+    font-weight: 600;
+}
+
+.projects-memory-stats-modal .view-mode-btn-active:hover {
+    background-color: var(--interactive-accent-hover);
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+}
+
+/* Project Count Selector Styles */
+.projects-memory-stats-modal .stats-project-count-selector {
+    display: flex;
+    justify-content: center;
+    gap: 0.5rem;
+    margin-bottom: 1.5rem;
+    padding: 0.5rem;
+}
+
+.projects-memory-stats-modal .project-count-btn {
+    padding: 0.5rem 1rem;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    background-color: var(--background-secondary);
+    color: var(--text-normal);
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    font-size: 0.9rem;
+}
+
+.projects-memory-stats-modal .project-count-btn:hover {
+    background-color: var(--background-modifier-hover);
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.projects-memory-stats-modal .project-count-btn-active {
+    background-color: var(--interactive-accent);
+    color: var(--text-on-accent);
+    border-color: var(--interactive-accent);
+    font-weight: 600;
+}
+
+.projects-memory-stats-modal .project-count-btn-active:hover {
+    background-color: var(--interactive-accent-hover);
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+}
+
+/* Projects List Styles */
+.projects-memory-stats-modal .projects-list-container {
+    margin-bottom: 2rem;
+    padding-bottom: 1.5rem;
+    border-bottom: 2px solid var(--background-modifier-border);
+    flex-shrink: 0;
+}
+
+.projects-memory-stats-modal .projects-list-title {
+    font-size: 1.2rem;
+    font-weight: 600;
+    text-align: center;
+    margin: 0 0 1.5rem 0;
+    color: var(--text-normal);
+}
+
+.projects-memory-stats-modal .projects-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1rem;
+    padding: 0 0.5rem;
+}
+
+.projects-memory-stats-modal .project-card {
+    background: linear-gradient(135deg, var(--project-color, #3b82f6)15, rgba(255, 255, 255, 0.1));
+    border: 2px solid var(--project-color, #3b82f6);
+    border-radius: 12px;
+    padding: 1.25rem;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    position: relative;
+    overflow: hidden;
+}
+
+.projects-memory-stats-modal .project-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 4px;
+    background: var(--project-color, #3b82f6);
+    opacity: 0.8;
+}
+
+.projects-memory-stats-modal .project-card:hover {
+    transform: translateY(-4px) scale(1.02);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+    border-color: var(--project-color, #3b82f6);
+}
+
+.projects-memory-stats-modal .project-name {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--text-normal);
+    margin-bottom: 0.75rem;
+    text-align: center;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+.projects-memory-stats-modal .project-time {
+    font-size: 1.3rem;
+    font-weight: 600;
+    color: var(--project-color, #3b82f6);
+    text-align: center;
+    margin-bottom: 0.5rem;
+    background: rgba(255, 255, 255, 0.1);
+    padding: 0.5rem;
+    border-radius: 8px;
+    backdrop-filter: blur(10px);
+}
+
+.projects-memory-stats-modal .project-priority {
+    font-size: 0.9rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    text-align: center;
+    margin-bottom: 0.25rem;
+}
+
+.projects-memory-stats-modal .project-reviews {
+    font-size: 0.8rem;
+    font-weight: 400;
+    color: var(--text-faint);
+    text-align: center;
+    font-style: italic;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .projects-memory-stats-modal .projects-grid {
+        grid-template-columns: 1fr;
+        gap: 0.75rem;
+    }
+
+    .projects-memory-stats-modal .project-card {
+        padding: 1rem;
+    }
+
+    .projects-memory-stats-modal .project-name {
+        font-size: 1rem;
+    }
+
+    .projects-memory-stats-modal .project-time {
+        font-size: 1.1rem;
+    }
 }
