@@ -118,7 +118,14 @@ The plugin provides a dedicated statistics modal accessible via the **"View proj
 
 The charts are generated using Chart.js and provide interactive features like legend toggling and hover tooltips. Data is automatically interpolated for days without activity to create smooth, continuous visualizations.
 
-**Recent improvements (v2.1.0):**
+**Recent improvements (v2.2.0):**
+- **NEW**: Added a search bar to find projects by name within the statistics modal
+- **NEW**: Interactive Project Filtering — click on any project card to toggle its curve visibility in the charts. Selecting one or more projects isolates them for better comparison.
+- **NEW**: Emergency Button (🚨) — each project card now features an emergency button that increases the project's priority score immediately, matching the "Urgent / Stressant" action from the review modal.
+- **ENHANCED**: Real-time chart refreshes when taking actions or filtering projects.
+- **IMPROVED**: Selected project cards now have a distinct visual glow matching their project color.
+
+**Previous improvements (v2.1.0):**
 - **NEW**: Added project count selector (Top 5, Top 10, All) to filter which projects are displayed in charts and projects list based on priority score
 - **IMPROVED**: Project count filter now applies to both charts and the projects priority list for consistent filtering experience
 - **ENHANCED**: Dynamic title in projects list shows current filter selection (e.g., "Liste des Projets par Priorité (Top 5)")
@@ -138,6 +145,8 @@ The charts are generated using Chart.js and provide interactive features like le
 The statistics modal now includes a comprehensive projects list at the bottom that displays:
 
 - **Project Cards**: Each project is shown in a colorful card with a unique color scheme
+- **Search & Filter**: Use the top search bar to find projects or click on cards to filter chart data
+- **Urgency Button (🚨)**: Quickly increase a project's priority without leaving the stats modal
 - **Priority Sorting**: Projects are automatically sorted by their effective score (current score + rotation bonus) in descending order
 - **Time Tracking**: Shows the total time spent on each project calculated as `totalReviews × pomodoroDuration`
 - **Visual Indicators**: Each card features:

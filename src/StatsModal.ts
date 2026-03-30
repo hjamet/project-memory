@@ -28,6 +28,8 @@ export default class StatsModal extends Modal {
 
     private currentViewMode: ViewMode = 'month';
     private currentProjectFilter: ProjectCountFilter = 'top10';
+    private searchTerm: string = '';
+    private selectedProjects: Set<string> = new Set<string>();
 
     constructor(app: App, plugin: Plugin) {
         super(app);
@@ -218,11 +220,20 @@ export default class StatsModal extends Modal {
         }
 
         // Process each project - filter by priority score first
-        const allProjectNames = Object.keys(statsData.projects);
+        let allProjectNames = Object.keys(statsData.projects);
 
         if (allProjectNames.length === 0) {
             console.warn('StatsModal: No projects found in stats data');
             throw new Error('No projects found in statistics data');
+        }
+
+        // Apply search filter first
+        if (this.searchTerm.trim()) {
+            const searchLower = this.searchTerm.toLowerCase();
+            allProjectNames = allProjectNames.filter(path => {
+                const name = path.split('/').pop()?.replace('.md', '') || path;
+                return name.toLowerCase().includes(searchLower);
+            });
         }
 
         // Sort projects by currentScore (priority score) in descending order
@@ -247,6 +258,12 @@ export default class StatsModal extends Modal {
             default:
                 projectNames = allProjectNames;
                 break;
+        }
+
+        // Apply selection filter if any projects are selected
+        if (this.selectedProjects.size > 0) {
+            // Keep only selected projects that belong to the current list
+            projectNames = projectNames.filter(path => this.selectedProjects.has(path));
         }
 
         const colors = this.generateColors(projectNames.length);
@@ -1019,6 +1036,20 @@ export default class StatsModal extends Modal {
             return;
         }
 
+        // Create search container
+        const searchContainer = container.createEl('div', { cls: 'stats-search-container' });
+        const searchInput = searchContainer.createEl('input', {
+            type: 'text',
+            placeholder: 'Rechercher un projet...',
+            cls: 'stats-search-input'
+        });
+        searchInput.value = this.searchTerm;
+        searchInput.addEventListener('input', (e) => {
+            this.searchTerm = (e.target as HTMLInputElement).value;
+            // Debounced refresh would be better, but refreshCharts is already async
+            this.refreshCharts();
+        });
+
         // Create projects list container inside the charts container
         const projectsContainer = container.createEl('div', { cls: 'projects-list-container' });
 
@@ -1035,18 +1066,21 @@ export default class StatsModal extends Modal {
         // Sort by priority (effective score)
         projectStats.sort((a, b) => b.effectiveScore - a.effectiveScore);
 
-        // Apply the same filter as the charts
+        // Apply filters for the list
+        // 1. Search term
         let filteredProjectStats = projectStats;
+        if (this.searchTerm.trim()) {
+            const searchLower = this.searchTerm.toLowerCase();
+            filteredProjectStats = filteredProjectStats.filter(p => p.name.toLowerCase().includes(searchLower));
+        }
+
+        // 2. Top 5/10/All
         switch (this.currentProjectFilter) {
             case 'top5':
-                filteredProjectStats = projectStats.slice(0, 5);
+                filteredProjectStats = filteredProjectStats.slice(0, 5);
                 break;
             case 'top10':
-                filteredProjectStats = projectStats.slice(0, 10);
-                break;
-            case 'all':
-            default:
-                filteredProjectStats = projectStats;
+                filteredProjectStats = filteredProjectStats.slice(0, 10);
                 break;
         }
 
@@ -1054,10 +1088,35 @@ export default class StatsModal extends Modal {
         const projectsGrid = projectsContainer.createEl('div', { cls: 'projects-grid' });
 
         filteredProjectStats.forEach((project, index) => {
+            const isSelected = this.selectedProjects.has(project.path);
             const projectCard = projectsGrid.createEl('div', {
-                cls: 'project-card'
+                cls: `project-card ${isSelected ? 'is-selected' : ''}`
             });
             projectCard.setAttribute('style', `--project-color: ${project.color}; --project-index: ${index};`);
+
+            // Add click listener to card for selection
+            projectCard.addEventListener('click', (e) => {
+                // If clicking urgent button, don't toggle selection
+                if ((e.target as HTMLElement).closest('.urgent-btn')) return;
+
+                if (this.selectedProjects.has(project.path)) {
+                    this.selectedProjects.delete(project.path);
+                } else {
+                    this.selectedProjects.add(project.path);
+                }
+                this.refreshCharts();
+            });
+
+            // Urgent button
+            const urgentBtn = projectCard.createEl('span', {
+                text: '🚨',
+                cls: 'urgent-btn',
+                title: 'Urgent / Stressant'
+            });
+            urgentBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.handleUrgentAction(project.path);
+            });
 
             // Project name
             const nameEl = projectCard.createEl('div', {
@@ -1085,29 +1144,32 @@ export default class StatsModal extends Modal {
         });
     }
 
-    private calculateProjectStats(statsData: any): Array<{
-        name: string;
-        timeSpent: number;
-        effectiveScore: number;
-        totalReviews: number;
-        color: string;
-    }> {
-        const projectNames = Object.keys(statsData.projects);
-        const colors = this.generateColors(projectNames.length);
+    private async handleUrgentAction(projectPath: string) {
+        try {
+            const pluginAny = this.plugin as any;
+            let s = await pluginAny.getProjectScore(projectPath);
+            const rapprochment = Number(pluginAny.settings.rapprochementFactor ?? 0.2);
+            const gain = rapprochment * (100 - s);
+            const newScore = s + gain;
 
-        return projectNames.map((projectPath, index) => {
-            const project = statsData.projects[projectPath];
+            await pluginAny.updateProjectScore(projectPath, newScore);
+            await pluginAny.incrementRotationBonus(projectPath);
+            await pluginAny.recordReviewAction(projectPath, 'more-often', newScore);
+
             const projectName = projectPath.split('/').pop()?.replace('.md', '') || projectPath;
-            const color = colors[index];
-
-            // Calculate time spent based on reviews (assuming 25 minutes per review)
-            const timeSpent = project.totalReviews * 25; // minutes
-
-            // Calculate effective score (current score + rotation bonus)
-            const currentScore = project.currentScore || 50;
-            const effectiveScore = currentScore + project.rotationBonus;
+            // @ts-ignore
+            new Notice(`Projet "${projectName}" marqué comme urgent !`);
+            
+            this.refreshCharts();
+        } catch (error) {
+            console.error('StatsModal: Error handling urgent action:', error);
+            // @ts-ignore
+            new Notice('Erreur lors du marquage comme urgent.');
+        }
+    }
 
             return {
+                path: projectPath,
                 name: projectName,
                 timeSpent,
                 effectiveScore,
