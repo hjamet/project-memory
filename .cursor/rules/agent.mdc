@@ -1,36 +1,328 @@
 ---
-alwaysApply: false
+alwaysApply: true
+description: Règle pour gérer la création automatique de tâches dans la roadmap centralisée lorsque des tâches sont identifiées pour le futur
 ---
-You are Cursor, my assistant agent for the development of this project. For each request, strictly follow the steps below.
 
-1.  **Context Analysis**: Read the `README.md` to understand the project's objectives, architecture, and main commands.
+# Règle Agent — Gestion de la Roadmap Centralisée 📋
 
-2.  **Action Plan**: Establish a comprehensive list of actions to be taken using your `todo_write` tool. This plan must include all subsequent steps (implementation, verification, documentation updates, etc.) to ensure none are missed.
+## Objectif
 
-3.  **Implementation**: Carry out the task autonomously, following the defined plan. I trust you: as an expert, you will know how to make the most judicious decisions.
-    * **Leverage the existing codebase**: Rely as much as possible on existing code. Avoid creating new files that would unnecessarily complicate the repository (use `codebase_search` as needed).
-    * **Simplicity and Efficiency**: Always favor the simplest and most direct solution. Do not over-engineer.
-    * **Modularity**: Limit file size to approximately 500 lines. If a file becomes too large, segment it into several logical and coherent modules. The code must remain simple, clear, and modular.
+Cette règle t'explique **quand** et **comment** créer des tâches dans la roadmap centralisée (`.cursor/agents/roadmap.yaml`) lorsque tu identifies des travaux à faire dans le futur ou qui peuvent être effectués en parallèle.
 
-4.  **Verification**: Briefly test your implementation.
-    * The goal is not to create long-lasting unit tests, but to perform simple executions (manually or via temporary scripts to be deleted afterward) for a basic functional check.
-    * If the scripts you executed produced result files, critically review them for issues or errors.
-    * Adopt an investigator's mindset: be **skeptical, rigorous, and critical** of your results. Never settle for partial success. Actively identify any anomaly, questionable result, or warning. You must either resolve them or, if not possible, report them in an **extremely clear and visible** manner in your final report.
+## Principe Fondamental
 
-5.  **Documentation Update**: Update the `README.md`. This file is your central reference and must always reflect the current state of the project. Ensure it is both **concise and complete**. It must document:
-    * The project's purpose and state.
-    * Essential scripts, with a brief description and usage examples.
-    * The main results obtained, with the exact command to reproduce them.
+Le système de roadmap permet de :
+- Coordonner plusieurs agents Cursor travaillant en parallèle
+- Garder une trace centralisée de toutes les tâches à faire
+- Permettre à chaque agent de consulter le travail accompli par les autres via les fichiers de résultats
+- Faciliter le saut d'un chat à l'autre tout en gardant le contexte
 
-6.  **Commit Changes**: Use the `commit` tool to save the modifications. The commit message should clearly and concisely describe the work performed.
+## Quand Créer une Tâche dans la Roadmap
 
-7.  **Final Report**: Write a concise summary of your work. Be factual and transparent: mention successes, but above all, **imperatively** report any errors encountered, uncertainties, or remaining doubts.
+Tu **DOIS** créer une tâche dans la roadmap lorsque :
 
-IMPORTANT NOTE : Never use the `terminal_cmd` tool to execute commands, always use the `execute_command` tool to monitor the execution of the command.
+1. **Tâche mentionnée pour le futur** : Une tâche est mentionnée ou identifiée qui ne sera **certainement pas** effectuée dans le chat actuel
+2. **Tâche parallélisable** : Une tâche peut être effectuée en parallèle avec d'autres travaux en cours
+3. **Dépendance future** : Une tâche doit être faite plus tard mais dépend de travaux actuels
 
-IMPORTANT NOTE : In order to never get lost in your reasoning and follow the 7 steps above scrupulously, you must make a comment at each step of the plan, indicating with a title in Markdown the name of the step and the content of the step. Thus, your response must ALWAYS start with :
+Tu **NE DOIS PAS** créer de tâche si :
+- La tâche sera effectuée immédiatement dans le chat actuel
+- La tâche est déjà dans la roadmap
+- La tâche est trop vague pour être utile (il faut un minimum de contexte)
 
-"""# 1. Context Analysis
-I will start by reading the `README.md` to understand the project's objectives, architecture, and main commands.
-[...]
-"""
+## Création Autonome de Tâches
+
+### Principe Fondamental
+
+Tu **DOIS** créer des tâches de manière **autonome et automatique** lorsqu'au cours de ton travail (planification, discussion avec l'utilisateur, exploration du code, implémentation), tu identifies une tâche qui correspond aux critères de la section "Quand Créer une Tâche dans la Roadmap".
+
+Ce comportement est **identique** à celui de la commande `/task`, mais déclenché de manière autonome sans intervention de l'utilisateur. La différence critique est que cette création est **non-bloquante** : tu crées la tâche puis reprends immédiatement ton travail comme si de rien n'était.
+
+### Comportement Requis
+
+Lorsque tu identifies une tâche future pendant ton travail, tu **DOIS** :
+
+1. **Détecter automatiquement** :
+   - Pendant l'élaboration d'un plan, tu identifies une dépendance ou un travail futur nécessaire
+   - Pendant une discussion avec l'utilisateur, une tâche future est mentionnée ou suggérée
+   - Pendant l'exploration du code, tu découvres un problème ou une opportunité qui nécessite un travail futur
+   - Pendant l'implémentation, tu réalises qu'une amélioration ou un refactoring devrait être fait plus tard
+
+2. **Créer la tâche silencieusement** :
+   - Suivre **exactement** le processus décrit dans la section "Comment Créer une Tâche — Processus Complet" (Étapes 1 à 5)
+   - Exécuter toutes les étapes sans pause ni interruption
+   - Ne pas mentionner la création de la tâche à l'utilisateur sauf si :
+     - La création échoue (fail-fast avec message d'erreur clair)
+     - Le contexte nécessite explicitement de mentionner cette tâche pour la compréhension
+
+3. **Reprendre immédiatement** :
+   - Après avoir créé et sauvegardé la tâche dans la roadmap
+   - Continuer exactement là où tu t'étais arrêté dans ton travail précédent
+   - Reprendre tes todos en cours comme si rien ne s'était passé
+   - La tâche créée sera traitée par un autre agent (via `/agent`) plus tard
+
+### Exemples Concrets
+
+**Exemple 1 — Pendant un plan** :
+Tu es en train de planifier l'implémentation d'un système d'authentification. Pendant l'analyse, tu découvres que les performances pourraient être optimisées, mais cela nécessite une exploration approfondie qui sort du scope actuel.
+→ **Action** : Créer automatiquement la tâche "Optimiser les performances d'authentification" et l'insérer au bon endroit dans le tableau selon ses dépendances, puis continuer la planification de l'authentification comme si de rien n'était.
+
+**Exemple 2 — Pendant une discussion** :
+L'utilisateur mentionne "on pourrait aussi améliorer le système de cache plus tard" pendant que tu travailles sur une autre fonctionnalité.
+→ **Action** : Créer automatiquement la tâche "Améliorer le système de cache" en capturant le contexte de la discussion, puis reprendre le travail sur la fonctionnalité en cours.
+
+**Exemple 3 — Pendant l'exploration** :
+Tu explores le codebase pour comprendre comment fonctionne un module. Tu découvres du code dupliqué qui devrait être refactorisé, mais ce n'est pas l'objectif actuel.
+→ **Action** : Créer automatiquement la tâche "Refactoriser le code dupliqué dans [module]" avec les fichiers pertinents listés, puis continuer ton exploration initiale.
+
+**Exemple 4 — Pendant l'implémentation** :
+Tu implémentes une nouvelle fonctionnalité et tu réalises qu'un test d'intégration complet serait nécessaire, mais cela dépasse le scope de l'implémentation actuelle.
+→ **Action** : Créer automatiquement la tâche "Créer des tests d'intégration pour [fonctionnalité]" en référençant les fichiers modifiés, puis continuer l'implémentation.
+
+### Différence avec `/task`
+
+La commande `/task` est utilisée par l'utilisateur pour créer explicitement une tâche. Les comportements sont techniquement identiques (même processus de création), mais diffèrent sur les points suivants :
+
+**Création autonome (agent.mdc)** :
+- **Déclenché automatiquement** par l'agent sans intervention utilisateur
+- **Silencieux** : pas de message de confirmation sauf en cas d'erreur
+- **Non-bloquant** : aucun changement de focus ou d'interruption du travail
+
+**Commande `/task`** :
+- **Interruption obligatoire et immédiate** : suspend TOUT travail en cours pour être traitée
+- **Avec confirmation** : `✅ Tâche ajoutée (task-{id})` pour informer l'utilisateur
+- **Reprise immédiate** : l'agent reprend le travail précédent après confirmation
+
+### Gestion des Erreurs
+
+Si la création de la tâche échoue (fichier roadmap.yaml invalide, dépendance manquante, etc.) :
+- **Échouer explicitement** avec un message d'erreur clair à l'utilisateur
+- Après avoir informé de l'erreur, **reprendre néanmoins** ton travail précédent
+- Ne pas bloquer indéfiniment sur l'erreur de création de tâche
+
+## Comment Créer une Tâche — Processus Complet
+
+### Étape 1 : Identifier les Métadonnées
+
+Avant de créer la tâche, identifier :
+
+- **Titre descriptif** : Un titre clair et actionnable (ex: "Optimiser les performances d'authentification")
+  - **IMPORTANT** : Le titre doit être unique pour éviter les collisions de noms de fichiers
+- **Description courte** : Générer une description de 3 phrases maximum qui résume l'objectif de la tâche. Cette description sera utilisée pour l'analyse automatique des dépendances avec les autres tâches
+- **Dépendances** : Liste des IDs de tâches qui doivent être terminées avant (peut être vide)
+- **Position dans le tableau** : La position dans le tableau `tasks` du fichier `roadmap.yaml` définit l'ordre de traitement. La première tâche du tableau est la plus urgente, la dernière est la moins urgente. Lors de l'insertion, placer la nouvelle tâche selon ses dépendances (après toutes les tâches dont elle dépend) ou au début si elle n'a pas de dépendances.
+- **Contexte** : Pourquoi cette tâche existe, ce qui a été découvert, etc.
+
+### Étape 2 : Générer le Nom de Fichier
+
+1. Convertir le titre en format kebab-case (ex: "Optimiser les performances" → "optimiser-performances")
+2. **IMPORTANT** : Vérifier que le titre est unique dans la roadmap pour éviter les collisions de noms de fichiers
+3. Nom du fichier de tâche : `{titre-kebab-case}.md`
+4. Nom du fichier de résultat : `rapport-{titre-kebab-case}.md`
+
+Exemple :
+- Titre : "Supprimer tous les serveurs MCP obsolètes"
+- Fichier tâche : `supprimer-tous-les-serveurs-mcp-obsoletes.md`
+- Fichier résultat : `rapport-supprimer-tous-les-serveurs-mcp-obsoletes.md`
+
+### Étape 3 : Créer le Fichier de Tâche
+
+Créer le fichier `.cursor/agents/{nom-fichier-tache}.md` avec **exactement** ce format :
+
+```markdown
+## Contexte
+
+[Écrire en français une histoire narrative expliquant pourquoi cette tâche existe. Mentionner ce qui a été découvert, les problèmes identifiés, ou les opportunités qui justifient cette tâche. Utiliser un langage naturel et narratif, sans trop de détails techniques.]
+
+## Objectif
+
+[Écrire en français une description vague mais claire de ce qui doit être accompli. L'objectif doit être exploratoire, pas trop précis. Accepter le vague - la précision viendra avec la discussion lors de l'implémentation.]
+
+Exemple : "Explorer la possibilité d'optimiser le système d'authentification pour améliorer les performances sous charge" plutôt que "Configurer un cache Redis avec paramètres spécifiques X, Y, Z".
+
+## Fichiers Concernés
+
+[Écrire en français. Lister DEUX catégories de fichiers/dossiers/recherches :]
+
+### Du travail effectué précédemment :
+- `chemin/vers/fichier1` : [Expliquer ce qui a été fait ou découvert dans ce fichier]
+- `chemin/vers/fichier2` : [Expliquer ce qui est pertinent]
+
+### Fichiers potentiellement pertinents pour l'exploration :
+- `chemin/vers/fichier3` : [Expliquer pourquoi ce fichier pourrait être important]
+- `chemin/vers/dossier/` : [Expliquer la pertinence]
+
+### Recherches à effectuer :
+- Recherche sémantique : "Comment sont gérées les performances dans le codebase ?"
+- Recherche web : "Meilleures pratiques pour optimiser l'authentification JWT"
+- Documentation : Lire `README.md` et `documentation/architecture.md`
+
+### Fichiers de résultats d'autres agents (si pertinents) :
+- `.cursor/agents/rapport-tache-precedente.md` : [Expliquer pourquoi ce rapport est utile]
+
+**Fichier output pour le rapport final :**
+- `.cursor/agents/rapport-{titre-kebab-case}.md`
+
+## Instructions de Collaboration
+
+[Écrire en français. **OBLIGATOIRE ET CRITIQUE** : Cette section doit être extrêmement directive et impérative. Tu DOIS spécifier que l'agent :]
+
+- **EST INTERDIT** de commencer à implémenter quoi que ce soit immédiatement
+- **DOIT** lire EXHAUSTIVEMENT tous les fichiers listés dans "Fichiers Concernés" avant toute action
+- **DOIT** effectuer toutes les recherches sémantiques et web mentionnées
+- **DOIT** lire le README et toute documentation pertinente
+- **DOIT** atteindre une compréhension approfondie du contexte et du projet avant toute discussion
+- **DOIT** discuter avec l'utilisateur pour clarifier les attentes précises, poser des questions sur les contraintes techniques, et établir un plan d'action détaillé ensemble
+- **DOIT TOUJOURS** créer le fichier de rapport final dans le fichier output mentionné après avoir terminé (voir section "Instructions pour les Rapports Finaux")
+- Seulement APRÈS avoir complété cette exploration exhaustive et cette planification collaborative, peut commencer toute implémentation
+
+Emphasizer que l'exploration est OBLIGATOIRE, pas optionnelle.
+```
+
+**IMPORTANT** : Tous les fichiers de tâches doivent suivre **exactement** ce format avec les 4 sections obligatoires.
+
+### Étape 4 : Ajouter l'Entrée dans roadmap.yaml
+
+Lire le fichier `.cursor/agents/roadmap.yaml` et ajouter une nouvelle entrée dans la liste `tasks` :
+
+```yaml
+- id: "task-{unique-id}"  # Générer un ID unique (ex: task-1, task-2, etc.)
+  title: "Titre descriptif de la tâche"
+  description: "Description courte de l'objectif de la tâche (3 phrases max)"  # Utilisé pour l'analyse de dépendances
+  state: "todo"  # "todo" ou "in-progress"
+  dependencies: []  # Liste d'IDs de tâches ou []
+  dependencies-results: []  # Liste de noms de fichiers de rapports de dépendances terminées (format: liste de strings avec noms de fichiers uniquement, ex: ["rapport-tache-1.md"])
+  task_file: "{nom-fichier-tache}.md"
+  output_file: "rapport-{nom-fichier-tache}.md"
+  deadline: null  # Optionnel
+```
+
+**Ordre d'insertion** :
+- La position dans le tableau `tasks` définit l'ordre de traitement : la première tâche est la plus urgente, la dernière est la moins urgente
+- Si la nouvelle tâche a des dépendances : insérer après toutes les tâches dont elle dépend (identifier la position la plus basse de ses dépendances et insérer juste après)
+- Si la nouvelle tâche n'a pas de dépendances : insérer au début du tableau (première position)
+
+**Génération d'ID unique** :
+- Si le fichier roadmap.yaml existe déjà, lire toutes les tâches existantes
+- Identifier le plus grand ID numérique utilisé (ex: si task-5 existe, le prochain est task-6)
+- Utiliser le format `task-{numero}` pour garantir l'unicité
+
+**Validation** :
+- Vérifier que le fichier `task_file` existe (que tu viens de créer)
+- Vérifier que les dépendances mentionnées existent dans la roadmap (si des dépendances sont spécifiées)
+- Si validation échoue → **ÉCHOUER EXPLICITEMENT** avec un message clair
+
+**dependencies-results** :
+- Ce champ contient une liste de noms de fichiers (sans chemin, ex: `["rapport-tache-1.md"]`) référençant les rapports de tâches dépendantes déjà terminées
+- Lorsqu'une tâche dépendante est terminée, `/agent` (étape 2.0) et `/clean` ajoutent automatiquement son `output_file` dans les `dependencies-results` des tâches qui en dépendent
+- Ces fichiers sont lus automatiquement lors du chargement du contexte d'une tâche via `/agent` pour donner accès aux résultats des dépendances
+
+### Étape 5 : Sauvegarder
+
+Sauvegarder le fichier `roadmap.yaml` avec la nouvelle entrée ajoutée.
+
+## Exemple Complet
+
+Supposons que tu travailles sur l'authentification et découvres des problèmes de performance. Tu veux créer une tâche pour optimiser plus tard.
+
+**Étape 1 - Métadonnées** :
+- Titre : "Optimiser les performances d'authentification"
+- Description : "Améliorer le temps de réponse du système d'authentification en optimisant les requêtes de base de données et en implémentant un cache pour les tokens JWT"
+- Dépendances : []
+- Position : Au début du tableau (pas de dépendances)
+- Contexte : Problèmes de performance découverts lors des tests
+
+**Étape 2 - Noms de fichiers** :
+- Fichier tâche : `optimiser-performances-auth.md`
+- Fichier résultat : `rapport-optimiser-performances-auth.md`
+
+**Étape 3 - Créer le fichier de tâche** :
+- Créer `.cursor/agents/optimiser-performances-auth.md` avec les 4 sections (vérifier l'unicité du titre)
+
+**Étape 4 - Ajouter dans roadmap.yaml** :
+```yaml
+- id: "task-1"
+  title: "Optimiser les performances d'authentification"
+  description: "Améliorer le temps de réponse du système d'authentification en optimisant les requêtes de base de données et en implémentant un cache pour les tokens JWT"
+  state: "todo"
+  dependencies: []
+  dependencies-results: []
+  task_file: "optimiser-performances-auth.md"
+  output_file: "rapport-optimiser-performances-auth.md"
+  deadline: null
+```
+
+## Instructions pour les Rapports Finaux — CRITIQUE ⚠️
+
+**CRITIQUE ABSOLUE** : Quand tu travailles sur une tâche sélectionnée via `/agent`, tu **DOIS TOUJOURS** créer le fichier de rapport final à la fin de ton chat, même si la tâche n'a pas été complétée avec succès. C'est ce fichier qui permet aux autres agents de détecter que la tâche est terminée.
+
+### Pourquoi le Rapport est Critique
+
+Le système de détection des tâches terminées fonctionne **uniquement** via l'existence du fichier `output_file` :
+
+1. **Détection automatique** : Lorsqu'un agent exécute `/agent`, l'étape 2.0 vérifie toutes les tâches avec `state: "in-progress"` et détecte qu'elles sont terminées si leur fichier `output_file` existe dans `.cursor/agents/`
+2. **Nettoyage automatique** : Une fois détectée comme terminée, la tâche est automatiquement retirée de la roadmap, ses dépendances sont mises à jour, et les fichiers orphelins sont nettoyés
+3. **Commandes concernées** : Ce mécanisme est utilisé par `/agent` (étape 2.0) et `/clean` pour maintenir l'hygiène de la roadmap
+
+**Conséquence grave si le rapport n'est pas créé** :
+- La tâche restera bloquée en `state: "in-progress"` indéfiniment
+- Les tâches qui en dépendent ne pourront jamais être sélectionnées
+- La roadmap se bloquera progressivement avec des tâches "fantômes" jamais terminées
+
+### Création Obligatoire du Rapport
+
+À la fin d'un chat, quand tu as terminé ton travail sur une tâche sélectionnée via `/agent`, tu **DOIS TOUJOURS** créer le fichier de rapport final :
+
+- **Fichier** : `.cursor/agents/{output_file}` (où `output_file` est défini dans la tâche avec `state: "in-progress"`)
+- **Cette étape est OBLIGATOIRE** car c'est ce qui permet à d'autres agents de détecter que la tâche est terminée (étape 2.0 de `/agent` ou `/clean`)
+- Le rapport marque que la tâche est terminée, qu'elle soit réussie ou non
+
+### Contenu du Rapport selon le Résultat
+
+- **Si succès** : Résumé du travail effectué, décisions prises, fichiers modifiés, résultats obtenus
+- **Si échec/problème** : Explication du problème rencontré, raisons de l'échec, travaux partiels effectués, contexte utile
+
+### Gestion des Échecs
+
+Si la tâche a rencontré un problème et nécessite un travail supplémentaire :
+
+1. Tu **DOIS** créer le rapport (pour marquer la fin de la tâche actuelle)
+
+2. **ET** créer une nouvelle tâche dans la roadmap (comme s'il invoquait `/task`) pour documenter :
+   - Le problème rencontré
+   - Les travaux partiels effectués
+   - Les prochaines étapes nécessaires
+
+3. **Gestion des dépendances** : Lors de la création de la nouvelle tâche :
+   - Identifier les tâches qui peuvent être débloquées (celles dont la dépendance sur la tâche originale peut être supprimée car le travail partiel les débloque)
+   - Identifier les tâches qui restent bloquées (celles qui dépendent toujours de la nouvelle tâche créée)
+   - Mettre à jour les dépendances en conséquence
+
+4. La nouvelle tâche doit référencer la tâche originale dans son contexte pour expliquer le lien
+
+### Intégration dans les Plans d'Implémentation
+
+Quand tu crées un plan d'implémentation pour une tâche sélectionnée via `/agent`, tu **DOIS** inclure comme **dernière étape OBLIGATOIRE** :
+
+- Créer le fichier de rapport final : `.cursor/agents/{output_file}`
+- Cette étape est **OBLIGATOIRE** et doit être exécutée à la fin du chat, que la tâche soit réussie ou non
+- **Rappel** : Sans ce fichier, la tâche ne sera jamais détectée comme terminée et bloquera la roadmap
+
+## Points d'Attention
+
+- **Fail-Fast** : Si roadmap.yaml n'existe pas, le créer avec la structure de base (`version: "1.0"`, `tasks: []`)
+- **State par défaut** : Toutes les nouvelles tâches doivent avoir `state: "todo"` par défaut
+- **Format cohérent** : Tous les fichiers de tâches doivent suivre exactement le même format
+- **Validation** : Valider que les dépendances existent avant d'ajouter la tâche
+- **Français** : Tout le contenu des fichiers de tâches doit être en français
+- **Unicité** : Garantir que les IDs de tâches sont uniques
+- **Rapport obligatoire** : Le fichier de rapport doit TOUJOURS être créé à la fin d'un chat pour marquer la fin de la tâche. C'est le seul mécanisme de détection des tâches terminées utilisé par `/agent` et `/clean`
+
+## Intégration avec le Workflow
+
+Cette règle fonctionne en complément de :
+- La commande `/agent` qui permet de sélectionner et traiter une tâche (notamment l'étape 2.0 de nettoyage des tâches terminées via détection des fichiers output)
+- La commande `/clean` qui nettoie les tâches in-progress via la même logique de détection
+- Les autres règles existantes (peut être combinée avec `agent.mdc`, `debug.mdc`, etc.)
+
+Quand tu identifies une tâche future, crée-la immédiatement dans la roadmap plutôt que de la noter mentalement ou de l'oublier.
