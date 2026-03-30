@@ -248,7 +248,7 @@ export default class ProjectsMemoryPlugin extends Plugin {
 	}
 
 	// Record a review action for a project
-	async recordReviewAction(filePath: string, action: string, scoreAfter: number): Promise<void> {
+	async recordReviewAction(filePath: string, action: string, scoreAfter: number, isReview = true): Promise<void> {
 		const stats = await this.loadStatsData();
 		let projectStats = stats.projects[filePath];
 		if (!projectStats) {
@@ -262,9 +262,12 @@ export default class ProjectsMemoryPlugin extends Plugin {
 			stats.projects[filePath] = projectStats;
 		}
 
-		projectStats.rotationBonus = 0;
-		projectStats.totalReviews++;
-		projectStats.lastReviewDate = new Date().toISOString();
+		if (isReview) {
+			projectStats.rotationBonus = 0;
+			projectStats.totalReviews++;
+			projectStats.lastReviewDate = new Date().toISOString();
+			stats.globalStats.totalReviews++;
+		}
 
 		projectStats.reviewHistory.push({
 			date: new Date().toISOString(),
@@ -275,8 +278,6 @@ export default class ProjectsMemoryPlugin extends Plugin {
 		if (projectStats.reviewHistory.length > 100) {
 			projectStats.reviewHistory = projectStats.reviewHistory.slice(-100);
 		}
-
-		stats.globalStats.totalReviews++;
 
 		await this.saveStatsData(stats);
 	}

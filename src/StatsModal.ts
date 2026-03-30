@@ -911,8 +911,7 @@ export default class StatsModal extends Modal {
             const newScore = s + gain;
 
             await pluginAny.updateProjectScore(projectPath, newScore);
-            await pluginAny.incrementRotationBonus(projectPath);
-            await pluginAny.recordReviewAction(projectPath, 'more-often', newScore);
+            await pluginAny.recordReviewAction(projectPath, 'emergency', newScore, false);
 
             const projectName = projectPath.split('/').pop()?.replace('.md', '') || projectPath;
             // @ts-ignore

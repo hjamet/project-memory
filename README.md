@@ -21,7 +21,7 @@ Les actions disponibles lors d'une session de revue mettent à jour un **Score E
 Accessible via la commande "View project statistics", le modal affiche une interface dynamique pour visualiser les performances :
 - **Algorithme de Levenshtein** : Barre de recherche persistante propulsée par un algorithme de Levenshtein qui trie intelligemment les projets (les correspondances exactes s'affichent en premier, suivies des projets les plus proches phonétiquement/typographiquement).
 - **Contrôles Dynamiques Multiplicateurs (+/-)** : Des boutons réactifs situés sous chaque graphique et liste permettent de cibler finement la période temporelle étudiée (ex: 10, 20, 40 jours) ou de limiter dynamiquement le nombre de courbes (ex: Top 5, 10, 20).
-- **Interaction et Urgence** : Clic sur une carte pour isoler sa courbe, bouton "Urgence" (🚨) injectant un bonus pur immédiat.
+- **Interaction et Urgence** : Clic sur une carte pour isoler sa courbe, bouton "Urgence" (🚨) injectant un bonus pur immédiat sans compter comme une session de revue (ne réinitialise pas le bonus de séniorité).
 
 ## Gestion des Données (data.json)
 Le plugin utilise exclusivement la mécanique interne d'Obsidian (`saveData`/`loadData`) pour enregistrer à la fois les **Paramètres** et les **Statistiques** sous la forme d'un blob synchronisé (`data.json` → `stats`). Ce choix architectural résout nativement les problèmes de race condition d'Obsidian Sync.

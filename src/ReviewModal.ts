@@ -489,8 +489,15 @@ export default class ReviewModal extends Modal {
 				} catch (e) {
 					console.error('Failed to update stats:', e);
 				}
+			} else {
+				// If NOT worked on: record the score adjustment in history without counting as a review
+				try {
+					const pluginAny = this.plugin as any;
+					await pluginAny.recordReviewAction(chosen.file.path, action, newScore, false);
+				} catch (e) {
+					console.error('Failed to update stats history:', e);
+				}
 			}
-			// If NOT worked on: score is updated but no stats recorded, rotation bonus NOT reset
 		};
 
 		// Show step 2 (work confirmation)
