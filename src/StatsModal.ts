@@ -734,7 +734,7 @@ export default class StatsModal extends Modal {
             const statsData = await this.loadStatsData();
             const chartData = this.processStatsData(statsData);
 
-            // 2. Find the actual scrolling container
+            // 2. Find the actual scrolling container to preserve its state
             let scrollParent: HTMLElement = this.contentEl.closest('.modal-content') as HTMLElement || this.contentEl;
             let el: HTMLElement | null = this.contentEl;
             while (el) {
@@ -746,11 +746,7 @@ export default class StatsModal extends Modal {
             }
             const savedScroll = scrollParent.scrollTop;
 
-            // Lock the scroll parent height to prevent any collapse during the synchronous swap
-            const currentHeight = scrollParent.scrollHeight;
-            scrollParent.style.minHeight = `${currentHeight}px`;
-
-            // 3. Clear existing charts
+            // 3. Clear existing charts logic
             this.chartInstances.forEach(chart => {
                 if (chart && typeof chart.destroy === 'function') {
                     chart.destroy();
@@ -758,25 +754,38 @@ export default class StatsModal extends Modal {
             });
             this.chartInstances = [];
 
-            // 4. Synchronous DOM swap
+            // 4. Render NEW elements completely offline to avoid layout thrashing
+            const tempDiv = document.createElement('div');
+            const originalContentEl = this.contentEl;
+            (this as any).contentEl = tempDiv;
+            
+            try {
+                this.createChartContainers(chartData, statsData);
+            } finally {
+                (this as any).contentEl = originalContentEl; // Restore context
+            }
+            
+            const newContainer = tempDiv.firstElementChild as HTMLElement;
             const oldContainer = this.contentEl.querySelector('.stats-charts-container');
-            if (oldContainer) {
-                oldContainer.remove();
+
+            // 5. Blur active element explicitly if it is about to be destroyed!
+            // This is the #1 cause of forced scroll jumps in browsers (focus loss -> scroll to body)
+            if (oldContainer && document.activeElement && oldContainer.contains(document.activeElement)) {
+                (document.activeElement as HTMLElement).blur();
             }
 
-            this.createChartContainers(chartData, statsData);
+            // 6. Seamless DOM Swap: Instantly replaces the node in the exact same flow position
+            if (oldContainer && newContainer) {
+                this.contentEl.replaceChild(newContainer, oldContainer);
+            } else if (newContainer) {
+                this.contentEl.appendChild(newContainer);
+            }
 
-            // 5. Restore scroll and unlock height
+            // 7. Force exactly the same scroll
             scrollParent.scrollTop = savedScroll;
-            requestAnimationFrame(() => {
-                scrollParent.style.minHeight = '';
-                scrollParent.scrollTop = savedScroll;
-            });
 
         } catch (error) {
             console.error('StatsModal: Error refreshing charts:', error);
-            const scrollParent = this.contentEl.closest('.modal-content') as HTMLElement || this.contentEl;
-            scrollParent.style.minHeight = '';
         }
     }
     private createProjectsListInContainer(statsData: any, container: HTMLElement): void {
