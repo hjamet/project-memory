@@ -31,8 +31,8 @@ export default class ReviewModal extends Modal {
 			progressBar.setAttr('style', 'width: 0%; height: 100%; background: linear-gradient(90deg, #4caf50, #8bc34a);');
 			timeDisplay.setAttr('style', 'display: none;');
 			cancelPomodoroBtn.setAttr('style', 'display: none;');
-			buttonsRow.setAttr('style', 'display: block;');
-			startPomodoroBtn.setAttr('style', 'display: inline-block;');
+			buttonsRow.setAttr('style', 'display: flex;');
+			startPomodoroBtn.setAttr('style', 'display: inline-flex;');
 			this.isPomodoroActive = false;
 			// ensure layout class is removed so container returns to centered state
 			try {
@@ -275,25 +275,27 @@ export default class ReviewModal extends Modal {
 		// Phase 2 - Build UI synchronously now that data is loaded
 		this.contentEl.empty();
 
-		const titleEl = this.contentEl.createEl('h2', { text: chosen.file.basename });
+		// Header section
+		const headerSection = this.contentEl.createEl('div', { cls: 'pm-review-header' });
+		const titleEl = headerSection.createEl('h2', { text: chosen.file.basename });
 
 		// Get project stats early to check if it's a new project
 		const projectStats = await (this.plugin as any).getProjectStats(chosen.file.path);
 
 		// Add "Nouveau" badge if this is a new project (totalReviews === 0)
 		if (projectStats.totalReviews === 0) {
-			const newBadge = this.contentEl.createEl('span', {
+			titleEl.createEl('span', {
 				text: 'Nouveau',
 				cls: 'pm-new-indicator'
 			});
 		}
 
 		// Create badges container
-		const badgesContainer = this.contentEl.createEl('div', { cls: 'pm-badges-container' });
+		const badgesContainer = headerSection.createEl('div', { cls: 'pm-badges-container' });
 
 		// Badge 1: Score d'urgence (score de base)
 		const urgencyBadge = badgesContainer.createEl('span', {
-			text: `Score: ${Math.round(chosen.baseScore)}`,
+			text: `${Math.round(chosen.baseScore)}`,
 			cls: 'pm-stat-badge pm-badge-urgency'
 		});
 		// Dynamic color based on score (green -> yellow -> red)
@@ -302,7 +304,7 @@ export default class ReviewModal extends Modal {
 
 		// Badge 2: Score de session (effectiveScore)
 		const sessionBadge = badgesContainer.createEl('span', {
-			text: `Session: ${Math.round(chosen.effectiveScore)}`,
+			text: `⚡ ${Math.round(chosen.effectiveScore)}`,
 			cls: 'pm-stat-badge pm-badge-session'
 		});
 
@@ -310,12 +312,11 @@ export default class ReviewModal extends Modal {
 		const pomodoroDuration = (this.plugin as any).settings.pomodoroDuration || 25;
 		const totalMinutes = projectStats.totalReviews * pomodoroDuration;
 
-
 		const timeText = totalMinutes >= 60 ?
-			`${Math.floor(totalMinutes / 60)}h ${totalMinutes % 60}min` :
-			`${totalMinutes}min`;
+			`${Math.floor(totalMinutes / 60)}h${totalMinutes % 60 > 0 ? ` ${totalMinutes % 60}m` : ''}` :
+			`${totalMinutes}m`;
 		const timeBadge = badgesContainer.createEl('span', {
-			text: timeText,
+			text: `⏱ ${timeText}`,
 			cls: 'pm-stat-badge pm-badge-time'
 		});
 
@@ -324,9 +325,9 @@ export default class ReviewModal extends Modal {
 			const updatedStats = await (this.plugin as any).getProjectStats(chosen.file.path);
 			const updatedMinutes = updatedStats.totalReviews * pomodoroDuration;
 			const updatedText = updatedMinutes >= 60 ?
-				`${Math.floor(updatedMinutes / 60)}h ${updatedMinutes % 60}min` :
-				`${updatedMinutes}min`;
-			timeBadge.setText(updatedText);
+				`${Math.floor(updatedMinutes / 60)}h${updatedMinutes % 60 > 0 ? ` ${updatedMinutes % 60}m` : ''}` :
+				`${updatedMinutes}m`;
+			timeBadge.setText(`⏱ ${updatedText}`);
 		};
 
 		const previewContainer = this.contentEl.createEl('div', { cls: 'review-preview' });
@@ -334,20 +335,24 @@ export default class ReviewModal extends Modal {
 		// Create the buttons container early so the UI is present even if markdown rendering fails
 		// Pomodoro container (inserted before buttonsRow in DOM flow): button + progress bar
 		const pomodoroContainer = this.contentEl.createEl('div', { cls: 'review-pomodoro' });
-		const startPomodoroBtn = pomodoroContainer.createEl('button', { text: 'Lancer le Pomodoro', cls: 'pm-start-pomodoro' });
+		const startPomodoroBtn = pomodoroContainer.createEl('button', { cls: 'pm-start-pomodoro' });
+		startPomodoroBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg><span>Pomodoro</span>';
+
 		// 'Passer' button: temporarily ignore this project for the session and show next
-		const skipPomodoroBtn = pomodoroContainer.createEl('button', { text: 'Passer', cls: 'pm-skip-project pm-skip-secondary' });
+		const skipPomodoroBtn = pomodoroContainer.createEl('button', { cls: 'pm-skip-project pm-skip-secondary' });
+		skipPomodoroBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 4 15 12 5 20 5 4"></polyline><line x1="19" y1="5" x2="19" y2="19"></line></svg><span>Passer</span>';
+
 		const progressWrapper = pomodoroContainer.createEl('div', { cls: 'pm-progress-wrapper' });
-		progressWrapper.setAttr('style', 'display: none; width: 100%; background: #eee; height: 12px; border-radius: 6px; overflow: hidden; margin-top: 8px;');
+		progressWrapper.setAttr('style', 'display: none; width: 100%; background: var(--background-modifier-border); height: 6px; border-radius: 3px; overflow: hidden; margin-top: 8px;');
 		const progressBar = progressWrapper.createEl('div', { cls: 'pm-progress-bar' });
 		progressBar.setAttr('style', 'width: 0%; height: 100%; background: linear-gradient(90deg, #4caf50, #8bc34a);');
 		// time display and cancel button (initially hidden)
 		const timeDisplay = pomodoroContainer.createEl('span', { cls: 'pm-time-display', text: '' });
 		timeDisplay.setAttr('style', 'display: none; margin-left: 0.75rem; font-weight: 600;');
-		const cancelPomodoroBtn = pomodoroContainer.createEl('button', { text: 'Annuler', cls: 'pm-cancel-pomodoro' });
+		const cancelPomodoroBtn = pomodoroContainer.createEl('button', { cls: 'pm-cancel-pomodoro' });
+		cancelPomodoroBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg><span>Annuler</span>';
 		cancelPomodoroBtn.setAttr('style', 'display: none; margin-left: 0.5rem;');
-		// Style adjustment: ensure skip button sits next to start button
-		skipPomodoroBtn.setAttr('style', 'margin-left: 0.5rem;');
+
 		skipPomodoroBtn.addEventListener('click', () => {
 			try {
 				const pluginAny = this.plugin as any;
@@ -363,8 +368,25 @@ export default class ReviewModal extends Modal {
 			}, 150);
 		});
 
-		// Create the buttons container after pomodoro so DOM order is correct
+		// Create the feeling buttons row (Step 1)
 		const buttonsRow = this.contentEl.createEl('div', { cls: 'review-buttons' });
+
+		// Step 2: work confirmation overlay (hidden by default)
+		const workConfirmOverlay = this.contentEl.createEl('div', { cls: 'pm-work-confirm' });
+		workConfirmOverlay.style.display = 'none';
+
+		const workQuestion = workConfirmOverlay.createEl('p', {
+			text: 'As-tu travaillé dessus ?',
+			cls: 'pm-work-question'
+		});
+
+		const workButtonsRow = workConfirmOverlay.createEl('div', { cls: 'pm-work-buttons' });
+
+		const workYesBtn = workButtonsRow.createEl('button', { cls: 'pm-work-yes' });
+		workYesBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+
+		const workNoBtn = workButtonsRow.createEl('button', { cls: 'pm-work-no' });
+		workNoBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
 
 		// If a pomodoro is already active at the plugin level, reflect it in this modal's UI
 		const pluginAny = this.plugin as any;
@@ -372,7 +394,7 @@ export default class ReviewModal extends Modal {
 			this.isPomodoroActive = true;
 			// set UI: hide start, show cancel, show time and progress, hide action buttons
 			startPomodoroBtn.setAttr('style', 'display: none;');
-			cancelPomodoroBtn.setAttr('style', 'display: inline-block;');
+			cancelPomodoroBtn.setAttr('style', 'display: inline-flex;');
 			buttonsRow.setAttr('style', 'display: none;');
 			// show progress without destroying other inline styles
 			progressWrapper.style.display = 'block';
@@ -404,21 +426,24 @@ export default class ReviewModal extends Modal {
 			console.error('ReviewModal: MarkdownRenderer.render failed', err);
 		}
 
-		const makeButton = (label: string, onClick: () => Promise<void>, className?: string) => {
-			const btn = buttonsRow.createEl('button', { text: label, cls: className });
-			btn.addEventListener('click', async () => {
-				await onClick();
-				this.close();
-				// reopen next review instance
-				setTimeout(() => {
-					new (ReviewModal as any)(this.app, this.plugin).open();
-				}, 150);
-			});
-			return btn;
+		// ---------- Two-step review flow ----------
+		// Step 1: feeling buttons (icon-only)
+		// Pending state to hold the chosen action between step 1 and step 2
+		let pendingAction: { newScore: number; action: string } | null = null;
+
+		// Helper to get the current score
+		const getCurrentScore = async (): Promise<number> => {
+			try {
+				const pluginAny = this.plugin as any;
+				return await pluginAny.getProjectScore(chosen.file.path);
+			} catch (e) {
+				console.error('Failed to get project score:', e);
+				return Number((this.plugin as any).settings.defaultScore ?? 50);
+			}
 		};
 
-		// Helper to update scores in stats.json
-		const updateScore = async (newScore: number, action: string) => {
+		// Helper to perform the actual score update and optional stat recording
+		const finalizeReview = async (newScore: number, action: string, workedOnIt: boolean) => {
 			// Get project stats to check if this is the first review
 			let isFirstReview = false;
 			try {
@@ -426,7 +451,6 @@ export default class ReviewModal extends Modal {
 				const currentProjectStats = await pluginAny.getProjectStats(chosen.file.path);
 				isFirstReview = currentProjectStats.totalReviews === 0;
 			} catch (e) {
-				// If we can't get stats, assume it's not the first review
 				console.error('Failed to get project stats:', e);
 			}
 
@@ -439,11 +463,8 @@ export default class ReviewModal extends Modal {
 				return;
 			}
 
-			// If this is the first review, only update the score and mark as reviewed (increment totalReviews to 1)
-			// but don't record statistics (no history, no rotation bonus)
+			// If this is the first review, only update the score and mark as reviewed
 			if (isFirstReview) {
-				// Increment totalReviews to 1 so the project is no longer considered "new"
-				// This ensures the project won't be selected again as a new project in future reviews
 				try {
 					const pluginAny = this.plugin as any;
 					const stats = await pluginAny.loadStatsData();
@@ -455,40 +476,58 @@ export default class ReviewModal extends Modal {
 				} catch (e) {
 					console.error('Failed to mark project as reviewed:', e);
 				}
-				// Recalculate effective score for immediate display (do not persist)
-				const recalculated = await this.calculateEffectiveScore(newScore, chosen.file.path, chosen.deadline);
 				return;
 			}
 
-			// Record the action in stats and increment rotation bonus for other projects
-			try {
-				const pluginAny = this.plugin as any;
-				await pluginAny.incrementRotationBonus(chosen.file.path);
-				await pluginAny.recordReviewAction(chosen.file.path, action, newScore);
-
-				// Update the time badge after recording the action
-				await updateTimeBadge();
-			} catch (e) {
-				console.error('Failed to update stats:', e);
+			// If the user worked on it → full stat recording (totalReviews++, rotation bonus reset)
+			if (workedOnIt) {
+				try {
+					const pluginAny = this.plugin as any;
+					await pluginAny.incrementRotationBonus(chosen.file.path);
+					await pluginAny.recordReviewAction(chosen.file.path, action, newScore);
+					await updateTimeBadge();
+				} catch (e) {
+					console.error('Failed to update stats:', e);
+				}
 			}
-
-			// Recalculate effective score for immediate display (do not persist)
-			const recalculated = await this.calculateEffectiveScore(newScore, chosen.file.path, chosen.deadline);
+			// If NOT worked on: score is updated but no stats recorded, rotation bonus NOT reset
 		};
 
-		// Create buttons with classes and keep references for keyboard shortcuts
-		const btn1 = makeButton('Agréable / Calme', async () => {
-			let s: number;
-			try {
-				const pluginAny = this.plugin as any;
-				s = await pluginAny.getProjectScore(chosen.file.path);
-			} catch (e) {
-				console.error('Failed to get project score:', e);
-				s = Number((this.plugin as any).settings.defaultScore ?? 50);
+		// Show step 2 (work confirmation)
+		const showWorkConfirm = (newScore: number, action: string) => {
+			pendingAction = { newScore, action };
+			// Hide feeling buttons, show confirmation
+			buttonsRow.style.display = 'none';
+			workConfirmOverlay.style.display = 'flex';
+
+			// Update keyboard handler for step 2
+			if (this.keydownHandler) {
+				window.removeEventListener('keydown', this.keydownHandler);
 			}
+			this.keydownHandler = (e: KeyboardEvent) => {
+				if (e.key === 'o' || e.key === 'O' || e.key === 'Enter') {
+					workYesBtn.click();
+				} else if (e.key === 'n' || e.key === 'N' || e.key === 'Escape') {
+					workNoBtn.click();
+				}
+			};
+			window.addEventListener('keydown', this.keydownHandler);
+		};
+
+		// Step 1 buttons: feeling selection (icon-only)
+		// SVG icons for each feeling
+		const sunSVG = '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>';
+		const balanceSVG = '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line></svg>';
+		const flameSVG = '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"></path></svg>';
+		const checkSVG = '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>';
+
+		const btn1 = buttonsRow.createEl('button', { cls: 'pm-feeling-btn pm-feeling-calm', attr: { 'aria-label': 'Agréable / Calme', 'title': 'Agréable / Calme' } });
+		btn1.innerHTML = sunSVG;
+		btn1.addEventListener('click', async () => {
+			const s = await getCurrentScore();
 			const rapprochment = Number((this.plugin as any).settings.rapprochementFactor ?? 0.2);
 			const perte = rapprochment * (s - 1);
-			// Update in-memory session review count for this file (must run before persisting score)
+			// Update session review count
 			try {
 				const pluginAny = this.plugin as any;
 				if (!(pluginAny.sessionReviewCounts instanceof Map)) pluginAny.sessionReviewCounts = new Map<string, number>();
@@ -497,19 +536,13 @@ export default class ReviewModal extends Modal {
 			} catch (e) {
 				console.error('Failed to update session review counts', e);
 			}
-			await updateScore(s - perte, 'less-often');
-		}, 'pm-moins-souvent');
+			showWorkConfirm(s - perte, 'less-often');
+		});
 
-		const btn2 = makeButton('Sous contrôle', async () => {
-			let s: number;
-			try {
-				const pluginAny = this.plugin as any;
-				s = await pluginAny.getProjectScore(chosen.file.path);
-			} catch (e) {
-				console.error('Failed to get project score:', e);
-				s = Number((this.plugin as any).settings.defaultScore ?? 50);
-			}
-			// Update in-memory session review count for this file (must run before persisting score)
+		const btn2 = buttonsRow.createEl('button', { cls: 'pm-feeling-btn pm-feeling-ok', attr: { 'aria-label': 'Sous contrôle', 'title': 'Sous contrôle' } });
+		btn2.innerHTML = balanceSVG;
+		btn2.addEventListener('click', async () => {
+			const s = await getCurrentScore();
 			try {
 				const pluginAny = this.plugin as any;
 				if (!(pluginAny.sessionReviewCounts instanceof Map)) pluginAny.sessionReviewCounts = new Map<string, number>();
@@ -518,21 +551,15 @@ export default class ReviewModal extends Modal {
 			} catch (e) {
 				console.error('Failed to update session review counts', e);
 			}
-			await updateScore(s, 'ok');
-		}, 'pm-ok');
+			showWorkConfirm(s, 'ok');
+		});
 
-		const btn3 = makeButton('Urgent / Stressant', async () => {
-			let s: number;
-			try {
-				const pluginAny = this.plugin as any;
-				s = await pluginAny.getProjectScore(chosen.file.path);
-			} catch (e) {
-				console.error('Failed to get project score:', e);
-				s = Number((this.plugin as any).settings.defaultScore ?? 50);
-			}
+		const btn3 = buttonsRow.createEl('button', { cls: 'pm-feeling-btn pm-feeling-urgent', attr: { 'aria-label': 'Urgent / Stressant', 'title': 'Urgent / Stressant' } });
+		btn3.innerHTML = flameSVG;
+		btn3.addEventListener('click', async () => {
+			const s = await getCurrentScore();
 			const rapprochment = Number((this.plugin as any).settings.rapprochementFactor ?? 0.2);
 			const gain = rapprochment * (100 - s);
-			// Update in-memory session review count for this file (must run before persisting score)
 			try {
 				const pluginAny = this.plugin as any;
 				if (!(pluginAny.sessionReviewCounts instanceof Map)) pluginAny.sessionReviewCounts = new Map<string, number>();
@@ -541,13 +568,13 @@ export default class ReviewModal extends Modal {
 			} catch (e) {
 				console.error('Failed to update session review counts', e);
 			}
-			await updateScore(s + gain, 'more-often');
-		}, 'pm-plus-souvent');
+			showWorkConfirm(s + gain, 'more-often');
+		});
 
-
-
-		const btn5 = makeButton('Fini', async () => {
-			// Update in-memory session review count for this file (must run before modifying frontmatter)
+		const btn5 = buttonsRow.createEl('button', { cls: 'pm-feeling-btn pm-feeling-done', attr: { 'aria-label': 'Fini', 'title': 'Fini' } });
+		btn5.innerHTML = checkSVG;
+		btn5.addEventListener('click', async () => {
+			// Update session review count
 			try {
 				const pluginAny = this.plugin as any;
 				if (!(pluginAny.sessionReviewCounts instanceof Map)) pluginAny.sessionReviewCounts = new Map<string, number>();
@@ -567,8 +594,7 @@ export default class ReviewModal extends Modal {
 				console.error('Failed to get project stats:', e);
 			}
 
-			// If this is the first review, mark as reviewed (increment totalReviews to 1)
-			// but don't record statistics (no history, no rotation bonus)
+			// If this is the first review, mark as reviewed
 			if (isFirstReview) {
 				try {
 					const pluginAny = this.plugin as any;
@@ -582,7 +608,7 @@ export default class ReviewModal extends Modal {
 					console.error('Failed to mark project as reviewed:', e);
 				}
 			} else {
-				// Record the action in stats and increment rotation bonus for other projects
+				// Record the action in stats
 				try {
 					const pluginAny = this.plugin as any;
 					await pluginAny.incrementRotationBonus(chosen.file.path);
@@ -607,7 +633,30 @@ export default class ReviewModal extends Modal {
 				fm.tags = tags;
 			});
 			new Notice('Project archived');
-		}, 'pm-fini');
+			this.close();
+			setTimeout(() => {
+				new (ReviewModal as any)(this.app, this.plugin).open();
+			}, 150);
+		});
+
+		// Step 2: work confirmation handlers
+		workYesBtn.addEventListener('click', async () => {
+			if (!pendingAction) return;
+			await finalizeReview(pendingAction.newScore, pendingAction.action, true);
+			this.close();
+			setTimeout(() => {
+				new (ReviewModal as any)(this.app, this.plugin).open();
+			}, 150);
+		});
+
+		workNoBtn.addEventListener('click', async () => {
+			if (!pendingAction) return;
+			await finalizeReview(pendingAction.newScore, pendingAction.action, false);
+			this.close();
+			setTimeout(() => {
+				new (ReviewModal as any)(this.app, this.plugin).open();
+			}, 150);
+		});
 
 		// Pomodoro start handler
 		startPomodoroBtn.addEventListener('click', () => {
@@ -626,7 +675,7 @@ export default class ReviewModal extends Modal {
 			// update modal UI
 			this.isPomodoroActive = true;
 			startPomodoroBtn.setAttr('style', 'display: none;');
-			cancelPomodoroBtn.setAttr('style', 'display: inline-block;');
+			cancelPomodoroBtn.setAttr('style', 'display: inline-flex;');
 			buttonsRow.setAttr('style', 'display: none;');
 			// show progress without destroying other inline styles
 			progressWrapper.style.display = 'block';
@@ -718,11 +767,11 @@ export default class ReviewModal extends Modal {
 			timeDisplay.setAttr('style', 'display: none;');
 			cancelPomodoroBtn.setAttr('style', 'display: none;');
 			// show action buttons and start
-			buttonsRow.setAttr('style', 'display: block;');
-			startPomodoroBtn.setAttr('style', 'display: inline-block;');
+			buttonsRow.setAttr('style', 'display: flex;');
+			startPomodoroBtn.setAttr('style', 'display: inline-flex;');
 		});
 
-		// Keyboard shortcuts: 1..5 trigger corresponding buttons while modal is open
+		// Keyboard shortcuts: 1..4 trigger feeling buttons, 5 for done
 		this.keydownHandler = (e: KeyboardEvent) => {
 			const k = e.key;
 			switch (k) {
@@ -735,7 +784,7 @@ export default class ReviewModal extends Modal {
 				case '3':
 					btn3?.click();
 					break;
-				case '5':
+				case '4':
 					btn5?.click();
 					break;
 			}

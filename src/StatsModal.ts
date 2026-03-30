@@ -210,25 +210,34 @@ export default class StatsModal extends Modal {
             throw new Error('No projects found in statistics data');
         }
 
-        // Map projects with scores and Levenshtein distance
+        // Map projects with scores and Levenshtein similarity
         const mappedProjects = allProjectNames.map(projectPath => {
             const projectName = projectPath.split('/').pop()?.replace('.md', '') || projectPath;
             const score = statsData.projects[projectPath].currentScore + statsData.projects[projectPath].rotationBonus;
-            const distance = this.searchTerm.trim() ? this.calculateLevenshteinDistance(projectName.toLowerCase(), this.searchTerm.trim().toLowerCase()) : 0;
-            return { path: projectPath, score, distance, projectName };
+            
+            let similarity = 1;
+            if (this.searchTerm.trim()) {
+                const searchLower = this.searchTerm.trim().toLowerCase();
+                const projectLower = projectName.toLowerCase();
+                
+                if (projectLower.includes(searchLower)) {
+                    similarity = 2; // Exact substring match gets top priority
+                } else {
+                    const distance = this.calculateLevenshteinDistance(projectLower, searchLower);
+                    const maxLen = Math.max(projectLower.length, searchLower.length);
+                    similarity = maxLen > 0 ? 1 - (distance / maxLen) : 0;
+                }
+            }
+            return { path: projectPath, score, similarity, projectName };
         });
 
         if (this.searchTerm.trim()) {
-            const searchLower = this.searchTerm.trim().toLowerCase();
-            mappedProjects.forEach(p => {
-                if (p.projectName.toLowerCase().includes(searchLower)) {
-                    p.distance = -1; // Exact substring match gets top priority
-                }
-            });
-            // Sort primarily by distance, secondarily by score
+            // Sort primarily by similarity tier, secondarily by score
             mappedProjects.sort((a, b) => {
-                if (a.distance !== b.distance) {
-                    return a.distance - b.distance;
+                const tierA = Math.floor(a.similarity * 10);
+                const tierB = Math.floor(b.similarity * 10);
+                if (tierA !== tierB) {
+                    return tierB - tierA; // Higher tier first
                 }
                 return b.score - a.score;
             });
@@ -720,29 +729,54 @@ export default class StatsModal extends Modal {
     }
 
     private async refreshCharts(): Promise<void> {
-        // Clear existing charts
-        this.chartInstances.forEach(chart => {
-            if (chart && typeof chart.destroy === 'function') {
-                chart.destroy();
-            }
-        });
-        this.chartInstances = [];
-
-        // Remove existing charts container (which includes projects list)
-        const chartsContainer = this.contentEl.querySelector('.stats-charts-container');
-        if (chartsContainer) {
-            chartsContainer.remove();
-        }
-
         try {
-            // Reload and process data
+            // 1. Reload and process data FIRST (Async)
             const statsData = await this.loadStatsData();
             const chartData = this.processStatsData(statsData);
 
-            // Create chart containers (includes projects list at the top)
+            // 2. Find the actual scrolling container
+            let scrollParent: HTMLElement = this.contentEl.closest('.modal-content') as HTMLElement || this.contentEl;
+            let el: HTMLElement | null = this.contentEl;
+            while (el) {
+                if (el.scrollTop > 0) {
+                    scrollParent = el;
+                    break;
+                }
+                el = el.parentElement;
+            }
+            const savedScroll = scrollParent.scrollTop;
+
+            // Lock the scroll parent height to prevent any collapse during the synchronous swap
+            const currentHeight = scrollParent.scrollHeight;
+            scrollParent.style.minHeight = `${currentHeight}px`;
+
+            // 3. Clear existing charts
+            this.chartInstances.forEach(chart => {
+                if (chart && typeof chart.destroy === 'function') {
+                    chart.destroy();
+                }
+            });
+            this.chartInstances = [];
+
+            // 4. Synchronous DOM swap
+            const oldContainer = this.contentEl.querySelector('.stats-charts-container');
+            if (oldContainer) {
+                oldContainer.remove();
+            }
+
             this.createChartContainers(chartData, statsData);
+
+            // 5. Restore scroll and unlock height
+            scrollParent.scrollTop = savedScroll;
+            requestAnimationFrame(() => {
+                scrollParent.style.minHeight = '';
+                scrollParent.scrollTop = savedScroll;
+            });
+
         } catch (error) {
             console.error('StatsModal: Error refreshing charts:', error);
+            const scrollParent = this.contentEl.closest('.modal-content') as HTMLElement || this.contentEl;
+            scrollParent.style.minHeight = '';
         }
     }
     private createProjectsListInContainer(statsData: any, container: HTMLElement): void {
@@ -762,23 +796,31 @@ export default class StatsModal extends Modal {
         // Calculate time spent and priority for each project
         const projectStats = this.calculateProjectStats(statsData);
 
-        // Map distance for search
+        // Map similarity for search
         const mappedProjectStats = projectStats.map(p => {
-            const distance = this.searchTerm.trim() ? this.calculateLevenshteinDistance(p.name.toLowerCase(), this.searchTerm.trim().toLowerCase()) : 0;
-            return { ...p, distance };
+            let similarity = 1;
+            if (this.searchTerm.trim()) {
+                const searchLower = this.searchTerm.trim().toLowerCase();
+                const projectLower = p.name.toLowerCase();
+                
+                if (projectLower.includes(searchLower)) {
+                    similarity = 2; // Exact match top priority
+                } else {
+                    const distance = this.calculateLevenshteinDistance(projectLower, searchLower);
+                    const maxLen = Math.max(projectLower.length, searchLower.length);
+                    similarity = maxLen > 0 ? 1 - (distance / maxLen) : 0;
+                }
+            }
+            return { ...p, similarity };
         });
 
-        // Apply sorting (Levenshtein then Priority)
+        // Apply sorting (Similarity tier then Priority)
         if (this.searchTerm.trim()) {
-            const searchLower = this.searchTerm.trim().toLowerCase();
-            mappedProjectStats.forEach(p => {
-                if (p.name.toLowerCase().includes(searchLower)) {
-                    p.distance = -1; // Exact match top priority
-                }
-            });
             mappedProjectStats.sort((a, b) => {
-                if (a.distance !== b.distance) {
-                    return a.distance - b.distance;
+                const tierA = Math.floor(a.similarity * 10);
+                const tierB = Math.floor(b.similarity * 10);
+                if (tierA !== tierB) {
+                    return tierB - tierA; // Higher tier first
                 }
                 return b.effectiveScore - a.effectiveScore;
             });

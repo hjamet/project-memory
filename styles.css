@@ -1,123 +1,237 @@
 /*
+ * Project Memory — Review Modal & Stats Modal Styles
+ * Modern, minimal design with icon-only feeling buttons and two-step flow
+ */
 
-This CSS file will be included with your plugin, and
-available in the app when your plugin is enabled.
-
-If your plugin does not need CSS, delete this file.
-
-*/
-
-.projects-memory-review-modal .review-buttons {
-    display: flex;
-    justify-content: center;
-    gap: 0.5rem;
-    margin-top: 1.5rem;
-    flex-wrap: wrap;
-    /* allow buttons to wrap on narrow viewports */
-    flex-shrink: 0;
-    /* keep the button bar visible */
-}
-
-.projects-memory-review-modal .review-buttons button {
-    padding: 0.45rem 0.8rem;
-    border: 1px solid rgba(0, 0, 0, 0.08);
-    border-radius: 8px;
-    cursor: pointer;
-    font-weight: 700;
-    color: white;
-    /* removed min-width to allow responsive wrapping */
-    transition: transform 0.16s cubic-bezier(.2, .9, .2, 1), box-shadow 0.16s cubic-bezier(.2, .9, .2, 1), opacity 0.12s linear, background-color 0.12s linear;
-    will-change: transform, box-shadow;
-}
-
-/* Semantic colors for each action */
-.projects-memory-review-modal .pm-moins-souvent {
-    background-color: #3b82f6;
-    /* soothing blue */
-}
-
-.projects-memory-review-modal .pm-ok {
-    background-color: #555;
-    /* neutral modern gray */
-}
-
-.projects-memory-review-modal .pm-plus-souvent {
-    background-color: #c0392b;
-    /* urgent red (formerly prio-max) */
-}
-
-.projects-memory-review-modal .pm-prio-max {
-    background-color: #c0392b;
-    /* red */
-}
-
-.projects-memory-review-modal .pm-fini {
-    background-color: #7f8c8d;
-    /* gray */
-}
-
-/* Secondary ghost-style for skip button near pomodoro */
-.projects-memory-review-modal .pm-skip-secondary {
-    background: transparent;
-    color: var(--text-faint, #666);
-    border: 1px solid rgba(100, 100, 100, 0.12);
-    box-shadow: none;
-}
-
-/* Focus/hover/active affordances - modern micro-interactions */
-.projects-memory-review-modal .review-buttons button:hover {
-    transform: translateY(-3px) scale(1.02);
-    box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
-}
-
-.projects-memory-review-modal .review-buttons button:active {
-    transform: translateY(0) scale(0.995);
-    box-shadow: 0 6px 16px rgba(15, 23, 42, 0.06);
-}
-
-.projects-memory-review-modal .review-buttons button:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.18);
-}
-
-/* Layout fixes: ensure modal content uses Flexbox so preview scrolls and buttons stay visible */
+/* ===== REVIEW MODAL — Layout ===== */
 .projects-memory-review-modal .modal-content {
     display: flex;
     flex-direction: column;
     height: 100%;
     min-height: 0;
-    /* allow children to shrink correctly inside flex container */
+    gap: 0;
 }
 
+/* ===== Header ===== */
+.projects-memory-review-modal .pm-review-header {
+    flex-shrink: 0;
+    text-align: center;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--background-modifier-border, rgba(0,0,0,0.06));
+    margin-bottom: 0.75rem;
+}
+
+.projects-memory-review-modal h2 {
+    font-weight: 700;
+    font-size: 1.2rem;
+    text-align: center;
+    margin: 0 0 0.5rem 0;
+    letter-spacing: -0.01em;
+    color: var(--text-normal);
+}
+
+/* "Nouveau" pill badge — inline next to title */
+.projects-memory-review-modal .pm-new-indicator {
+    display: inline-block;
+    background: linear-gradient(135deg, #f97316, #fb923c);
+    color: white;
+    padding: 0.1rem 0.45rem;
+    margin-left: 0.5rem;
+    border-radius: 999px;
+    font-size: 0.65rem;
+    font-weight: 700;
+    vertical-align: middle;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+}
+
+/* ===== Badges ===== */
+.projects-memory-review-modal .pm-badges-container {
+    display: flex;
+    justify-content: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+}
+
+.projects-memory-review-modal .pm-stat-badge {
+    display: inline-flex;
+    align-items: center;
+    color: white;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    min-width: 2.5rem;
+    text-align: center;
+    justify-content: center;
+}
+
+.projects-memory-review-modal .pm-badge-session {
+    background: linear-gradient(135deg, #7c3aed, #6c5ce7);
+}
+
+.projects-memory-review-modal .pm-badge-time {
+    background: linear-gradient(135deg, #f59e0b, #d97706);
+}
+
+/* ===== Preview ===== */
 .projects-memory-review-modal .review-preview {
     flex: 1 1 auto;
-    /* take available space and be shrinkable/growable as needed */
     overflow-y: auto;
-    /* only preview scrolls when content is long */
     min-height: 0;
-    /* prevents overflow in some browsers when flex children grow */
+    padding: 0.5rem 0;
 }
 
-/* Safety rules: ensure plugin buttons remain visible even if theme overrides exist */
-.projects-memory-review-modal .modal-content>.review-buttons {
-    display: flex !important;
-    visibility: visible !important;
-    opacity: 1 !important;
-    z-index: 9999 !important;
-}
-
-.projects-memory-review-modal .modal-content>.review-buttons button {
-    display: inline-block !important;
-}
-
-/* New Pomodoro UI styles */
-.projects-memory-review-modal .review-pomodoro {
+/* ===== Feeling Buttons (Step 1) — Icon-only circles ===== */
+.projects-memory-review-modal .review-buttons {
     display: flex;
     justify-content: center;
     align-items: center;
     gap: 0.75rem;
-    margin-bottom: 1rem;
+    padding: 0.75rem 0;
+    flex-shrink: 0;
+}
+
+.projects-memory-review-modal .pm-feeling-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    cursor: pointer;
+    color: white;
+    padding: 0;
+    transition: all 0.22s cubic-bezier(0.2, 0.9, 0.2, 1);
+    will-change: transform, box-shadow;
+    position: relative;
+}
+
+.projects-memory-review-modal .pm-feeling-btn svg {
+    width: 22px;
+    height: 22px;
+    stroke-width: 2;
+}
+
+/* Calm — cool blue */
+.projects-memory-review-modal .pm-feeling-calm {
+    background: linear-gradient(135deg, #3b82f6, #60a5fa);
+    box-shadow: 0 4px 14px rgba(59, 130, 246, 0.25);
+}
+
+/* OK — neutral slate */
+.projects-memory-review-modal .pm-feeling-ok {
+    background: linear-gradient(135deg, #64748b, #94a3b8);
+    box-shadow: 0 4px 14px rgba(100, 116, 139, 0.25);
+}
+
+/* Urgent — warm red */
+.projects-memory-review-modal .pm-feeling-urgent {
+    background: linear-gradient(135deg, #ef4444, #f87171);
+    box-shadow: 0 4px 14px rgba(239, 68, 68, 0.25);
+}
+
+/* Done — green */
+.projects-memory-review-modal .pm-feeling-done {
+    background: linear-gradient(135deg, #10b981, #34d399);
+    box-shadow: 0 4px 14px rgba(16, 185, 129, 0.25);
+}
+
+/* Hover */
+.projects-memory-review-modal .pm-feeling-btn:hover {
+    transform: translateY(-4px) scale(1.1);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.15);
+}
+
+/* Active press */
+.projects-memory-review-modal .pm-feeling-btn:active {
+    transform: translateY(-1px) scale(0.97);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+/* Focus ring */
+.projects-memory-review-modal .pm-feeling-btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.4), 0 4px 14px rgba(0, 0, 0, 0.1);
+}
+
+/* ===== Work Confirmation (Step 2) ===== */
+.projects-memory-review-modal .pm-work-confirm {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 1rem 0;
+    flex-shrink: 0;
+    animation: pm-fadeIn 0.2s ease-out;
+}
+
+@keyframes pm-fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+.projects-memory-review-modal .pm-work-question {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-normal);
+    margin: 0;
+    letter-spacing: -0.01em;
+}
+
+.projects-memory-review-modal .pm-work-buttons {
+    display: flex;
+    gap: 1rem;
+}
+
+.projects-memory-review-modal .pm-work-yes,
+.projects-memory-review-modal .pm-work-no {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    cursor: pointer;
+    color: white;
+    padding: 0;
+    transition: all 0.22s cubic-bezier(0.2, 0.9, 0.2, 1);
+    will-change: transform, box-shadow;
+}
+
+.projects-memory-review-modal .pm-work-yes {
+    background: linear-gradient(135deg, #10b981, #34d399);
+    box-shadow: 0 4px 16px rgba(16, 185, 129, 0.3);
+}
+
+.projects-memory-review-modal .pm-work-no {
+    background: linear-gradient(135deg, #64748b, #94a3b8);
+    box-shadow: 0 4px 16px rgba(100, 116, 139, 0.25);
+}
+
+.projects-memory-review-modal .pm-work-yes:hover,
+.projects-memory-review-modal .pm-work-no:hover {
+    transform: translateY(-4px) scale(1.1);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.15);
+}
+
+.projects-memory-review-modal .pm-work-yes:active,
+.projects-memory-review-modal .pm-work-no:active {
+    transform: translateY(-1px) scale(0.97);
+}
+
+/* ===== Pomodoro ===== */
+.projects-memory-review-modal .review-pomodoro {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
     width: 100%;
+    flex-shrink: 0;
 }
 
 .projects-memory-review-modal .review-pomodoro.pomodoro-active {
@@ -125,142 +239,107 @@ If your plugin does not need CSS, delete this file.
 }
 
 .projects-memory-review-modal .pm-start-pomodoro {
-    padding: 0.5rem 0.9rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.4rem 0.85rem;
     border-radius: 8px;
-    border: 1px solid rgba(59, 130, 246, 0.14);
-    background-color: #3b82f6;
-    /* calming blue */
+    border: 1px solid rgba(59, 130, 246, 0.12);
+    background: linear-gradient(135deg, #3b82f6, #2563eb);
     color: white;
     font-weight: 600;
+    font-size: 0.85rem;
     cursor: pointer;
-    box-shadow: 0 6px 18px rgba(59, 130, 246, 0.06);
-    transition: transform 0.18s cubic-bezier(.2, .9, .2, 1), box-shadow 0.18s, background-color 0.12s;
+    box-shadow: 0 4px 14px rgba(59, 130, 246, 0.15);
+    transition: all 0.2s cubic-bezier(0.2, 0.9, 0.2, 1);
     will-change: transform, box-shadow;
 }
 
-.projects-memory-review-modal .pm-time-display {
-    font-family: inherit;
-    font-size: 0.95rem;
-    color: var(--text-normal, #222);
-}
-
-.projects-memory-review-modal .pm-cancel-pomodoro {
-    padding: 0.4rem 0.75rem;
-    border-radius: 8px;
-    border: 1px solid rgba(0, 0, 0, 0.06);
-    background-color: #f3f4f6;
-    /* light neutral */
-    color: #222;
-    font-weight: 600;
-    cursor: pointer;
-    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.04);
-    transition: transform 0.16s cubic-bezier(.2, .9, .2, 1), box-shadow 0.16s, background-color 0.12s;
-    will-change: transform, box-shadow;
-}
-
-/* center the time display within pomodoro container */
-.projects-memory-review-modal .review-pomodoro .pm-time-display {
-    flex: 1 1 100px;
-    text-align: center;
-}
-
-.projects-memory-review-modal .review-pomodoro .pm-start-pomodoro,
-.projects-memory-review-modal .review-pomodoro .pm-cancel-pomodoro {
-    min-width: 11rem;
-}
-
-/* Hover/active specifics for pomodoro buttons */
 .projects-memory-review-modal .pm-start-pomodoro:hover {
-    transform: translateY(-4px) scale(1.02);
-    box-shadow: 0 14px 36px rgba(59, 130, 246, 0.12);
-    background-color: #2563eb;
+    transform: translateY(-3px) scale(1.02);
+    box-shadow: 0 10px 28px rgba(59, 130, 246, 0.2);
+    background: linear-gradient(135deg, #2563eb, #1d4ed8);
 }
 
 .projects-memory-review-modal .pm-start-pomodoro:active {
-    transform: translateY(0) scale(0.995);
-    box-shadow: 0 8px 20px rgba(59, 130, 246, 0.08);
+    transform: translateY(0) scale(0.98);
+}
+
+/* Skip button — ghost style */
+.projects-memory-review-modal .pm-skip-secondary {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    background: transparent;
+    color: var(--text-faint, #999);
+    border: 1px solid var(--background-modifier-border, rgba(100,100,100,0.1));
+    border-radius: 8px;
+    padding: 0.4rem 0.75rem;
+    font-size: 0.82rem;
+    font-weight: 500;
+    cursor: pointer;
+    box-shadow: none;
+    transition: all 0.18s ease;
+}
+
+.projects-memory-review-modal .pm-skip-secondary:hover {
+    background: var(--background-modifier-hover, rgba(0,0,0,0.04));
+    color: var(--text-muted);
+    border-color: var(--background-modifier-border-hover, rgba(100,100,100,0.2));
+}
+
+.projects-memory-review-modal .pm-time-display {
+    font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-normal, #222);
+    letter-spacing: 0.05em;
+}
+
+.projects-memory-review-modal .pm-cancel-pomodoro {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.35rem 0.7rem;
+    border-radius: 8px;
+    border: 1px solid var(--background-modifier-border, rgba(0,0,0,0.06));
+    background: var(--background-secondary, #f3f4f6);
+    color: var(--text-muted, #555);
+    font-weight: 500;
+    font-size: 0.82rem;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+    transition: all 0.18s ease;
 }
 
 .projects-memory-review-modal .pm-cancel-pomodoro:hover {
-    transform: translateY(-3px) scale(1.01);
-    box-shadow: 0 10px 26px rgba(15, 23, 42, 0.06);
-    background-color: #e9eef5;
+    background: var(--background-modifier-hover, #e9eef5);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(15, 23, 42, 0.06);
 }
 
-.projects-memory-review-modal .pm-cancel-pomodoro:active {
-    transform: translateY(0) scale(0.995);
-    box-shadow: 0 6px 14px rgba(15, 23, 42, 0.05);
+/* Center time display within the pomodoro area */
+.projects-memory-review-modal .review-pomodoro .pm-time-display {
+    flex: 1 1 80px;
+    text-align: center;
 }
 
-/* ensure progress wrapper has a stable base width */
+/* Progress bar wrapper */
 .projects-memory-review-modal .review-pomodoro .pm-progress-wrapper {
     flex: 0 0 35%;
-    min-width: 100px;
-    background: #f7f7f8;
-    border-radius: 6px;
-    padding: 3px;
+    min-width: 80px;
+    background: var(--background-modifier-border, #f0f0f0);
+    border-radius: 3px;
+    padding: 0;
 }
 
-/* "Nouveau" badge next to title */
-.projects-memory-review-modal .pm-new-indicator {
-    display: inline-block;
-    background-color: #e67e22;
-    /* warm orange */
-    color: white;
-    padding: 0.15rem 0.4rem;
-    margin-left: 0.6rem;
-    border-radius: 999px;
-    font-size: 0.75rem;
-    font-weight: 700;
-    vertical-align: middle;
-}
-
-/* Statistics badges container */
-.projects-memory-review-modal .pm-badges-container {
-    display: flex;
-    justify-content: center;
-    gap: 0.5rem;
-    margin: 0.75rem 0 1rem 0;
-    flex-wrap: wrap;
-}
-
-/* Base badge style */
-.projects-memory-review-modal .pm-stat-badge {
-    display: inline-block;
-    color: white;
-    padding: 0.2rem 0.5rem;
-    border-radius: 999px;
-    font-size: 0.75rem;
-    font-weight: 700;
-    vertical-align: middle;
-    text-align: center;
-    min-width: 3rem;
-}
-
-/* Session badge (blue/violet) */
-.projects-memory-review-modal .pm-badge-session {
-    background-color: #6c5ce7;
-    /* purple-blue */
-}
-
-/* Time badge (orange/amber) */
-.projects-memory-review-modal .pm-badge-time {
-    background-color: #f39c12;
-    /* amber */
-}
-
-/* Progress bar styling: use calming blue and smooth transitions */
-.projects-memory-review-modal h2 {
-    font-weight: 600;
-    text-align: center;
-}
-
+/* Progress bar */
 .projects-memory-review-modal .pm-progress-bar {
     width: 0%;
     height: 100%;
-    background: #3b82f6 !important;
-    border-radius: 4px;
-    transition: width 0.2s ease-out;
+    background: linear-gradient(90deg, #3b82f6, #60a5fa) !important;
+    border-radius: 3px;
+    transition: width 0.3s ease-out;
 }
 
 /* Statistics Modal Styles */
