@@ -1,7 +1,5 @@
 import { App, Modal, Plugin } from 'obsidian';
 
-type ViewMode = 'month' | 'week' | 'day';
-type ProjectCountFilter = 'top5' | 'top10' | 'all';
 
 interface ChartData {
     labels: string[];
@@ -26,9 +24,27 @@ export default class StatsModal extends Modal {
     chartInstances: any[] = [];
     private deadlines: { [path: string]: string } = {};
 
-    private currentViewMode: ViewMode = 'month';
-    private currentProjectFilter: ProjectCountFilter = 'top10';
+    private daysLimit: number = 10;
+    private projectsLimit: number = 10;
     private searchTerm: string = '';
+
+    private calculateLevenshteinDistance(a: string, b: string): number {
+        if (!a || !b) return (a || b).length;
+        const matrix = Array(b.length + 1).fill(null).map(() => Array(a.length + 1).fill(null));
+        for (let i = 0; i <= a.length; i++) matrix[0][i] = i;
+        for (let j = 0; j <= b.length; j++) matrix[j][0] = j;
+        for (let j = 1; j <= b.length; j++) {
+            for (let i = 1; i <= a.length; i++) {
+                const indicator = a[i - 1] === b[j - 1] ? 0 : 1;
+                matrix[j][i] = Math.min(
+                    matrix[j][i - 1] + 1, // insertion
+                    matrix[j - 1][i] + 1, // deletion
+                    matrix[j - 1][i - 1] + indicator // substitution
+                );
+            }
+        }
+        return matrix[b.length][a.length];
+    }
     private selectedProjects: Set<string> = new Set<string>();
 
     constructor(app: App, plugin: Plugin) {
@@ -45,11 +61,8 @@ export default class StatsModal extends Modal {
         titleEl.style.textAlign = 'center';
         titleEl.style.marginBottom = '1rem';
 
-        // Create view mode selector
-        this.createViewModeSelector();
-
-        // Create project count selector
-        this.createProjectCountSelector();
+        // Create search container
+        this.createSearchContainer();
 
         try {
             // Load Chart.js from CDN
@@ -177,88 +190,55 @@ export default class StatsModal extends Modal {
         let dateLabels: string[];
         let dateMap: { [date: string]: number } = {};
 
-        // Generate date labels based on current view mode
-        switch (this.currentViewMode) {
-            case 'month':
-                startDate = new Date();
-                startDate.setDate(startDate.getDate() - 30);
-                dateLabels = [];
-                for (let i = 29; i >= 0; i--) {
-                    const date = new Date();
-                    date.setDate(date.getDate() - i);
-                    const dateStr = date.toISOString().split('T')[0];
-                    dateLabels.push(dateStr);
-                    dateMap[dateStr] = 29 - i;
-                }
-                break;
-
-            case 'week':
-                startDate = new Date();
-                startDate.setDate(startDate.getDate() - 7);
-                dateLabels = [];
-                for (let i = 6; i >= 0; i--) {
-                    const date = new Date();
-                    date.setDate(date.getDate() - i);
-                    const dateStr = date.toISOString().split('T')[0];
-                    dateLabels.push(dateStr);
-                    dateMap[dateStr] = 6 - i;
-                }
-                break;
-
-            case 'day':
-                startDate = new Date();
-                startDate.setHours(startDate.getHours() - 24);
-                dateLabels = [];
-                for (let i = 23; i >= 0; i--) {
-                    const date = new Date();
-                    date.setHours(date.getHours() - i);
-                    const hourStr = date.getHours().toString().padStart(2, '0') + ':00';
-                    dateLabels.push(hourStr);
-                    dateMap[hourStr] = 23 - i;
-                }
-                break;
+        // Generate date labels based on this.daysLimit
+        startDate = new Date();
+        startDate.setDate(startDate.getDate() - this.daysLimit);
+        dateLabels = [];
+        for (let i = this.daysLimit - 1; i >= 0; i--) {
+            const date = new Date();
+            date.setDate(date.getDate() - i);
+            const dateStr = date.toISOString().split('T')[0];
+            dateLabels.push(dateStr);
+            dateMap[dateStr] = (this.daysLimit - 1) - i;
         }
 
-        // Process each project - filter by priority score first
-        let allProjectNames = Object.keys(statsData.projects);
+        // Process each project
+        const allProjectNames = Object.keys(statsData.projects);
 
         if (allProjectNames.length === 0) {
             console.warn('StatsModal: No projects found in stats data');
             throw new Error('No projects found in statistics data');
         }
 
-        // Apply search filter first
+        // Map projects with scores and Levenshtein distance
+        const mappedProjects = allProjectNames.map(projectPath => {
+            const projectName = projectPath.split('/').pop()?.replace('.md', '') || projectPath;
+            const score = statsData.projects[projectPath].currentScore + statsData.projects[projectPath].rotationBonus;
+            const distance = this.searchTerm.trim() ? this.calculateLevenshteinDistance(projectName.toLowerCase(), this.searchTerm.trim().toLowerCase()) : 0;
+            return { path: projectPath, score, distance, projectName };
+        });
+
         if (this.searchTerm.trim()) {
-            const searchLower = this.searchTerm.toLowerCase();
-            allProjectNames = allProjectNames.filter(path => {
-                const name = path.split('/').pop()?.replace('.md', '') || path;
-                return name.toLowerCase().includes(searchLower);
+            const searchLower = this.searchTerm.trim().toLowerCase();
+            mappedProjects.forEach(p => {
+                if (p.projectName.toLowerCase().includes(searchLower)) {
+                    p.distance = -1; // Exact substring match gets top priority
+                }
             });
+            // Sort primarily by distance, secondarily by score
+            mappedProjects.sort((a, b) => {
+                if (a.distance !== b.distance) {
+                    return a.distance - b.distance;
+                }
+                return b.score - a.score;
+            });
+        } else {
+            // Sort by score
+            mappedProjects.sort((a, b) => b.score - a.score);
         }
 
-        // Sort projects by currentScore (priority score) in descending order
-        // Use effective score for sorting if possible, or just current score + current bonus
-        const sortedProjects = allProjectNames
-            .map(projectPath => ({
-                path: projectPath,
-                score: statsData.projects[projectPath].currentScore + statsData.projects[projectPath].rotationBonus
-            }))
-            .sort((a, b) => b.score - a.score);
-
-        // Apply filter based on currentProjectFilter
-        let projectNames: string[];
-        switch (this.currentProjectFilter) {
-            case 'top5':
-                projectNames = sortedProjects.slice(0, 5).map(p => p.path);
-                break;
-            case 'top10':
-                projectNames = sortedProjects.slice(0, 10).map(p => p.path);
-                break;
-            case 'all':
-            default:
-                projectNames = allProjectNames;
-                break;
-        }
+        // Apply limit based on projectsLimit
+        let projectNames = mappedProjects.slice(0, this.projectsLimit).map(p => p.path);
 
         // Apply selection filter if any projects are selected
         if (this.selectedProjects.size > 0) {
@@ -335,25 +315,18 @@ export default class StatsModal extends Modal {
         const timeSteps: Date[] = [];
         const now = new Date();
 
-        if (this.currentViewMode === 'day') {
+        if (this.daysLimit <= 1) { // Same as "day" mode logic if user selects 1 day
             for (let i = 23; i >= 0; i--) {
                 const d = new Date();
                 d.setHours(d.getHours() - i);
                 d.setMinutes(59, 59, 999); // End of the hour
                 timeSteps.push(d);
             }
-        } else if (this.currentViewMode === 'week') {
-            for (let i = 6; i >= 0; i--) {
+        } else {
+            for (let i = this.daysLimit - 1; i >= 0; i--) {
                 const d = new Date();
                 d.setDate(d.getDate() - i);
-                d.setHours(23, 59, 59, 999);
-                timeSteps.push(d);
-            }
-        } else { // month
-            for (let i = 29; i >= 0; i--) {
-                const d = new Date();
-                d.setDate(d.getDate() - i);
-                d.setHours(23, 59, 59, 999);
+                d.setHours(23, 59, 59, 999); // End of the day
                 timeSteps.push(d);
             }
         }
@@ -387,7 +360,7 @@ export default class StatsModal extends Modal {
                 if (projectNames.includes(event.projectPath)) {
                     // Find which bucket this event belongs to
                     let bucketIndex = -1;
-                    if (this.currentViewMode === 'day') {
+                    if (this.daysLimit <= 1) {
                         // Match hour
                         const h = event.date.getHours().toString().padStart(2, '0') + ':00';
                         if (dateMap[h] !== undefined) bucketIndex = dateMap[h];
@@ -471,13 +444,8 @@ export default class StatsModal extends Modal {
         });
 
 
-        // Verify datasets are not empty
-        if (realScoreData.datasets.length === 0) {
-            throw new Error('No datasets generated for real score chart');
-        }
-        if (effectiveScoreData.datasets.length === 0) {
-            throw new Error('No datasets generated for effective score chart');
-        }
+        // Verification of datasets is removed to allow empty search results without throwing an error
+
         if (dailyActionsData.datasets.length === 0) {
             throw new Error('No datasets generated for daily actions chart');
         }
@@ -566,59 +534,6 @@ export default class StatsModal extends Modal {
         // Create projects list at the top of the charts container
         this.createProjectsListInContainer(statsData, chartsContainer);
 
-        // Real Score Chart
-        const realScoreContainer = chartsContainer.createEl('div', { cls: 'chart-container' });
-        realScoreContainer.createEl('h3', { text: 'Évolution du Score Réel', cls: 'chart-title' });
-        const realScoreCanvas = realScoreContainer.createEl('canvas', { cls: 'chart-canvas' });
-
-        this.chartInstances.push(new Chart(realScoreCanvas, {
-            type: 'line',
-            data: chartData.realScoreData,
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                scales: {
-                    x: {
-                        display: true,
-                        grid: {
-                            display: false
-                        }
-                    },
-                    y: {
-                        beginAtZero: false,
-                        min: 0,
-                        max: 100,
-                        grid: {
-                            color: 'rgba(0, 0, 0, 0.1)'
-                        }
-                    }
-                },
-                plugins: {
-                    legend: {
-                        display: true,
-                        position: 'top',
-                        labels: {
-                            usePointStyle: true,
-                            padding: 20
-                        }
-                    },
-                    tooltip: {
-                        mode: 'index',
-                        intersect: false
-                    }
-                },
-                elements: {
-                    point: {
-                        radius: 3,
-                        hoverRadius: 6
-                    },
-                    line: {
-                        borderWidth: 2
-                    }
-                }
-            }
-        }));
-
         // Effective Score Chart
         const effectiveScoreContainer = chartsContainer.createEl('div', { cls: 'chart-container' });
         effectiveScoreContainer.createEl('h3', { text: 'Évolution du Score Effectif', cls: 'chart-title' });
@@ -670,127 +585,58 @@ export default class StatsModal extends Modal {
                 }
             }
         }));
+        
+        this.createDynamicControls(effectiveScoreContainer);
 
-        // Daily Actions Chart (or Timeline for day mode)
+        // Daily Actions Chart
         const dailyActionsContainer = chartsContainer.createEl('div', { cls: 'chart-container' });
+        dailyActionsContainer.createEl('h3', { text: 'Actions par Jour', cls: 'chart-title' });
+        const dailyActionsCanvas = dailyActionsContainer.createEl('canvas', { cls: 'chart-canvas' });
 
-        if (this.currentViewMode === 'day') {
-            // Create timeline chart for day mode
-            dailyActionsContainer.createEl('h3', { text: 'Chronologie des Reviews', cls: 'chart-title' });
-            const timelineCanvas = dailyActionsContainer.createEl('canvas', { cls: 'chart-canvas' });
-
-            // Generate timeline data for day mode
-            const timelineData = this.generateTimelineData();
-
-            this.chartInstances.push(new Chart(timelineCanvas, {
-                type: 'scatter',
-                data: timelineData,
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    scales: {
-                        x: {
-                            type: 'time',
-                            time: {
-                                unit: 'hour',
-                                displayFormats: {
-                                    hour: 'HH:mm'
-                                }
-                            },
-                            title: {
-                                display: true,
-                                text: 'Heure'
-                            },
-                            grid: {
-                                display: false
-                            }
-                        },
-                        y: {
-                            type: 'category',
-                            labels: this.getProjectNames(),
-                            title: {
-                                display: true,
-                                text: 'Projet'
-                            },
-                            grid: {
-                                color: 'rgba(0, 0, 0, 0.1)'
-                            }
-                        }
-                    },
-                    plugins: {
-                        legend: {
+        this.chartInstances.push(new Chart(dailyActionsCanvas, {
+            type: 'bar',
+            data: chartData.dailyActionsData,
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        stacked: true,
+                        grid: {
                             display: false
-                        },
-                        tooltip: {
-                            callbacks: {
-                                title: (context: any) => {
-                                    const point = context[0];
-                                    return `Review à ${point.parsed.x}`;
-                                },
-                                label: (context: any) => {
-                                    const point = context.parsed;
-                                    return `Projet: ${point.y}`;
-                                }
-                            }
                         }
                     },
-                    elements: {
-                        point: {
-                            radius: 6,
-                            hoverRadius: 8
+                    y: {
+                        stacked: true,
+                        beginAtZero: true,
+                        grid: {
+                            color: 'rgba(0, 0, 0, 0.1)'
                         }
                     }
-                }
-            }));
-        } else {
-            // Regular bar chart for month/week modes
-            const chartTitle = this.currentViewMode === 'week' ? 'Actions par Semaine' : 'Actions par Jour';
-            dailyActionsContainer.createEl('h3', { text: chartTitle, cls: 'chart-title' });
-            const dailyActionsCanvas = dailyActionsContainer.createEl('canvas', { cls: 'chart-canvas' });
-
-            this.chartInstances.push(new Chart(dailyActionsCanvas, {
-                type: 'bar',
-                data: chartData.dailyActionsData,
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    scales: {
-                        x: {
-                            stacked: true,
-                            grid: {
-                                display: false
-                            }
-                        },
-                        y: {
-                            stacked: true,
-                            beginAtZero: true,
-                            grid: {
-                                color: 'rgba(0, 0, 0, 0.1)'
-                            }
+                },
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'top',
+                        labels: {
+                            usePointStyle: true,
+                            padding: 20
                         }
                     },
-                    plugins: {
-                        legend: {
-                            display: true,
-                            position: 'top',
-                            labels: {
-                                usePointStyle: true,
-                                padding: 20
-                            }
-                        },
-                        tooltip: {
-                            mode: 'index',
-                            intersect: false
-                        }
-                    },
-                    elements: {
-                        bar: {
-                            borderWidth: 0
-                        }
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false
+                    }
+                },
+                elements: {
+                    bar: {
+                        borderWidth: 0
                     }
                 }
-            }));
-        }
+            }
+        }));
+        
+        this.createDynamicControls(dailyActionsContainer);
     }
 
     onClose() {
@@ -804,47 +650,72 @@ export default class StatsModal extends Modal {
         this.contentEl.empty();
     }
 
-    private createViewModeSelector(): void {
-        const selectorContainer = this.contentEl.createEl('div', { cls: 'stats-view-selector' });
 
-        const modes: { mode: ViewMode; label: string }[] = [
-            { mode: 'month', label: 'Mois' },
-            { mode: 'week', label: 'Semaine' },
-            { mode: 'day', label: 'Jour' }
-        ];
 
-        modes.forEach(({ mode, label }) => {
-            const button = selectorContainer.createEl('button', {
-                text: label,
-                cls: `view-mode-btn ${this.currentViewMode === mode ? 'view-mode-btn-active' : ''}`
-            });
 
-            button.addEventListener('click', () => {
-                this.currentViewMode = mode;
-                this.refreshCharts();
-            });
+    private createSearchContainer(): void {
+        const searchContainer = this.contentEl.createEl('div', { cls: 'stats-search-container' });
+        const searchInput = searchContainer.createEl('input', {
+            type: 'text',
+            placeholder: 'Rechercher un projet...',
+            cls: 'stats-search-input'
+        });
+        searchInput.value = this.searchTerm;
+        
+        searchInput.addEventListener('input', (e) => {
+            this.searchTerm = (e.target as HTMLInputElement).value;
+            this.refreshCharts();
+            
+            // Re-focus the input after refresh
+            setTimeout(() => {
+                const newSearchInput = this.contentEl.querySelector('.stats-search-input') as HTMLInputElement;
+                if (newSearchInput) {
+                    newSearchInput.focus();
+                    newSearchInput.setSelectionRange(newSearchInput.value.length, newSearchInput.value.length);
+                }
+            }, 50);
         });
     }
 
-    private createProjectCountSelector(): void {
-        const selectorContainer = this.contentEl.createEl('div', { cls: 'stats-project-count-selector' });
+    private createDynamicControls(container: HTMLElement): void {
+        const controlsContainer = container.createEl('div', { cls: 'stats-dynamic-controls' });
 
-        const filters: { filter: ProjectCountFilter; label: string }[] = [
-            { filter: 'top5', label: 'Top 5' },
-            { filter: 'top10', label: 'Top 10' },
-            { filter: 'all', label: 'Tous' }
-        ];
+        // Days Limit Control
+        const daysControl = controlsContainer.createEl('div', { cls: 'control-group' });
+        
+        const daysMinus = daysControl.createEl('button', { text: '-', cls: 'control-btn minus-btn' });
+        daysControl.createEl('span', { text: `${this.daysLimit} Jours`, cls: 'control-label' });
+        const daysPlus = daysControl.createEl('button', { text: '+', cls: 'control-btn plus-btn' });
 
-        filters.forEach(({ filter, label }) => {
-            const button = selectorContainer.createEl('button', {
-                text: label,
-                cls: `project-count-btn ${this.currentProjectFilter === filter ? 'project-count-btn-active' : ''}`
-            });
-
-            button.addEventListener('click', () => {
-                this.currentProjectFilter = filter;
+        daysMinus.addEventListener('click', () => {
+            if (this.daysLimit > 1) {
+                this.daysLimit = Math.max(1, Math.ceil(this.daysLimit / 2));
                 this.refreshCharts();
-            });
+            }
+        });
+        
+        daysPlus.addEventListener('click', () => {
+            this.daysLimit *= 2;
+            this.refreshCharts();
+        });
+
+        // Projects Limit Control
+        const projectsControl = controlsContainer.createEl('div', { cls: 'control-group' });
+        
+        const projMinus = projectsControl.createEl('button', { text: '-', cls: 'control-btn minus-btn' });
+        projectsControl.createEl('span', { text: `${this.projectsLimit} Projets`, cls: 'control-label' });
+        const projPlus = projectsControl.createEl('button', { text: '+', cls: 'control-btn plus-btn' });
+
+        projMinus.addEventListener('click', () => {
+            if (this.projectsLimit > 1) {
+                this.projectsLimit = Math.max(1, Math.ceil(this.projectsLimit / 2));
+                this.refreshCharts();
+            }
+        });
+        
+        projPlus.addEventListener('click', () => {
+            this.projectsLimit *= 2;
+            this.refreshCharts();
         });
     }
 
@@ -856,30 +727,6 @@ export default class StatsModal extends Modal {
             }
         });
         this.chartInstances = [];
-
-        // Update button states
-        const viewModeButtons = this.contentEl.querySelectorAll('.view-mode-btn');
-        viewModeButtons.forEach(btn => {
-            btn.classList.remove('view-mode-btn-active');
-        });
-
-        const activeViewModeButton = this.contentEl.querySelector(`[data-mode="${this.currentViewMode}"]`) ||
-            Array.from(viewModeButtons).find(btn => btn.textContent === this.getModeLabel(this.currentViewMode));
-        if (activeViewModeButton) {
-            activeViewModeButton.classList.add('view-mode-btn-active');
-        }
-
-        // Update project count button states
-        const projectCountButtons = this.contentEl.querySelectorAll('.project-count-btn');
-        projectCountButtons.forEach(btn => {
-            btn.classList.remove('project-count-btn-active');
-        });
-
-        const activeProjectCountButton = Array.from(projectCountButtons).find(btn =>
-            btn.textContent === this.getProjectCountLabel(this.currentProjectFilter));
-        if (activeProjectCountButton) {
-            activeProjectCountButton.classList.add('project-count-btn-active');
-        }
 
         // Remove existing charts container (which includes projects list)
         const chartsContainer = this.contentEl.querySelector('.stats-charts-container');
@@ -898,191 +745,49 @@ export default class StatsModal extends Modal {
             console.error('StatsModal: Error refreshing charts:', error);
         }
     }
-
-    private getModeLabel(mode: ViewMode): string {
-        switch (mode) {
-            case 'month': return 'Mois';
-            case 'week': return 'Semaine';
-            case 'day': return 'Jour';
-        }
-    }
-
-    private getProjectCountLabel(filter: ProjectCountFilter): string {
-        switch (filter) {
-            case 'top5': return 'Top 5';
-            case 'top10': return 'Top 10';
-            case 'all': return 'Tous';
-        }
-    }
-
-    private generateTimelineData(): any {
-        const statsData = (this as any).plugin.loadStatsData ?
-            (this as any).plugin.loadStatsData() :
-            this.loadStatsData();
-
-        if (!statsData || !statsData.projects) {
-            return { datasets: [] };
-        }
-
-        const projectNames = Object.keys(statsData.projects);
-        const colors = this.generateColors(projectNames.length);
-        const datasets: any[] = [];
-
-        projectNames.forEach((projectPath, index) => {
-            const project = statsData.projects[projectPath];
-            const projectName = projectPath.split('/').pop()?.replace('.md', '') || projectPath;
-            const color = colors[index];
-
-            const points: { x: string; y: string }[] = [];
-
-            // Get reviews from the last 24 hours
-            const twentyFourHoursAgo = new Date();
-            twentyFourHoursAgo.setHours(twentyFourHoursAgo.getHours() - 24);
-
-            project.reviewHistory.forEach((review: any) => {
-                const reviewDate = new Date(review.date);
-                if (reviewDate >= twentyFourHoursAgo) {
-                    points.push({
-                        x: reviewDate.toISOString(),
-                        y: projectName
-                    });
-                }
-            });
-
-            if (points.length > 0) {
-                datasets.push({
-                    label: projectName,
-                    data: points,
-                    backgroundColor: color,
-                    borderColor: color,
-                    pointRadius: 6,
-                    pointHoverRadius: 8
-                });
-            }
-        });
-
-        return { datasets };
-    }
-
-    private getProjectNames(): string[] {
-        const statsData = (this as any).plugin.loadStatsData ?
-            (this as any).plugin.loadStatsData() :
-            this.loadStatsData();
-
-        if (!statsData || !statsData.projects) {
-            return [];
-        }
-
-        return Object.keys(statsData.projects).map(path => path.split('/').pop()?.replace('.md', '') || path);
-    }
-
-    private createProjectsList(statsData: any): void {
-        if (!statsData || !statsData.projects) {
-            return;
-        }
-
-        // Create projects list container
-        const projectsContainer = this.contentEl.createEl('div', { cls: 'projects-list-container' });
-
-        // Add title
-        const titleEl = projectsContainer.createEl('h3', {
-            text: 'Liste des Projets par Priorité',
-            cls: 'projects-list-title'
-        });
-
-        // Calculate time spent and priority for each project
-        const projectStats = this.calculateProjectStats(statsData);
-
-        // Sort by priority (effective score)
-        projectStats.sort((a, b) => b.effectiveScore - a.effectiveScore);
-
-        // Create projects grid
-        const projectsGrid = projectsContainer.createEl('div', { cls: 'projects-grid' });
-
-        projectStats.forEach((project, index) => {
-            const projectCard = projectsGrid.createEl('div', {
-                cls: 'project-card'
-            });
-            projectCard.setAttribute('style', `--project-color: ${project.color}; --project-index: ${index};`);
-
-            // Project name
-            const nameEl = projectCard.createEl('div', {
-                text: project.name,
-                cls: 'project-name'
-            });
-
-            // Time spent
-            const timeEl = projectCard.createEl('div', {
-                text: this.formatTimeSpent(project.timeSpent),
-                cls: 'project-time'
-            });
-
-            // Priority score
-            const scoreEl = projectCard.createEl('div', {
-                text: `Priorité: ${project.effectiveScore.toFixed(1)}`,
-                cls: 'project-priority'
-            });
-
-            // Reviews count
-            const reviewsEl = projectCard.createEl('div', {
-                text: `${project.totalReviews} reviews`,
-                cls: 'project-reviews'
-            });
-        });
-    }
-
     private createProjectsListInContainer(statsData: any, container: HTMLElement): void {
         if (!statsData || !statsData.projects) {
             return;
         }
 
-        // Create search container
-        const searchContainer = container.createEl('div', { cls: 'stats-search-container' });
-        const searchInput = searchContainer.createEl('input', {
-            type: 'text',
-            placeholder: 'Rechercher un projet...',
-            cls: 'stats-search-input'
-        });
-        searchInput.value = this.searchTerm;
-        searchInput.addEventListener('input', (e) => {
-            this.searchTerm = (e.target as HTMLInputElement).value;
-            // Debounced refresh would be better, but refreshCharts is already async
-            this.refreshCharts();
-        });
-
         // Create projects list container inside the charts container
         const projectsContainer = container.createEl('div', { cls: 'projects-list-container' });
 
-        // Add title with filter info
-        const filterLabel = this.getProjectCountLabel(this.currentProjectFilter);
+        // Add title with limit info
         const titleEl = projectsContainer.createEl('h3', {
-            text: `Liste des Projets par Priorité (${filterLabel})`,
+            text: `Liste des Projets par Priorité (Max: ${this.projectsLimit})`,
             cls: 'projects-list-title'
         });
 
         // Calculate time spent and priority for each project
         const projectStats = this.calculateProjectStats(statsData);
 
-        // Sort by priority (effective score)
-        projectStats.sort((a, b) => b.effectiveScore - a.effectiveScore);
+        // Map distance for search
+        const mappedProjectStats = projectStats.map(p => {
+            const distance = this.searchTerm.trim() ? this.calculateLevenshteinDistance(p.name.toLowerCase(), this.searchTerm.trim().toLowerCase()) : 0;
+            return { ...p, distance };
+        });
 
-        // Apply filters for the list
-        // 1. Search term
-        let filteredProjectStats = projectStats;
+        // Apply sorting (Levenshtein then Priority)
         if (this.searchTerm.trim()) {
-            const searchLower = this.searchTerm.toLowerCase();
-            filteredProjectStats = filteredProjectStats.filter(p => p.name.toLowerCase().includes(searchLower));
+            const searchLower = this.searchTerm.trim().toLowerCase();
+            mappedProjectStats.forEach(p => {
+                if (p.name.toLowerCase().includes(searchLower)) {
+                    p.distance = -1; // Exact match top priority
+                }
+            });
+            mappedProjectStats.sort((a, b) => {
+                if (a.distance !== b.distance) {
+                    return a.distance - b.distance;
+                }
+                return b.effectiveScore - a.effectiveScore;
+            });
+        } else {
+            mappedProjectStats.sort((a, b) => b.effectiveScore - a.effectiveScore);
         }
 
-        // 2. Top 5/10/All
-        switch (this.currentProjectFilter) {
-            case 'top5':
-                filteredProjectStats = filteredProjectStats.slice(0, 5);
-                break;
-            case 'top10':
-                filteredProjectStats = filteredProjectStats.slice(0, 10);
-                break;
-        }
+        // Apply limits
+        let filteredProjectStats = mappedProjectStats.slice(0, this.projectsLimit);
 
         // Create projects grid
         const projectsGrid = projectsContainer.createEl('div', { cls: 'projects-grid' });
@@ -1142,6 +847,8 @@ export default class StatsModal extends Modal {
                 cls: 'project-reviews'
             });
         });
+
+        this.createDynamicControls(projectsContainer);
     }
 
     private async handleUrgentAction(projectPath: string) {
@@ -1167,6 +874,29 @@ export default class StatsModal extends Modal {
             new Notice('Erreur lors du marquage comme urgent.');
         }
     }
+
+    private calculateProjectStats(statsData: any): Array<{
+        name: string;
+        path: string;
+        timeSpent: number;
+        effectiveScore: number;
+        totalReviews: number;
+        color: string;
+    }> {
+        const projectNames = Object.keys(statsData.projects);
+        const colors = this.generateColors(projectNames.length);
+
+        return projectNames.map((projectPath, index) => {
+            const project = statsData.projects[projectPath];
+            const projectName = projectPath.split('/').pop()?.replace('.md', '') || projectPath;
+            const color = colors[index];
+
+            // Calculate time spent based on reviews (assuming 25 minutes per review)
+            const timeSpent = project.totalReviews * 25; // minutes
+
+            // Calculate effective score (current score + rotation bonus)
+            const currentScore = project.currentScore || 50;
+            const effectiveScore = currentScore + project.rotationBonus;
 
             return {
                 path: projectPath,
