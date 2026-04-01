@@ -1,23 +1,19 @@
-import { App, Modal, Plugin } from 'obsidian';
+import { App, Modal, Plugin, TFile } from 'obsidian';
+import {
+    ChartData,
+    ProcessedChartData,
+    ProjectStatEntry,
+    loadChartJS,
+    loadStatsData,
+    loadDeadlines,
+    processStatsData,
+    calculateProjectStats,
+    computeSearchSimilarity,
+    formatTimeSpent,
+    handleUrgentAction,
+    generateColors,
+} from './statsUtils';
 
-
-interface ChartData {
-    labels: string[];
-    datasets: Array<{
-        label: string;
-        data: number[];
-        borderColor: string;
-        backgroundColor: string;
-        fill?: boolean;
-        tension?: number;
-    }>;
-}
-
-interface DailyActions {
-    [date: string]: {
-        [projectName: string]: number;
-    };
-}
 
 export default class StatsModal extends Modal {
     plugin: Plugin;
@@ -27,24 +23,6 @@ export default class StatsModal extends Modal {
     private daysLimit: number = 10;
     private projectsLimit: number = 10;
     private searchTerm: string = '';
-
-    private calculateLevenshteinDistance(a: string, b: string): number {
-        if (!a || !b) return (a || b).length;
-        const matrix = Array(b.length + 1).fill(null).map(() => Array(a.length + 1).fill(null));
-        for (let i = 0; i <= a.length; i++) matrix[0][i] = i;
-        for (let j = 0; j <= b.length; j++) matrix[j][0] = j;
-        for (let j = 1; j <= b.length; j++) {
-            for (let i = 1; i <= a.length; i++) {
-                const indicator = a[i - 1] === b[j - 1] ? 0 : 1;
-                matrix[j][i] = Math.min(
-                    matrix[j][i - 1] + 1, // insertion
-                    matrix[j - 1][i] + 1, // deletion
-                    matrix[j - 1][i - 1] + indicator // substitution
-                );
-            }
-        }
-        return matrix[b.length][a.length];
-    }
     private selectedProjects: Set<string> = new Set<string>();
 
     constructor(app: App, plugin: Plugin) {
@@ -66,21 +44,13 @@ export default class StatsModal extends Modal {
 
         try {
             // Load Chart.js from CDN
-            await this.loadChartJS();
+            await loadChartJS();
 
             // Load deadlines
-            this.deadlines = {};
-            this.plugin.app.vault.getMarkdownFiles().forEach(file => {
-                const cache = this.plugin.app.metadataCache.getFileCache(file);
-                const fm = (cache as any)?.frontmatter;
-                const deadlineProp = (this.plugin as any).settings.deadlineProperty || 'deadline';
-                if (fm && fm[deadlineProp]) {
-                    this.deadlines[file.path] = fm[deadlineProp];
-                }
-            });
+            this.deadlines = loadDeadlines(this.plugin);
 
             // Load and process stats data
-            const statsData = await this.loadStatsData();
+            const statsData = await loadStatsData(this.plugin);
 
             if (!statsData || Object.keys(statsData.projects).length === 0) {
                 this.contentEl.createEl('p', {
@@ -91,7 +61,7 @@ export default class StatsModal extends Modal {
             }
 
             // Process data for charts
-            const chartData = this.processStatsData(statsData);
+            const chartData = this.processData(statsData);
 
             // Create chart containers (includes projects list at the top)
             this.createChartContainers(chartData, statsData);
@@ -113,422 +83,22 @@ export default class StatsModal extends Modal {
         }
     }
 
-    private async loadChartJS(): Promise<void> {
-        return new Promise((resolve, reject) => {
-            // Check if Chart.js is already loaded
-            if (typeof (window as any).Chart !== 'undefined') {
-                resolve();
-                return;
-            }
-
-            let scriptsLoaded = 0;
-            const totalScripts = 2;
-            let hasError = false;
-
-            const checkAllLoaded = () => {
-                scriptsLoaded++;
-                if (scriptsLoaded === totalScripts && !hasError) {
-                    // Wait a bit for Chart.js to initialize on window object
-                    let attempts = 0;
-                    const maxAttempts = 50; // 5 seconds max
-                    const checkChart = () => {
-                        attempts++;
-                        if (typeof (window as any).Chart !== 'undefined') {
-                            resolve();
-                        } else if (attempts < maxAttempts) {
-                            setTimeout(checkChart, 100);
-                        } else {
-                            console.error('StatsModal: Chart.js failed to initialize on window object after', attempts, 'attempts');
-                            reject(new Error('Chart.js failed to initialize on window object'));
-                        }
-                    };
-                    checkChart();
-                }
-            };
-
-            // Load Chart.js
-            const chartScript = document.createElement('script');
-            chartScript.src = 'https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js';
-            chartScript.onload = checkAllLoaded;
-            chartScript.onerror = () => {
-                console.error('StatsModal: Failed to load Chart.js script from CDN');
-                hasError = true;
-                reject(new Error('Failed to load Chart.js from CDN'));
-            };
-            document.head.appendChild(chartScript);
-
-            // Load date adapter
-            const dateAdapterScript = document.createElement('script');
-            dateAdapterScript.src = 'https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@2.0.0/dist/chartjs-adapter-date-fns.bundle.min.js';
-            dateAdapterScript.onload = checkAllLoaded;
-            dateAdapterScript.onerror = () => {
-                console.error('StatsModal: Failed to load Chart.js date adapter from CDN');
-                hasError = true;
-                reject(new Error('Failed to load Chart.js date adapter from CDN'));
-            };
-            document.head.appendChild(dateAdapterScript);
+    /**
+     * Delegate to the shared processStatsData with this modal's current options.
+     */
+    private processData(statsData: any): ProcessedChartData {
+        return processStatsData(statsData, {
+            daysLimit: this.daysLimit,
+            projectsLimit: this.projectsLimit,
+            searchTerm: this.searchTerm,
+            selectedProjects: this.selectedProjects,
+            plugin: this.plugin,
+            deadlines: this.deadlines
         });
     }
 
-    private async loadStatsData(): Promise<any> {
-        try {
-            const pluginAny = this.plugin as any;
-            return await pluginAny.loadStatsData();
-        } catch (error) {
-            console.error('Failed to load stats data:', error);
-            return null;
-        }
-    }
-
-    private processStatsData(statsData: any): {
-        realScoreData: ChartData;
-        effectiveScoreData: ChartData;
-        dailyActionsData: ChartData;
-    } {
-
-        let startDate: Date;
-        let dateLabels: string[];
-        let dateMap: { [date: string]: number } = {};
-
-        // Generate date labels based on this.daysLimit
-        startDate = new Date();
-        startDate.setDate(startDate.getDate() - this.daysLimit);
-        dateLabels = [];
-        for (let i = this.daysLimit - 1; i >= 0; i--) {
-            const date = new Date();
-            date.setDate(date.getDate() - i);
-            const dateStr = date.toISOString().split('T')[0];
-            dateLabels.push(dateStr);
-            dateMap[dateStr] = (this.daysLimit - 1) - i;
-        }
-
-        // Process each project
-        const allProjectNames = Object.keys(statsData.projects);
-
-        if (allProjectNames.length === 0) {
-            console.warn('StatsModal: No projects found in stats data');
-            throw new Error('No projects found in statistics data');
-        }
-
-        // Map projects with scores and Levenshtein similarity
-        const mappedProjects = allProjectNames.map(projectPath => {
-            const projectName = projectPath.split('/').pop()?.replace('.md', '') || projectPath;
-            const score = statsData.projects[projectPath].currentScore + statsData.projects[projectPath].rotationBonus;
-            
-            let similarity = 1;
-            if (this.searchTerm.trim()) {
-                const searchLower = this.searchTerm.trim().toLowerCase();
-                const projectLower = projectName.toLowerCase();
-                
-                if (projectLower.includes(searchLower)) {
-                    similarity = 2; // Exact substring match gets top priority
-                } else {
-                    const distance = this.calculateLevenshteinDistance(projectLower, searchLower);
-                    const maxLen = Math.max(projectLower.length, searchLower.length);
-                    similarity = maxLen > 0 ? 1 - (distance / maxLen) : 0;
-                }
-            }
-            return { path: projectPath, score, similarity, projectName };
-        });
-
-        if (this.searchTerm.trim()) {
-            // Sort primarily by similarity tier, secondarily by score
-            mappedProjects.sort((a, b) => {
-                const tierA = Math.floor(a.similarity * 10);
-                const tierB = Math.floor(b.similarity * 10);
-                if (tierA !== tierB) {
-                    return tierB - tierA; // Higher tier first
-                }
-                return b.score - a.score;
-            });
-        } else {
-            // Sort by score
-            mappedProjects.sort((a, b) => b.score - a.score);
-        }
-
-        // Apply limit based on projectsLimit
-        let projectNames = mappedProjects.slice(0, this.projectsLimit).map(p => p.path);
-
-        // Apply selection filter if any projects are selected
-        if (this.selectedProjects.size > 0) {
-            // Keep only selected projects that belong to the current list
-            projectNames = projectNames.filter(path => this.selectedProjects.has(path));
-        }
-
-        const colors = this.generateColors(projectNames.length);
-
-        // Real score data
-        const realScoreData: ChartData = {
-            labels: dateLabels,
-            datasets: []
-        };
-
-        // Effective score data
-        const effectiveScoreData: ChartData = {
-            labels: dateLabels,
-            datasets: []
-        };
-
-        // Daily actions data
-        const dailyActionsData: ChartData = {
-            labels: dateLabels,
-            datasets: []
-        };
-
-        // --- REPLAY LOGIC START ---
-
-        // 1. Gather all events
-        interface ReviewEvent {
-            date: Date;
-            projectPath: string;
-            scoreAfter: number;
-        }
-        const allEvents: ReviewEvent[] = [];
-        Object.keys(statsData.projects).forEach(path => {
-            const proj = statsData.projects[path];
-            proj.reviewHistory.forEach((r: any) => {
-                allEvents.push({
-                    date: new Date(r.date),
-                    projectPath: path,
-                    scoreAfter: r.scoreAfter
-                });
-            });
-        });
-        allEvents.sort((a, b) => a.date.getTime() - b.date.getTime());
-
-        // 2. Setup replay state
-        const projectStates: { [path: string]: { currentScore: number, bonusSnapshot: number } } = {};
-        Object.keys(statsData.projects).forEach(p => {
-            projectStates[p] = {
-                currentScore: (this.plugin as any).settings.defaultScore || 50,
-                bonusSnapshot: 0
-            };
-        });
-        let globalRotationAccumulator = 0;
-        const rotationBonusAmount = (this.plugin as any).settings.rotationBonus || 0.1;
-
-        // 3. Prepare datasets maps
-        const realScoreMap: { [path: string]: (number | null)[] } = {};
-        const effectiveScoreMap: { [path: string]: (number | null)[] } = {};
-        const dailyActionsMap: { [path: string]: number[] } = {};
-
-        projectNames.forEach(p => {
-            const len = dateLabels.length;
-            realScoreMap[p] = new Array(len).fill(null);
-            effectiveScoreMap[p] = new Array(len).fill(null);
-            dailyActionsMap[p] = new Array(len).fill(0);
-        });
-
-        // 4. Generate Time Steps (matching dateLabels)
-        // We need the end of each bucket to snapshot state
-        const timeSteps: Date[] = [];
-        const now = new Date();
-
-        if (this.daysLimit <= 1) { // Same as "day" mode logic if user selects 1 day
-            for (let i = 23; i >= 0; i--) {
-                const d = new Date();
-                d.setHours(d.getHours() - i);
-                d.setMinutes(59, 59, 999); // End of the hour
-                timeSteps.push(d);
-            }
-        } else {
-            for (let i = this.daysLimit - 1; i >= 0; i--) {
-                const d = new Date();
-                d.setDate(d.getDate() - i);
-                d.setHours(23, 59, 59, 999); // End of the day
-                timeSteps.push(d);
-            }
-        }
-
-        // 5. Replay
-        let currentEventIdx = 0;
-
-        timeSteps.forEach((stepDate, timeIndex) => {
-            // Apply all events up to this stepDate
-            while (currentEventIdx < allEvents.length && allEvents[currentEventIdx].date <= stepDate) {
-                const event = allEvents[currentEventIdx];
-
-                // Update state
-                if (!projectStates[event.projectPath]) {
-                    projectStates[event.projectPath] = {
-                        currentScore: (this.plugin as any).settings.defaultScore || 50,
-                        bonusSnapshot: globalRotationAccumulator
-                    };
-                }
-
-                projectStates[event.projectPath].currentScore = event.scoreAfter;
-                projectStates[event.projectPath].bonusSnapshot = globalRotationAccumulator;
-
-                // Logic: "stats.projects[filePath].rotationBonus = ... + bonusAmount;" for all except current
-                // In relative model: Score = Base + (Global - Snapshot).
-                // If we increase Global, everyone's bonus increases. 
-                // Since this project just reset snapshot to Global, its bonus is 0.
-                globalRotationAccumulator += rotationBonusAmount;
-
-                // Count actions for dailyActions graph
-                if (projectNames.includes(event.projectPath)) {
-                    // Find which bucket this event belongs to
-                    let bucketIndex = -1;
-                    if (this.daysLimit <= 1) {
-                        // Match hour
-                        const h = event.date.getHours().toString().padStart(2, '0') + ':00';
-                        if (dateMap[h] !== undefined) bucketIndex = dateMap[h];
-                    } else {
-                        // Match date
-                        const d = event.date.toISOString().split('T')[0];
-                        if (dateMap[d] !== undefined) bucketIndex = dateMap[d];
-                    }
-
-                    if (bucketIndex !== -1 && dailyActionsMap[event.projectPath]) {
-                        dailyActionsMap[event.projectPath][bucketIndex]++;
-                    }
-                }
-
-                currentEventIdx++;
-            }
-
-            // Snapshot scores
-            projectNames.forEach(path => {
-                const state = projectStates[path];
-
-                // Calculate Rotation Bonus
-                // Careful: if the project was never initialized (no events ever), 
-                // it should perhaps start with bonus 0?
-                // In my logic, I init them with `bonusSnapshot: 0`.
-                // If `globalRotationAccumulator` has grown to 100, then `100 - 0 = 100` bonus. 
-                // This implies existing projects accumulate bonus even before first review? 
-                // Yes, that's how the plugin works (incrementRotationBonus iterates all projects).
-
-                const rotationBonus = globalRotationAccumulator - state.bonusSnapshot;
-
-                // Calculate Deadline Bonus
-                const deadline = this.deadlines[path];
-                const deadlineBonus = this.calculateDeadlineBonus(state.currentScore, stepDate, deadline);
-
-                const effective = state.currentScore + rotationBonus + deadlineBonus;
-
-                effectiveScoreMap[path][timeIndex] = effective;
-                realScoreMap[path][timeIndex] = state.currentScore;
-            });
-        });
-
-        // --- REPLAY LOGIC END ---
-
-        projectNames.forEach((projectPath, index) => {
-            const projectName = projectPath.split('/').pop()?.replace('.md', '') || projectPath;
-            const color = colors[index];
-
-            const realScores = realScoreMap[projectPath];
-            const effectiveScores = effectiveScoreMap[projectPath];
-            const dailyActions = dailyActionsMap[projectPath];
-
-            // Add datasets
-            const realScoreDataset = {
-                label: projectName,
-                data: realScores as number[],
-                borderColor: color,
-                backgroundColor: color + '20',
-                fill: false,
-                tension: 0.1
-            };
-            realScoreData.datasets.push(realScoreDataset);
-
-            const effectiveScoreDataset = {
-                label: projectName,
-                data: effectiveScores as number[],
-                borderColor: color,
-                backgroundColor: color + '20',
-                fill: false,
-                tension: 0.1
-            };
-            effectiveScoreData.datasets.push(effectiveScoreDataset);
-
-            const dailyActionsDataset = {
-                label: projectName,
-                data: dailyActions,
-                borderColor: color,
-                backgroundColor: color + '80'
-            };
-            dailyActionsData.datasets.push(dailyActionsDataset);
-        });
-
-
-        // Verification of datasets is removed to allow empty search results without throwing an error
-
-        if (dailyActionsData.datasets.length === 0) {
-            throw new Error('No datasets generated for daily actions chart');
-        }
-
-        return {
-            realScoreData,
-            effectiveScoreData,
-            dailyActionsData
-        };
-    }
-
-    private interpolateMissingValues(data: number[]): void {
-        for (let i = 0; i < data.length; i++) {
-            if (data[i] === null) {
-                // Find previous non-null value
-                let prevValue = null;
-                for (let j = i - 1; j >= 0; j--) {
-                    if (data[j] !== null) {
-                        prevValue = data[j];
-                        break;
-                    }
-                }
-
-                // Find next non-null value
-                let nextValue = null;
-                for (let j = i + 1; j < data.length; j++) {
-                    if (data[j] !== null) {
-                        nextValue = data[j];
-                        break;
-                    }
-                }
-
-                // Interpolate or use available value
-                if (prevValue !== null && nextValue !== null) {
-                    data[i] = (prevValue + nextValue) / 2;
-                } else if (prevValue !== null) {
-                    data[i] = prevValue;
-                } else if (nextValue !== null) {
-                    data[i] = nextValue;
-                } else {
-                    data[i] = 0; // Default fallback
-                }
-            }
-        }
-    }
-
-    private generateColors(count: number): string[] {
-        const colors = [
-            '#3b82f6', // blue
-            '#ef4444', // red
-            '#10b981', // green
-            '#f59e0b', // yellow
-            '#8b5cf6', // purple
-            '#06b6d4', // cyan
-            '#f97316', // orange
-            '#84cc16', // lime
-            '#ec4899', // pink
-            '#6b7280'  // gray
-        ];
-
-        const result: string[] = [];
-        for (let i = 0; i < count; i++) {
-            result.push(colors[i % colors.length]);
-        }
-        return result;
-    }
-
-    private createChartContainers(chartData: {
-        realScoreData: ChartData;
-        effectiveScoreData: ChartData;
-        dailyActionsData: ChartData;
-    }, statsData: any): void {
-
-        // Verify Chart.js is available - Fail-Fast approach
+    private createChartContainers(chartData: ProcessedChartData, statsData: any): void {
+        // Verify Chart.js is available
         if (typeof (window as any).Chart === 'undefined') {
             const errorMsg = 'Chart.js is not available on window object. Cannot create charts.';
             console.error('StatsModal:', errorMsg);
@@ -537,10 +107,9 @@ export default class StatsModal extends Modal {
 
         const Chart = (window as any).Chart;
 
-        // Create containers for each chart
         const chartsContainer = this.contentEl.createEl('div', { cls: 'stats-charts-container' });
 
-        // Create projects list at the top of the charts container
+        // Create projects list at the top
         this.createProjectsListInContainer(statsData, chartsContainer);
 
         // Effective Score Chart
@@ -555,46 +124,20 @@ export default class StatsModal extends Modal {
                 responsive: true,
                 maintainAspectRatio: false,
                 scales: {
-                    x: {
-                        display: true,
-                        grid: {
-                            display: false
-                        }
-                    },
-                    y: {
-                        beginAtZero: false,
-                        min: 0,
-                        grid: {
-                            color: 'rgba(0, 0, 0, 0.1)'
-                        }
-                    }
+                    x: { display: true, grid: { display: false } },
+                    y: { beginAtZero: false, min: 0, grid: { color: 'rgba(0, 0, 0, 0.1)' } }
                 },
                 plugins: {
-                    legend: {
-                        display: true,
-                        position: 'top',
-                        labels: {
-                            usePointStyle: true,
-                            padding: 20
-                        }
-                    },
-                    tooltip: {
-                        mode: 'index',
-                        intersect: false
-                    }
+                    legend: { display: true, position: 'top', labels: { usePointStyle: true, padding: 20 } },
+                    tooltip: { mode: 'index', intersect: false }
                 },
                 elements: {
-                    point: {
-                        radius: 3,
-                        hoverRadius: 6
-                    },
-                    line: {
-                        borderWidth: 2
-                    }
+                    point: { radius: 3, hoverRadius: 6 },
+                    line: { borderWidth: 2 }
                 }
             }
         }));
-        
+
         this.createDynamicControls(effectiveScoreContainer);
 
         // Daily Actions Chart
@@ -609,47 +152,23 @@ export default class StatsModal extends Modal {
                 responsive: true,
                 maintainAspectRatio: false,
                 scales: {
-                    x: {
-                        stacked: true,
-                        grid: {
-                            display: false
-                        }
-                    },
-                    y: {
-                        stacked: true,
-                        beginAtZero: true,
-                        grid: {
-                            color: 'rgba(0, 0, 0, 0.1)'
-                        }
-                    }
+                    x: { stacked: true, grid: { display: false } },
+                    y: { stacked: true, beginAtZero: true, grid: { color: 'rgba(0, 0, 0, 0.1)' } }
                 },
                 plugins: {
-                    legend: {
-                        display: true,
-                        position: 'top',
-                        labels: {
-                            usePointStyle: true,
-                            padding: 20
-                        }
-                    },
-                    tooltip: {
-                        mode: 'index',
-                        intersect: false
-                    }
+                    legend: { display: true, position: 'top', labels: { usePointStyle: true, padding: 20 } },
+                    tooltip: { mode: 'index', intersect: false }
                 },
                 elements: {
-                    bar: {
-                        borderWidth: 0
-                    }
+                    bar: { borderWidth: 0 }
                 }
             }
         }));
-        
+
         this.createDynamicControls(dailyActionsContainer);
     }
 
     onClose() {
-        // Destroy all chart instances to prevent memory leaks
         this.chartInstances.forEach(chart => {
             if (chart && typeof chart.destroy === 'function') {
                 chart.destroy();
@@ -659,9 +178,6 @@ export default class StatsModal extends Modal {
         this.contentEl.empty();
     }
 
-
-
-
     private createSearchContainer(): void {
         const searchContainer = this.contentEl.createEl('div', { cls: 'stats-search-container' });
         const searchInput = searchContainer.createEl('input', {
@@ -670,12 +186,11 @@ export default class StatsModal extends Modal {
             cls: 'stats-search-input'
         });
         searchInput.value = this.searchTerm;
-        
+
         searchInput.addEventListener('input', (e) => {
             this.searchTerm = (e.target as HTMLInputElement).value;
             this.refreshCharts();
-            
-            // Re-focus the input after refresh
+
             setTimeout(() => {
                 const newSearchInput = this.contentEl.querySelector('.stats-search-input') as HTMLInputElement;
                 if (newSearchInput) {
@@ -691,7 +206,6 @@ export default class StatsModal extends Modal {
 
         // Days Limit Control
         const daysControl = controlsContainer.createEl('div', { cls: 'control-group' });
-        
         const daysMinus = daysControl.createEl('button', { text: '-', cls: 'control-btn minus-btn' });
         daysControl.createEl('span', { text: `${this.daysLimit} Jours`, cls: 'control-label' });
         const daysPlus = daysControl.createEl('button', { text: '+', cls: 'control-btn plus-btn' });
@@ -702,7 +216,6 @@ export default class StatsModal extends Modal {
                 this.refreshCharts();
             }
         });
-        
         daysPlus.addEventListener('click', () => {
             this.daysLimit *= 2;
             this.refreshCharts();
@@ -710,7 +223,6 @@ export default class StatsModal extends Modal {
 
         // Projects Limit Control
         const projectsControl = controlsContainer.createEl('div', { cls: 'control-group' });
-        
         const projMinus = projectsControl.createEl('button', { text: '-', cls: 'control-btn minus-btn' });
         projectsControl.createEl('span', { text: `${this.projectsLimit} Projets`, cls: 'control-label' });
         const projPlus = projectsControl.createEl('button', { text: '+', cls: 'control-btn plus-btn' });
@@ -721,7 +233,6 @@ export default class StatsModal extends Modal {
                 this.refreshCharts();
             }
         });
-        
         projPlus.addEventListener('click', () => {
             this.projectsLimit *= 2;
             this.refreshCharts();
@@ -730,23 +241,19 @@ export default class StatsModal extends Modal {
 
     private async refreshCharts(): Promise<void> {
         try {
-            // 1. Reload and process data FIRST (Async)
-            const statsData = await this.loadStatsData();
-            const chartData = this.processStatsData(statsData);
+            const statsData = await loadStatsData(this.plugin);
+            const chartData = this.processData(statsData);
 
-            // 2. Find the actual scrolling container to preserve its state
+            // Preserve scroll position
             let scrollParent: HTMLElement = this.contentEl.closest('.modal-content') as HTMLElement || this.contentEl;
             let el: HTMLElement | null = this.contentEl;
             while (el) {
-                if (el.scrollTop > 0) {
-                    scrollParent = el;
-                    break;
-                }
+                if (el.scrollTop > 0) { scrollParent = el; break; }
                 el = el.parentElement;
             }
             const savedScroll = scrollParent.scrollTop;
 
-            // 3. Clear existing charts logic
+            // Destroy old charts
             this.chartInstances.forEach(chart => {
                 if (chart && typeof chart.destroy === 'function') {
                     chart.destroy();
@@ -754,83 +261,65 @@ export default class StatsModal extends Modal {
             });
             this.chartInstances = [];
 
-            // 4. Render NEW elements completely offline to avoid layout thrashing
+            // Render new elements offline
             const tempDiv = document.createElement('div');
             const originalContentEl = this.contentEl;
             (this as any).contentEl = tempDiv;
-            
+
             try {
                 this.createChartContainers(chartData, statsData);
             } finally {
-                (this as any).contentEl = originalContentEl; // Restore context
+                (this as any).contentEl = originalContentEl;
             }
-            
+
             const newContainer = tempDiv.firstElementChild as HTMLElement;
             const oldContainer = this.contentEl.querySelector('.stats-charts-container');
 
-            // 5. Blur active element explicitly if it is about to be destroyed!
-            // This is the #1 cause of forced scroll jumps in browsers (focus loss -> scroll to body)
+            // Blur active element to avoid scroll jump
             if (oldContainer && document.activeElement && oldContainer.contains(document.activeElement)) {
                 (document.activeElement as HTMLElement).blur();
             }
 
-            // 6. Seamless DOM Swap: Instantly replaces the node in the exact same flow position
+            // Seamless DOM swap
             if (oldContainer && newContainer) {
                 this.contentEl.replaceChild(newContainer, oldContainer);
             } else if (newContainer) {
                 this.contentEl.appendChild(newContainer);
             }
 
-            // 7. Force exactly the same scroll
+            // Restore scroll
             scrollParent.scrollTop = savedScroll;
 
         } catch (error) {
             console.error('StatsModal: Error refreshing charts:', error);
         }
     }
-    private createProjectsListInContainer(statsData: any, container: HTMLElement): void {
-        if (!statsData || !statsData.projects) {
-            return;
-        }
 
-        // Create projects list container inside the charts container
+    private createProjectsListInContainer(statsData: any, container: HTMLElement): void {
+        if (!statsData || !statsData.projects) return;
+
         const projectsContainer = container.createEl('div', { cls: 'projects-list-container' });
 
-        // Add title with limit info
-        const titleEl = projectsContainer.createEl('h3', {
+        projectsContainer.createEl('h3', {
             text: `Liste des Projets par Priorité (Max: ${this.projectsLimit})`,
             cls: 'projects-list-title'
         });
 
-        // Calculate time spent and priority for each project
-        const projectStats = this.calculateProjectStats(statsData);
+        // Calculate project stats using shared logic
+        const projectStats = calculateProjectStats(statsData, this.plugin);
 
         // Map similarity for search
         const mappedProjectStats = projectStats.map(p => {
-            let similarity = 1;
-            if (this.searchTerm.trim()) {
-                const searchLower = this.searchTerm.trim().toLowerCase();
-                const projectLower = p.name.toLowerCase();
-                
-                if (projectLower.includes(searchLower)) {
-                    similarity = 2; // Exact match top priority
-                } else {
-                    const distance = this.calculateLevenshteinDistance(projectLower, searchLower);
-                    const maxLen = Math.max(projectLower.length, searchLower.length);
-                    similarity = maxLen > 0 ? 1 - (distance / maxLen) : 0;
-                }
-            }
+            const similarity = computeSearchSimilarity(p.name, this.searchTerm);
             return { ...p, similarity };
         });
 
-        // Apply sorting (Similarity tier then Priority)
+        // Sort
         if (this.searchTerm.trim()) {
             mappedProjectStats.sort((a, b) => {
                 const tierA = Math.floor(a.similarity * 10);
                 const tierB = Math.floor(b.similarity * 10);
-                if (tierA !== tierB) {
-                    return tierB - tierA; // Higher tier first
-                }
+                if (tierA !== tierB) return tierB - tierA;
                 return b.effectiveScore - a.effectiveScore;
             });
         } else {
@@ -838,9 +327,9 @@ export default class StatsModal extends Modal {
         }
 
         // Apply limits
-        let filteredProjectStats = mappedProjectStats.slice(0, this.projectsLimit);
+        const filteredProjectStats = mappedProjectStats.slice(0, this.projectsLimit);
 
-        // Create projects grid
+        // Create grid
         const projectsGrid = projectsContainer.createEl('div', { cls: 'projects-grid' });
 
         filteredProjectStats.forEach((project, index) => {
@@ -850,10 +339,9 @@ export default class StatsModal extends Modal {
             });
             projectCard.setAttribute('style', `--project-color: ${project.color}; --project-index: ${index};`);
 
-            // Add click listener to card for selection
+            // Click listener for selection
             projectCard.addEventListener('click', (e) => {
-                // If clicking urgent button, don't toggle selection
-                if ((e.target as HTMLElement).closest('.urgent-btn')) return;
+                if ((e.target as HTMLElement).closest('.urgent-btn') || (e.target as HTMLElement).closest('.open-note-btn')) return;
 
                 if (this.selectedProjects.has(project.path)) {
                     this.selectedProjects.delete(project.path);
@@ -871,131 +359,32 @@ export default class StatsModal extends Modal {
             });
             urgentBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                this.handleUrgentAction(project.path);
+                handleUrgentAction(project.path, this.plugin).then(() => this.refreshCharts());
             });
 
-            // Project name
-            const nameEl = projectCard.createEl('div', {
-                text: project.name,
-                cls: 'project-name'
+            // Open note button
+            const openBtn = projectCard.createEl('span', {
+                text: '📄',
+                cls: 'open-note-btn',
+                title: 'Ouvrir la note'
+            });
+            openBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const file = this.plugin.app.vault.getAbstractFileByPath(project.path);
+                if (file instanceof TFile) {
+                    const leaf = this.plugin.app.workspace.getLeaf(false);
+                    leaf.openFile(file);
+                    this.close();
+                }
             });
 
-            // Time spent
-            const timeEl = projectCard.createEl('div', {
-                text: this.formatTimeSpent(project.timeSpent),
-                cls: 'project-time'
-            });
-
-            // Priority score
-            const scoreEl = projectCard.createEl('div', {
-                text: `Priorité: ${project.effectiveScore.toFixed(1)}`,
-                cls: 'project-priority'
-            });
-
-            // Reviews count
-            const reviewsEl = projectCard.createEl('div', {
-                text: `${project.totalReviews} reviews`,
-                cls: 'project-reviews'
-            });
+            // Project info
+            projectCard.createEl('div', { text: project.name, cls: 'project-name' });
+            projectCard.createEl('div', { text: formatTimeSpent(project.timeSpent), cls: 'project-time' });
+            projectCard.createEl('div', { text: `Priorité: ${project.effectiveScore.toFixed(1)}`, cls: 'project-priority' });
+            projectCard.createEl('div', { text: `${project.totalReviews} reviews`, cls: 'project-reviews' });
         });
 
         this.createDynamicControls(projectsContainer);
-    }
-
-    private async handleUrgentAction(projectPath: string) {
-        try {
-            const pluginAny = this.plugin as any;
-            let s = await pluginAny.getProjectScore(projectPath);
-            const rapprochment = Number(pluginAny.settings.rapprochementFactor ?? 0.2);
-            const gain = rapprochment * (100 - s);
-            const newScore = s + gain;
-
-            await pluginAny.updateProjectScore(projectPath, newScore);
-            await pluginAny.recordReviewAction(projectPath, 'emergency', newScore, false);
-
-            const projectName = projectPath.split('/').pop()?.replace('.md', '') || projectPath;
-            // @ts-ignore
-            new Notice(`Projet "${projectName}" marqué comme urgent !`);
-            
-            this.refreshCharts();
-        } catch (error) {
-            console.error('StatsModal: Error handling urgent action:', error);
-            // @ts-ignore
-            new Notice('Erreur lors du marquage comme urgent.');
-        }
-    }
-
-    private calculateProjectStats(statsData: any): Array<{
-        name: string;
-        path: string;
-        timeSpent: number;
-        effectiveScore: number;
-        totalReviews: number;
-        color: string;
-    }> {
-        const projectNames = Object.keys(statsData.projects);
-        const colors = this.generateColors(projectNames.length);
-
-        return projectNames.map((projectPath, index) => {
-            const project = statsData.projects[projectPath];
-            const projectName = projectPath.split('/').pop()?.replace('.md', '') || projectPath;
-            const color = colors[index];
-
-            // Calculate time spent based on reviews (assuming 25 minutes per review)
-            const timeSpent = project.totalReviews * 25; // minutes
-
-            // Calculate effective score (current score + rotation bonus)
-            const currentScore = project.currentScore || 50;
-            const effectiveScore = currentScore + project.rotationBonus;
-
-            return {
-                path: projectPath,
-                name: projectName,
-                timeSpent,
-                effectiveScore,
-                totalReviews: project.totalReviews,
-                color
-            };
-        });
-    }
-
-    private formatTimeSpent(minutes: number): string {
-        if (minutes < 60) {
-            return `${minutes} min`;
-        } else if (minutes < 1440) { // less than 24 hours
-            const hours = Math.floor(minutes / 60);
-            const remainingMinutes = minutes % 60;
-            return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}min` : `${hours}h`;
-        } else {
-            const days = Math.floor(minutes / 1440);
-            const remainingHours = Math.floor((minutes % 1440) / 60);
-            return remainingHours > 0 ? `${days}j ${remainingHours}h` : `${days}j`;
-        }
-    }
-
-    private calculateDeadlineBonus(baseScore: number, currentDate: Date, deadlineStr?: string): number {
-        if (!deadlineStr) return 0;
-
-        const deadlineDate = new Date(deadlineStr);
-        if (isNaN(deadlineDate.getTime())) return 0;
-
-        // Reset time parts for day diff calculation
-        const today = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate());
-        const deadlineDay = new Date(deadlineDate.getFullYear(), deadlineDate.getMonth(), deadlineDate.getDate());
-
-        const diffTime = deadlineDay.getTime() - today.getTime();
-        const daysRemaining = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-        let factor = 1.0;
-        if (daysRemaining > 0) {
-            factor = Math.exp(-0.1 * daysRemaining);
-        }
-        // If daysRemaining <= 0, factor is 1.0 (max urgency)
-
-        const gap = 100 - baseScore;
-        if (gap > 0) {
-            return gap * factor;
-        }
-        return 0;
     }
 }

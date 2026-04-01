@@ -1,6 +1,7 @@
 import { App, Plugin, PluginSettingTab, Setting, AbstractInputSuggest, TFile } from 'obsidian';
 import ReviewModal from './src/ReviewModal';
 import StatsModal from './src/StatsModal';
+import StatsView, { VIEW_TYPE_STATS } from './src/StatsView';
 
 // Projects Memory plugin: settings and UI for comma-separated project tags
 
@@ -91,6 +92,9 @@ export default class ProjectsMemoryPlugin extends Plugin {
 		// Run one-time migration to move scores from frontmatter into the statistics payload
 		await this.migrateScoresToStats();
 
+		// Register the stats sidebar view
+		this.registerView(VIEW_TYPE_STATS, (leaf) => new StatsView(leaf, this as any));
+
 		// Create an icon in the left ribbon that lists project files when clicked
 		const ribbonIconEl = this.addRibbonIcon('rocket', 'Review projects', (_evt: MouseEvent) => {
 			new ReviewModal(this.app, this as any).open();
@@ -106,7 +110,7 @@ export default class ProjectsMemoryPlugin extends Plugin {
 			}
 		});
 
-		// Register stats visualization command
+		// Register stats visualization command (full-screen modal)
 		this.addCommand({
 			id: 'view-stats',
 			name: 'View project statistics',
@@ -115,13 +119,22 @@ export default class ProjectsMemoryPlugin extends Plugin {
 			}
 		});
 
+		// Register stats sidebar toggle command
+		this.addCommand({
+			id: 'toggle-stats-sidebar',
+			name: 'Toggle project statistics sidebar',
+			callback: () => {
+				this.toggleStatsSidebar();
+			}
+		});
+
 		// Settings tab
 		this.addSettingTab(new ProjectsMemorySettingTab(this.app, this));
 	}
 
 	onunload() {
-		// No-op: stats are saved after each modification (load→modify→save pattern).
-		// Keeping onunload minimal avoids overwriting freshly-synced files during shutdown.
+		// Detach sidebar leaves to prevent stale references on plugin reload
+		this.app.workspace.detachLeavesOfType(VIEW_TYPE_STATS);
 	}
 
 	async loadSettings() {
@@ -280,6 +293,36 @@ export default class ProjectsMemoryPlugin extends Plugin {
 		}
 
 		await this.saveStatsData(stats);
+
+		// Auto-refresh the stats sidebar if it is open
+		this.refreshStatsSidebar();
+	}
+
+	// Toggle the stats sidebar view (open or close)
+	private async toggleStatsSidebar(): Promise<void> {
+		const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_STATS);
+		if (existing.length > 0) {
+			// Close existing sidebar
+			existing.forEach(leaf => leaf.detach());
+		} else {
+			// Open in right sidebar
+			const leaf = this.app.workspace.getRightLeaf(false);
+			if (leaf) {
+				await leaf.setViewState({ type: VIEW_TYPE_STATS, active: true });
+				this.app.workspace.revealLeaf(leaf);
+			}
+		}
+	}
+
+	// Refresh the stats sidebar if open — called after review actions
+	private refreshStatsSidebar(): void {
+		const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_STATS);
+		leaves.forEach(leaf => {
+			const view = leaf.view;
+			if (view instanceof StatsView) {
+				view.refresh();
+			}
+		});
 	}
 
 	// One-time migration: move scores from frontmatter into the statistics payload
