@@ -1,4 +1,4 @@
-import { App, Plugin, PluginSettingTab, Setting, AbstractInputSuggest, TFile } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, AbstractInputSuggest, TFile, getAllTags } from 'obsidian';
 import ReviewModal from './src/ReviewModal';
 import StatsModal from './src/StatsModal';
 import StatsView, { VIEW_TYPE_STATS } from './src/StatsView';
@@ -73,6 +73,12 @@ export default class ProjectsMemoryPlugin extends Plugin {
 	// Session-scoped map of review counts per file path. In-memory only; reset on plugin load.
 	public sessionReviewCounts: Map<string, number> = new Map<string, number>();
 
+	public statusBarItemEl: HTMLElement | null = null;
+	private lastUrgentProjectName: string = '';
+	private lastUrgentProjectTime: number = 0;
+	public pomodoroState: any = null;
+	public pomodoroGlobalIntervalId: number | null = null;
+
 	private async loadPersistedContainer(): Promise<{ payload: PersistedPayload; isLegacy: boolean }> {
 		const raw = await this.loadData();
 		if (raw && typeof raw === 'object') {
@@ -127,6 +133,16 @@ export default class ProjectsMemoryPlugin extends Plugin {
 				this.toggleStatsSidebar();
 			}
 		});
+
+		// Add Status Bar Item
+		this.statusBarItemEl = this.addStatusBarItem();
+		this.statusBarItemEl.addClass('pm-status-bar');
+		this.statusBarItemEl.addEventListener('click', () => {
+			new ReviewModal(this.app, this).open();
+		});
+		this.updateStatusBar();
+		this.registerInterval(window.setInterval(() => this.updateStatusBar(), 1000));
+		setTimeout(() => this.updateStatusBar(), 2000);
 
 		// Settings tab
 		this.addSettingTab(new ProjectsMemorySettingTab(this.app, this));
@@ -323,6 +339,139 @@ export default class ProjectsMemoryPlugin extends Plugin {
 				view.refresh();
 			}
 		});
+	}
+
+	private async getMostUrgentProjectName(): Promise<string> {
+		const projectTagsStr = this.settings.projectTags ?? '';
+		const tagsArray = projectTagsStr
+			.split(',')
+			.map((t: string) => t.trim())
+			.filter(Boolean)
+			.map((t: string) => (t.startsWith('#') ? t : `#${t}`));
+
+		if (tagsArray.length === 0) return '';
+		const archiveTag = this.settings.archiveTag ?? '';
+		const normalizedArchiveTag = archiveTag ? (archiveTag.startsWith('#') ? archiveTag : `#${archiveTag}`) : '';
+
+		const mdFiles = this.app.vault.getMarkdownFiles();
+		let topScore = -1;
+		let topName = '';
+
+		const stats = await this.loadStatsData();
+		const deadlineProp = this.settings.deadlineProperty || 'deadline';
+
+		for (const file of mdFiles) {
+			if (this.sessionIgnoredProjects && this.sessionIgnoredProjects.has(file.path)) continue;
+			const cache = this.app.metadataCache.getFileCache(file);
+			if (!cache) continue;
+
+			const allTags = getAllTags(cache) || [];
+			const hasProjectTag = allTags.some((t: string) => tagsArray.includes(t));
+			if (!hasProjectTag) continue;
+
+			const hasArchiveTag = normalizedArchiveTag ? allTags.includes(normalizedArchiveTag) : false;
+			if (hasArchiveTag) continue;
+
+			const projectStats = stats.projects[file.path];
+			let baseScore = projectStats ? projectStats.currentScore : this.settings.defaultScore;
+			let effectiveScore = baseScore + (projectStats ? projectStats.rotationBonus : 0);
+
+			const fm = (cache as any).frontmatter;
+			if (fm && fm[deadlineProp]) {
+				const deadline = String(fm[deadlineProp]);
+				const deadlineDate = new Date(deadline);
+				if (!isNaN(deadlineDate.getTime())) {
+					const now = new Date();
+					const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+					const deadlineDay = new Date(deadlineDate.getFullYear(), deadlineDate.getMonth(), deadlineDate.getDate());
+					const diffTime = deadlineDay.getTime() - today.getTime();
+					const daysRemaining = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+					let factor = 1.0;
+					if (daysRemaining > 0) factor = Math.exp(-0.1 * daysRemaining);
+					const gap = 100 - effectiveScore;
+					if (gap > 0) effectiveScore += gap * factor;
+				}
+			}
+
+			const weight = Number(this.settings.recencyPenaltyWeight ?? 0.5);
+			if (isFinite(weight) && weight > 0 && this.sessionReviewCounts) {
+				const count = this.sessionReviewCounts.get(file.path) ?? 0;
+				if (count > 0) {
+					const totalMultiplier = count * weight;
+					const integerPart = Math.floor(totalMultiplier);
+					const fractionalPart = totalMultiplier - integerPart;
+					const rapprochment = Number(this.settings.rapprochmentFactor ?? 0.2);
+					let currentEffective = effectiveScore;
+					for (let i = 0; i < integerPart; i++) {
+						const perte = rapprochment * (currentEffective - 1);
+						currentEffective -= perte;
+					}
+					if (fractionalPart > 0) {
+						const finalPerte = rapprochment * (currentEffective - 1);
+						currentEffective -= finalPerte * fractionalPart;
+					}
+					effectiveScore = currentEffective;
+				}
+			}
+
+			if (projectStats && projectStats.totalReviews === 0) {
+				effectiveScore += 1000;
+			} else if (!projectStats) {
+				effectiveScore += 1000;
+			}
+
+			if (effectiveScore > topScore) {
+				topScore = effectiveScore;
+				topName = file.basename;
+			} else if (effectiveScore === topScore && topName === '') {
+				topName = file.basename; // Fallback
+			}
+		}
+		return topName;
+	}
+
+	private async updateStatusBar() {
+		if (!this.statusBarItemEl) return;
+
+		let pomodoroText = '';
+		let pomodoroPct: number | null = null;
+		const s = this.pomodoroState;
+		if (s && s.isActive) {
+			const elapsed = Date.now() - s.startTime;
+			const remaining = Math.max(0, s.durationMs - elapsed);
+			pomodoroPct = Math.min(100, Math.max(0, (elapsed / s.durationMs) * 100));
+			const secs = Math.ceil(remaining / 1000);
+			const minutes = Math.floor(secs / 60);
+			const seconds = secs % 60;
+			pomodoroText = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+		}
+
+		if (Date.now() - this.lastUrgentProjectTime > 10000 || !this.lastUrgentProjectName) {
+			this.lastUrgentProjectTime = Date.now();
+			this.getMostUrgentProjectName().then(name => {
+				this.lastUrgentProjectName = name;
+				this.renderStatusBarContent(pomodoroPct, pomodoroText, this.lastUrgentProjectName);
+			});
+		} else {
+			this.renderStatusBarContent(pomodoroPct, pomodoroText, this.lastUrgentProjectName);
+		}
+	}
+
+	private renderStatusBarContent(pomodoroPct: number | null, pomodoroText: string, projectName: string) {
+		if (!this.statusBarItemEl) return;
+		this.statusBarItemEl.empty();
+		
+		if (pomodoroPct !== null) {
+			const barContainer = this.statusBarItemEl.createEl('div', { cls: 'pm-status-bar-pomodoro', attr: { title: pomodoroText } });
+			barContainer.createEl('div', { cls: 'pm-status-bar-pomodoro-fill' }).style.width = `${pomodoroPct}%`;
+		}
+		
+		const textWrapper = this.statusBarItemEl.createEl('span');
+		if (projectName) {
+			textWrapper.setText(`🚨 ${projectName}`);
+		} else {
+			textWrapper.setText(`✅ Aucun projet`);
+		}
 	}
 
 	// One-time migration: move scores from frontmatter into the statistics payload

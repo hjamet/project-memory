@@ -5,6 +5,7 @@
  */
 
 import { ItemView, Plugin, TFile, WorkspaceLeaf } from 'obsidian';
+import ReviewModal from './ReviewModal';
 import {
     ProcessedChartData,
     loadChartJS,
@@ -89,6 +90,12 @@ export default class StatsView extends ItemView {
     }
 
     private async buildUI(rootEl: HTMLElement): Promise<void> {
+        // CTA Button
+        const ctaBtn = rootEl.createEl('button', { text: '🚀 Démarrer une Revue', cls: 'sv-cta-btn pm-primary-btn' });
+        ctaBtn.addEventListener('click', () => {
+            new ReviewModal(this.plugin.app, this.plugin).open();
+        });
+
         // Title
         const titleEl = rootEl.createEl('h2', { text: 'Statistiques', cls: 'sv-title' });
 

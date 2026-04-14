@@ -690,6 +690,37 @@
     box-sizing: border-box;
 }
 
+/* ─── CTA Button ─── */
+.projects-memory-stats-view .sv-cta-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    padding: 1.1rem 0.8rem;
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: white;
+    background: linear-gradient(135deg, #10b981, #059669);
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+    transition: all 0.2s cubic-bezier(0.2, 0.9, 0.2, 1);
+    flex-shrink: 0;
+    margin-bottom: 0.75rem;
+}
+
+.projects-memory-stats-view .sv-cta-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(16, 185, 129, 0.4);
+    background: linear-gradient(135deg, #059669, #047857);
+}
+
+.projects-memory-stats-view .sv-cta-btn:active {
+    transform: translateY(0);
+    box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
+}
+
 /* Title */
 .projects-memory-stats-view .sv-title {
     font-weight: 700;
@@ -962,4 +993,34 @@
     box-shadow: none;
     background-color: var(--interactive-accent);
     color: var(--text-on-accent);
+}
+
+/* Status Bar Pomodoro */
+.pm-status-bar {
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 8px;
+    border-radius: 4px;
+    transition: background-color 0.15s ease;
+}
+.pm-status-bar:hover {
+    background-color: var(--background-modifier-hover, rgba(0,0,0,0.1));
+}
+
+.pm-status-bar-pomodoro {
+    width: 60px;
+    height: 8px;
+    background-color: var(--background-modifier-border, rgba(0,0,0,0.1));
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+    border: 1px solid rgba(0,0,0,0.1);
+}
+
+.pm-status-bar-pomodoro-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #4caf50, #8bc34a);
+    transition: width 0.5s ease-out;
 }

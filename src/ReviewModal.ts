@@ -714,25 +714,58 @@ export default class ReviewModal extends Modal {
 						} catch (err) {
 							// ignore errors from attempting to play audio
 						}
-						// Desktop notification: replace Notice with standard Web Notification handling
+						// 1. Alert Sound (Web Audio)
 						try {
-							if (typeof Notification !== 'undefined') {
-								if (Notification.permission === 'granted') {
-									new Notification('Pomodoro terminé !');
-								} else if (Notification.permission === 'default') {
-									Notification.requestPermission().then((perm) => {
-										if (perm === 'granted') new Notification('Pomodoro terminé !');
-									});
+							const audio = new window.Audio('https://actions.google.com/sounds/v1/alarms/beeps_and_bells.ogg');
+							audio.play().catch(() => {});
+						} catch (e) {}
+
+						// 2. Obsidian Toast Notice
+						try {
+							new Notice("🍅 Pomodoro terminé ! C'est l'heure de la pause.", 0);
+						} catch (e) {}
+
+						// 3. OS-level Foreground Window (forcing focus)
+						try {
+							if (typeof require !== 'undefined') {
+								const cp = require('child_process');
+								if (process.platform === 'win32') {
+									// DefaultDesktopOnly flag (0x20000 = 131072) forces message box to front of all windows
+									const script = `powershell -WindowStyle Hidden -Command "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show('🍅 Le chronometre Pomodoro a expire ! C''est l''heure de decoller les yeux de l''ecran et de prendre votre pause.', 'Projects Memory - Pomodoro', 'OK', 'Information', 'Button1', 131072)"`;
+									cp.exec(script);
+								} else if (process.platform === 'darwin') {
+									const script = `osascript -e 'tell application "System Events" to display dialog "🍅 Pomodoro terminé ! L''heure de la pause a sonné." with title "Projects Memory" buttons {"OK"} default button "OK"'`;
+									cp.exec(script);
 								} else {
-									// denied: do nothing
+									const script = `notify-send "🍅 Pomodoro terminé !" "C'est l'heure de la pause bien méritée." -u critical -t 0`;
+									cp.exec(script);
 								}
-							} else {
-								// Fallback environment: show Obsidian notice
-								new Notice('Pomodoro terminé !');
+							} else if (typeof Notification !== 'undefined') {
+								new Notification('🍅 Pomodoro terminé !', { body: "Prenez votre pause.", requireInteraction: true });
 							}
-						} catch (err) {
-							// Ensure notification errors do not break flow
-							try { new Notice('Pomodoro terminé !'); } catch (e) { /* ignore */ }
+						} catch (e) {
+							if (typeof Notification !== 'undefined') {
+								new Notification('🍅 Pomodoro terminé !', { body: "Prenez votre pause.", requireInteraction: true });
+							}
+						}
+
+						// 4. Obsidian Foreground Modal
+						try {
+							class PomodoroBreakModal extends Modal {
+								onOpen() {
+									const { contentEl } = this;
+									contentEl.empty();
+									contentEl.style.textAlign = 'center';
+									contentEl.style.padding = '3rem 1rem';
+									contentEl.createEl('h2', { text: '🍅 Pomodoro Terminé !', attr: { style: 'font-size: 2.2rem; margin-bottom: 1rem; color: var(--text-normal); font-weight: 700;' } });
+									contentEl.createEl('p', { text: "C'est l'heure de prendre une pause bien méritée.", attr: { style: 'font-size: 1.2rem; color: var(--text-muted); margin-bottom: 2.5rem;' } });
+									const btn = contentEl.createEl('button', { text: 'Super !', attr: { style: 'padding: 0.8rem 2.5rem; font-size: 1.1rem; cursor: pointer; border-radius: 8px; font-weight: bold; background: linear-gradient(135deg, #10b981, #059669); border: none; color: white; box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);' } });
+									btn.addEventListener('click', () => this.close());
+								}
+							}
+							new PomodoroBreakModal((pluginAny as any).app).open();
+						} catch (e) {
+							console.error('Failed to open break modal', e);
 						}
 					}
 				}, 1000);

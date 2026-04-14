@@ -1,0 +1,57 @@
+name: Release Obsidian Plugin
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'manifest.json'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract Version and Check Tag
+        id: check_version
+        run: |
+          VERSION="v$(jq -r '.version' manifest.json)"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          TAG_EXISTS=$(git ls-remote --tags origin | grep "refs/tags/${VERSION}$" || true)
+          if [ -n "$TAG_EXISTS" ]; then
+            echo "Tag ${VERSION} existe déjà. Annulation de la release."
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "Nouveau tag ${VERSION} détecté. Poursuite de la release."
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Use Node.js
+        if: steps.check_version.outputs.skip == 'false'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18.x'
+
+      - name: Build plugin
+        if: steps.check_version.outputs.skip == 'false'
+        run: |
+          npm install
+          npm run build
+
+      - name: Create Release
+        if: steps.check_version.outputs.skip == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.VERSION }}
+          name: Release ${{ env.VERSION }}
+          files: |
+            main.js
+            manifest.json
+            styles.css
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

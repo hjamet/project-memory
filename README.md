@@ -16,6 +16,7 @@ After building, copy `main.js`, `manifest.json`, and `styles.css` to your vault 
 ## Cœur du système & Actions
 Le plugin repose sur un **système de bonus de rotation** : chaque fois que vous travaillez sur un projet, tous les autres projets ignorés accumulent un bonus (`rotationBonus`), garantissant mathématiquement que les projets négligés finissent par remonter à la surface.
 Les actions disponibles lors d'une session de revue mettent à jour un **Score Effectif** (Score réel + Bonus) et ajoutent automatiquement du temps de travail ("Pomodoros") aux statistiques.
+Le plugin s'intègre également à la **barre d'état (Status Bar)** d'Obsidian pour afficher en permanence le projet le plus urgent et la progression du minuteur Pomodoro actif.
 
 ## Modal de Statistiques (Visualisation)
 Accessible via la commande "View project statistics", le modal affiche une interface dynamique pour visualiser les performances :
@@ -24,7 +25,7 @@ Accessible via la commande "View project statistics", le modal affiche une inter
 - **Interaction et Urgence** : Clic sur une carte pour isoler sa courbe, bouton "Urgence" (🚨) injectant un bonus pur immédiat sans compter comme une session de revue (ne réinitialise pas le bonus de séniorité).
 
 ## Sidebar de Statistiques (Vue permanente)
-Accessible via la commande "Toggle project statistics sidebar", cette `ItemView` Obsidian s'ouvre dans le panneau latéral droit. Elle offre **exactement les mêmes fonctionnalités** que le modal (cartes projets, graphiques Chart.js, recherche Levenshtein, contrôles dynamiques, urgence, ouverture de note) mais avec un **layout portrait compact** optimisé pour un espace étroit (~300-400px). La sidebar se **rafraîchit automatiquement** après chaque action de review.
+Accessible via la commande "Toggle project statistics sidebar", cette `ItemView` Obsidian s'ouvre dans le panneau latéral droit. Elle offre **exactement les mêmes fonctionnalités** que le modal (cartes projets, graphiques Chart.js, recherche Levenshtein, contrôles dynamiques, urgence, ouverture de note) mais avec un **layout portrait compact** optimisé pour un espace étroit (~300-400px). La sidebar se **rafraîchit automatiquement** après chaque action de review. Un bouton d'appel à l'action proéminent situé en haut permet de plonger instantanément dans une session de revue principale.
 
 ## Architecture : Module Partagé (`statsUtils.ts`)
 Toute la logique métier (replay des scores, Levenshtein, filtrage archive, bonus deadline, génération de couleurs, formatage du temps) est centralisée dans `src/statsUtils.ts`. Ce module est importé par le `StatsModal` (plein écran) et le `StatsView` (sidebar), éliminant toute duplication de code.
@@ -73,10 +74,11 @@ stats.json.example   # Reference structure for the statistics payload
 
 # Scripts exécutables secondaires & Utilitaires
 
-| Commande NPM | Effet |
-|--------------|-------|
+| Commande / Outil | Effet |
+|------------------|-------|
 | `npm run dev` | Lance esbuild en mode watch pour le développement continu |
 | `npm run build` | Compile l'application pour la production (`main.js`) |
+| CI Github Release | Le workflow `.github/workflows/release.yml` détecte automatiquement les changements de version dans le `manifest.json` sur la branche `main` / `master`. Si la version est nouvelle, la CI va générer et créer le nouveau Tag Git, compiler l'application, et publier la Release. |
 
 # Roadmap
 
