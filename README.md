@@ -38,6 +38,7 @@ Le plugin utilise exclusivement la mécanique interne d'Obsidian (`saveData`/`lo
 - Refonte complète de l'interface des statistiques (graphiques et liste entrelacés, cartes de projets interactives).
 - **Sidebar permanente** : Vue `ItemView` dans le panneau latéral avec layout portrait compact et auto-refresh.
 - **Module partagé** : Extraction de ~500 lignes de logique métier dans `statsUtils.ts` (zéro duplication).
+- **Clé de Deadline Configurable** : Permet l'interopérabilité avec d'autres plugins (ex: Tasks) en choisissant dynamiquement la clé de frontmatter utilisée pour la date d'échéance (ex: `due`, `echeance`).
 - Filtrage des projets archivés dans le `StatsModal` et ajout d'un bouton direct pour ouvrir la note depuis la liste.
 - Migration réussie et suppression de l'ancien fichier `stats.json` standalone.
 - Stabilité garantie des rendus Chart.js qui se recréent adéquatement à la volée.
