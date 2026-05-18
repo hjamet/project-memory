@@ -454,17 +454,20 @@ export default class ReviewModal extends Modal {
 				console.error('Failed to get project stats:', e);
 			}
 
-			// Update score in stats.json
-			try {
-				const pluginAny = this.plugin as any;
-				await pluginAny.updateProjectScore(chosen.file.path, newScore);
-			} catch (e) {
-				console.error('Failed to update project score:', e);
-				return;
+			// Only update score if not (first review and NOT worked on it)
+			if (!(isFirstReview && !workedOnIt)) {
+				// Update score in stats.json
+				try {
+					const pluginAny = this.plugin as any;
+					await pluginAny.updateProjectScore(chosen.file.path, newScore);
+				} catch (e) {
+					console.error('Failed to update project score:', e);
+					return;
+				}
 			}
 
-			// If this is the first review, only update the score and mark as reviewed
-			if (isFirstReview) {
+			// If this is the first review and not worked on it, just mark as reviewed to remove "Nouveau" badge
+			if (isFirstReview && !workedOnIt) {
 				try {
 					const pluginAny = this.plugin as any;
 					const stats = await pluginAny.loadStatsData();
