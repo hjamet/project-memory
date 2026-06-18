@@ -1,10 +1,13 @@
-import { App, Modal, Setting, Notice, Plugin, MarkdownRenderer, getAllTags } from 'obsidian';
+import { App, Modal, Setting, Notice, Plugin, MarkdownRenderer, getAllTags, Component } from 'obsidian';
 
 export default class ReviewModal extends Modal {
 	plugin: Plugin;
+	previewComponent: Component;
 	constructor(app: App, plugin: Plugin) {
 		super(app);
 		this.plugin = plugin;
+		this.previewComponent = new Component();
+		this.previewComponent.load();
 		// Scope modal styles to avoid leaking into the rest of Obsidian
 		this.modalEl.classList.add('projects-memory-review-modal');
 	}
@@ -419,7 +422,7 @@ export default class ReviewModal extends Modal {
 		// Phase 3 - Render and finalization
 		try {
 			// IMPORTANT: use the app-first signature: (app, markdown, el, sourcePath, component)
-			await MarkdownRenderer.render(this.app, fileContent, previewContainer, chosen.file.path, this as any);
+			await MarkdownRenderer.render(this.app, fileContent, previewContainer, chosen.file.path, this.previewComponent);
 			if (this.isClosed) return;
 		} catch (err) {
 			new Notice('Unable to render preview — review controls are still available.');
@@ -838,6 +841,7 @@ export default class ReviewModal extends Modal {
 	onClose() {
 		this.isClosed = true;
 		this.contentEl.empty();
+		this.previewComponent.unload();
 		// stop any running pomodoro interval
 		if (this.pomodoroIntervalId) {
 			window.clearInterval(this.pomodoroIntervalId);

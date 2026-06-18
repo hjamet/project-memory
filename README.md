@@ -42,6 +42,7 @@ Le plugin utilise exclusivement la mécanique interne d'Obsidian (`saveData`/`lo
 - Filtrage des projets archivés dans le `StatsModal` et ajout d'un bouton direct pour ouvrir la note depuis la liste.
 - Migration réussie et suppression de l'ancien fichier `stats.json` standalone.
 - Stabilité garantie des rendus Chart.js qui se recréent adéquatement à la volée.
+- Résolution du problème de rendu des callouts / admonitions dans le modal de revue grâce à l'utilisation d'un `Component` dédié pour isoler le cycle de vie du rendu.
 
 # Documentation Index
 
