@@ -16,18 +16,21 @@
 .projects-memory-review-modal .pm-review-header {
     flex-shrink: 0;
     text-align: center;
-    padding-bottom: 0.75rem;
+    padding: 0.5rem 0 1rem 0;
     border-bottom: 1px solid var(--background-modifier-border, rgba(0,0,0,0.06));
-    margin-bottom: 0.75rem;
+    margin-bottom: 0.5rem;
 }
 
 .projects-memory-review-modal h2 {
     font-weight: 700;
-    font-size: 1.2rem;
+    font-size: 1.25rem;
     text-align: center;
     margin: 0 0 0.5rem 0;
-    letter-spacing: -0.01em;
+    letter-spacing: -0.015em;
     color: var(--text-normal);
+    background: linear-gradient(135deg, var(--text-normal), var(--text-muted));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
 }
 
 /* "Nouveau" pill badge — inline next to title */
@@ -57,14 +60,20 @@
     display: inline-flex;
     align-items: center;
     color: white;
-    padding: 0.15rem 0.5rem;
-    border-radius: 999px;
-    font-size: 0.7rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: 6px;
+    font-size: 0.72rem;
     font-weight: 600;
     letter-spacing: 0.02em;
     min-width: 2.5rem;
     text-align: center;
     justify-content: center;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+    transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.projects-memory-review-modal .pm-stat-badge:hover {
+    transform: translateY(-1px);
 }
 
 .projects-memory-review-modal .pm-badge-session {
@@ -80,7 +89,17 @@
     flex: 1 1 auto;
     overflow-y: auto;
     min-height: 0;
-    padding: 0.5rem 0;
+    padding: 1.25rem;
+    background-color: var(--background-primary-alt);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 12px;
+    box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.04);
+    margin: 0.5rem 0;
+    transition: border-color 0.2s ease;
+}
+
+.projects-memory-review-modal .review-preview:hover {
+    border-color: var(--background-modifier-border-hover);
 }
 
 /* ===== Feeling Buttons (Step 1) — Icon-only circles ===== */
@@ -97,14 +116,14 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 48px;
-    height: 48px;
+    width: 50px;
+    height: 50px;
     border-radius: 50%;
-    border: 2px solid transparent;
+    border: 2px solid rgba(255, 255, 255, 0.15);
     cursor: pointer;
     color: white;
     padding: 0;
-    transition: all 0.22s cubic-bezier(0.2, 0.9, 0.2, 1);
+    transition: all 0.28s cubic-bezier(0.2, 0.9, 0.2, 1.25);
     will-change: transform, box-shadow;
     position: relative;
 }
@@ -329,17 +348,21 @@
     flex: 0 0 35%;
     min-width: 80px;
     background: var(--background-modifier-border, #f0f0f0);
-    border-radius: 3px;
+    border-radius: 8px;
+    height: 8px;
     padding: 0;
+    overflow: hidden;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.1);
 }
 
 /* Progress bar */
 .projects-memory-review-modal .pm-progress-bar {
     width: 0%;
     height: 100%;
-    background: linear-gradient(90deg, #3b82f6, #60a5fa) !important;
-    border-radius: 3px;
+    background: linear-gradient(90deg, #10b981, #34d399) !important;
+    border-radius: 8px;
     transition: width 0.3s ease-out;
+    box-shadow: 0 0 6px rgba(16, 185, 129, 0.4);
 }
 
 /* Statistics Modal Styles */
