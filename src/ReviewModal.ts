@@ -385,11 +385,14 @@ export default class ReviewModal extends Modal {
 
 		const workButtonsRow = workConfirmOverlay.createEl('div', { cls: 'pm-work-buttons' });
 
-		const workYesBtn = workButtonsRow.createEl('button', { cls: 'pm-work-yes' });
-		workYesBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+		const workBackBtn = workButtonsRow.createEl('button', { cls: 'pm-work-back', attr: { 'aria-label': 'Retour', 'title': 'Retour' } });
+		workBackBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>';
 
-		const workNoBtn = workButtonsRow.createEl('button', { cls: 'pm-work-no' });
+		const workNoBtn = workButtonsRow.createEl('button', { cls: 'pm-work-no', attr: { 'aria-label': 'Non', 'title': 'Non' } });
 		workNoBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+
+		const workYesBtn = workButtonsRow.createEl('button', { cls: 'pm-work-yes', attr: { 'aria-label': 'Oui', 'title': 'Oui' } });
+		workYesBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
 
 		// If a pomodoro is already active at the plugin level, reflect it in this modal's UI
 		const pluginAny = this.plugin as any;
@@ -506,6 +509,31 @@ export default class ReviewModal extends Modal {
 			}
 		};
 
+		// Setup step 1 keyboard handler
+		const setupStep1Keyboard = () => {
+			if (this.keydownHandler) {
+				window.removeEventListener('keydown', this.keydownHandler);
+			}
+			this.keydownHandler = (e: KeyboardEvent) => {
+				const k = e.key;
+				switch (k) {
+					case '1':
+						btn1?.click();
+						break;
+					case '2':
+						btn2?.click();
+						break;
+					case '3':
+						btn3?.click();
+						break;
+					case '4':
+						btn5?.click();
+						break;
+				}
+			};
+			window.addEventListener('keydown', this.keydownHandler);
+		};
+
 		// Show step 2 (work confirmation)
 		const showWorkConfirm = (newScore: number, action: string) => {
 			pendingAction = { newScore, action };
@@ -520,12 +548,21 @@ export default class ReviewModal extends Modal {
 			this.keydownHandler = (e: KeyboardEvent) => {
 				if (e.key === 'o' || e.key === 'O' || e.key === 'Enter') {
 					workYesBtn.click();
-				} else if (e.key === 'n' || e.key === 'N' || e.key === 'Escape') {
+				} else if (e.key === 'n' || e.key === 'N') {
 					workNoBtn.click();
+				} else if (e.key === 'r' || e.key === 'R' || e.key === 'Escape' || e.key === 'Backspace') {
+					workBackBtn.click();
 				}
 			};
 			window.addEventListener('keydown', this.keydownHandler);
 		};
+
+		workBackBtn.addEventListener('click', () => {
+			pendingAction = null;
+			workConfirmOverlay.style.display = 'none';
+			buttonsRow.style.display = 'flex';
+			setupStep1Keyboard();
+		});
 
 		// Step 1 buttons: feeling selection (icon-only)
 		// SVG icons for each feeling
@@ -817,25 +854,8 @@ export default class ReviewModal extends Modal {
 			startPomodoroBtn.setAttr('style', 'display: inline-flex;');
 		});
 
-		// Keyboard shortcuts: 1..4 trigger feeling buttons, 5 for done
-		this.keydownHandler = (e: KeyboardEvent) => {
-			const k = e.key;
-			switch (k) {
-				case '1':
-					btn1?.click();
-					break;
-				case '2':
-					btn2?.click();
-					break;
-				case '3':
-					btn3?.click();
-					break;
-				case '4':
-					btn5?.click();
-					break;
-			}
-		};
-		window.addEventListener('keydown', this.keydownHandler);
+		// Keyboard shortcuts initialization
+		setupStep1Keyboard();
 	}
 
 	onClose() {

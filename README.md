@@ -43,6 +43,8 @@ Le plugin utilise exclusivement la mécanique interne d'Obsidian (`saveData`/`lo
 - Migration réussie et suppression de l'ancien fichier `stats.json` standalone.
 - Stabilité garantie des rendus Chart.js qui se recréent adéquatement à la volée.
 - Résolution du problème de rendu des callouts / admonitions dans le modal de revue grâce à l'utilisation d'un `Component` dédié pour isoler le cycle de vie du rendu.
+- Harmonisation esthétique globale du modal de revue (boutons Pomodoro, Passer et badges en pilule avec dégradés, lueurs et transitions fluides identiques aux boutons d'évaluation).
+- Ajout d'un bouton de retour/annulation (icône flèche) à l'étape 2 ("As-tu travaillé dessus ?") pour revenir facilement à l'étape 1 via le bouton ou des raccourcis clavier (`Escape` / `Backspace` / `R`).
 
 # Documentation Index
 
