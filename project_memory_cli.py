@@ -5,7 +5,7 @@ Project Memory CLI
 CLI interface for Obsidian project-memory plugin.
 Calculates project scores, lists urgent tasks, logs session feedback,
 extracts roadmap checkboxes, and completes tasks.
-Reuses canonical Obsidian plugin logic and data structures.
+Uses data.json as the primary source of truth for project scores, states, and rankings.
 """
 
 import os
@@ -92,6 +92,7 @@ def save_data(data, data_path=DATA_JSON_PATH):
 def parse_markdown_file(file_path, content=None, parse_checkboxes=True):
     """
     Parses a markdown file for frontmatter, tags, checkboxes, and content.
+    Used when explicit details are requested for a target project file.
     Returns: (frontmatter_dict, tags_set, checkboxes_list, content_str)
     """
     try:
@@ -147,23 +148,25 @@ def parse_markdown_file(file_path, content=None, parse_checkboxes=True):
                     in_tags = False
 
     # Inline tags `#tag`
-    inline_tags = re.findall(r'(?:^|[^\w#])#([a-zA-Z0-9_\-\/]+)', content)
-    for tag in inline_tags:
-        tags.add(tag.lower())
+    if "#" in content:
+        inline_tags = re.findall(r'(?:^|[^\w#])#([a-zA-Z0-9_\-\/]+)', content)
+        for tag in inline_tags:
+            tags.add(tag.lower())
 
     # Checkboxes
-    if parse_checkboxes:
+    if parse_checkboxes and "[" in content and "]" in content:
         for idx, line in enumerate(body_lines, 1):
-            m = re.match(r'^\s*[-*+]\s+\[([ xX])\]\s+(.*)$', line)
-            if m:
-                is_completed = m.group(1).lower() == 'x'
-                text = m.group(2).strip()
-                checkboxes.append({
-                    "line": idx,
-                    "completed": is_completed,
-                    "text": text,
-                    "raw": line
-                })
+            if "[" in line and "]" in line:
+                m = re.match(r'^\s*[-*+]\s+\[([ xX])\]\s+(.*)$', line)
+                if m:
+                    is_completed = m.group(1).lower() == 'x'
+                    text = m.group(2).strip()
+                    checkboxes.append({
+                        "line": idx,
+                        "completed": is_completed,
+                        "text": text,
+                        "raw": line
+                    })
 
     return frontmatter, tags, checkboxes, content
 
@@ -171,6 +174,7 @@ def parse_markdown_file(file_path, content=None, parse_checkboxes=True):
 def find_project_file(vault_dir, project_path_or_name, data=None):
     """
     Resolves relative path or project title to absolute path in vault.
+    First checks data.json project keys for instant resolution, falling back to filesystem checks.
     """
     clean_target = project_path_or_name.strip().replace("\\", "/").lower()
     if clean_target.endswith(".md"):
@@ -199,28 +203,6 @@ def find_project_file(vault_dir, project_path_or_name, data=None):
                     candidates.append((rel_path, abs_p))
         if candidates:
             return candidates[0]
-
-    for root, dirs, files in os.walk(vault_dir):
-        dirs[:] = [d for d in dirs if not d.startswith(".") and d.lower() not in EXCLUDED_DIRS]
-        for file in files:
-            if file.endswith(".md"):
-                full_path = os.path.join(root, file)
-                rel_path = os.path.relpath(full_path, vault_dir).replace("\\", "/")
-                title = os.path.splitext(file)[0]
-                if (rel_path.lower() == clean_target or
-                        rel_path.lower() == clean_target + ".md" or
-                        title.lower() == clean_target_no_ext):
-                    return rel_path, full_path
-
-    for root, dirs, files in os.walk(vault_dir):
-        dirs[:] = [d for d in dirs if not d.startswith(".") and d.lower() not in EXCLUDED_DIRS]
-        for file in files:
-            if file.endswith(".md"):
-                full_path = os.path.join(root, file)
-                rel_path = os.path.relpath(full_path, vault_dir).replace("\\", "/")
-                title = os.path.splitext(file)[0]
-                if clean_target_no_ext in title.lower() or clean_target_no_ext in rel_path.lower():
-                    return rel_path, full_path
 
     return project_path_or_name, candidate_abs
 
@@ -325,7 +307,7 @@ def scan_projects(vault_dir, data):
                 if has_project_tag and not has_archive_tag:
                     title = os.path.splitext(file)[0]
                     projects.append({
-                        "rel_p": rel_p,
+                        "rel_path": rel_p,
                         "title": title,
                         "base_score": default_score,
                         "rotation_bonus": 0.0,
@@ -385,7 +367,7 @@ def cmd_list(args, data):
 
 def cmd_get(args, data):
     target = args.project_path
-    rel_path, abs_path = find_project_file(VAULT_DIR, target)
+    rel_path, abs_path = find_project_file(VAULT_DIR, target, data)
 
     if not os.path.exists(abs_path):
         if getattr(args, "json", False):
@@ -394,31 +376,30 @@ def cmd_get(args, data):
             print(f"Error: Project note file not found for '{target}'.")
         sys.exit(1)
 
-    all_projects = scan_projects(VAULT_DIR, data)
-    proj_info = None
-    for p in all_projects:
-        if p["rel_path"] == rel_path or p["full_path"] == abs_path:
-            proj_info = p
-            break
+    fm, tags, checkboxes, content = parse_markdown_file(abs_path)
+    stats = data.get("stats", {}).get("projects", {}).get(rel_path, {})
+    default_score = float(data.get("settings", {}).get("defaultScore", 100))
+    deadline_prop = data.get("settings", {}).get("deadlineProperty", "deadline")
 
-    if not proj_info:
-        fm, tags, checkboxes, content = parse_markdown_file(abs_path)
-        stats = data.get("stats", {}).get("projects", {}).get(rel_path, {})
-        proj_info = {
-            "rel_path": rel_path,
-            "title": os.path.splitext(os.path.basename(rel_path))[0],
-            "base_score": float(stats.get("currentScore", data.get("settings", {}).get("defaultScore", 100))),
-            "rotation_bonus": float(stats.get("rotationBonus", 0.0)),
-            "deadline_urgency": 0.0,
-            "effective_score": float(stats.get("currentScore", 100)) + float(stats.get("rotationBonus", 0.0)),
-            "deadline": str(fm.get("deadline") or fm.get("due") or ""),
-            "total_reviews": stats.get("totalReviews", 0),
-            "last_review_date": stats.get("lastReviewDate", ""),
-            "review_history": stats.get("reviewHistory", []),
-            "checkboxes": checkboxes,
-            "frontmatter": fm,
-            "tags": list(tags)
-        }
+    base_score = float(stats.get("currentScore", default_score))
+    rotation_bonus = float(stats.get("rotationBonus", 0.0))
+    deadline_val = fm.get(deadline_prop.lower()) or fm.get("deadline") or fm.get("due") or ""
+
+    proj_info = {
+        "rel_path": rel_path,
+        "title": os.path.splitext(os.path.basename(rel_path))[0],
+        "base_score": base_score,
+        "rotation_bonus": rotation_bonus,
+        "deadline_urgency": 0.0,
+        "effective_score": base_score + rotation_bonus,
+        "deadline": str(deadline_val),
+        "total_reviews": stats.get("totalReviews", 0),
+        "last_review_date": stats.get("lastReviewDate", ""),
+        "review_history": stats.get("reviewHistory", []),
+        "checkboxes": checkboxes,
+        "frontmatter": fm,
+        "tags": list(tags)
+    }
 
     if getattr(args, "json", False):
         clean_p = dict(proj_info)
@@ -466,7 +447,7 @@ def cmd_get(args, data):
 def update_note_frontmatter_archived(abs_path, settings):
     raw_tags = settings.get("projectTags", "todo, project")
     project_tags = [t.strip().lstrip("#").lower() for t in raw_tags.split(",") if t.strip()]
-    archive_tag = settings.get("archiveTag", "done").strip().lstrip("#")
+    archive_tag = settings.get("archiveTag", "done").strip().lstrip("#").lower()
 
     if not os.path.exists(abs_path):
         return
@@ -474,53 +455,55 @@ def update_note_frontmatter_archived(abs_path, settings):
     with open(abs_path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    new_tags = [archive_tag]
-
     if content.startswith("---"):
         parts = content.split("---", 2)
         fm_raw = parts[1]
         body = parts[2] if len(parts) >= 3 else ""
 
+        fm_lines = fm_raw.splitlines()
         new_fm_lines = []
-        has_tags_field = False
+        existing_tags = []
         in_tags_list = False
-        for line in fm_raw.splitlines():
+
+        for line in fm_lines:
             s = line.strip()
             if s.startswith("tags:"):
-                has_tags_field = True
                 v = s[5:].strip()
                 if v.startswith("[") and v.endswith("]"):
                     items = [i.strip().strip('"\'').lstrip("#") for i in v[1:-1].split(",") if i.strip()]
-                    filtered = [i for i in items if i.lower() not in project_tags]
-                    if archive_tag not in filtered:
-                        filtered.append(archive_tag)
-                    new_fm_lines.append(f"tags: [{', '.join(filtered)}]")
+                    existing_tags.extend(items)
                     in_tags_list = False
                 elif v:
                     val_clean = v.strip('"\'').lstrip("#")
-                    if val_clean.lower() not in project_tags:
-                        new_tags.append(val_clean)
-                    new_fm_lines.append(f"tags: [{', '.join(dict.fromkeys(new_tags))}]")
+                    existing_tags.append(val_clean)
                     in_tags_list = False
                 else:
                     in_tags_list = True
             elif in_tags_list:
                 if s.startswith("- "):
                     t_val = s[2:].strip().strip('"\'').lstrip("#")
-                    if t_val.lower() not in project_tags:
-                        new_tags.append(t_val)
-                elif ":" in s or not s:
+                    if t_val:
+                        existing_tags.append(t_val)
+                elif ":" in s:
                     in_tags_list = False
                     new_fm_lines.append(line)
             else:
                 new_fm_lines.append(line)
 
-        if not has_tags_field:
-            new_fm_lines.append(f"tags: [{', '.join(dict.fromkeys(new_tags))}]")
+        # Filter out project tags and ensure archive_tag is present
+        final_tags = []
+        for t in existing_tags:
+            if t.lower() not in project_tags and t.lower() not in [ft.lower() for ft in final_tags]:
+                final_tags.append(t)
+        if archive_tag not in [ft.lower() for ft in final_tags]:
+            final_tags.append(archive_tag)
+
+        tags_line = f"tags: [{', '.join(final_tags)}]"
+        new_fm_lines.insert(0, tags_line)
 
         new_content = "---" + "\n".join(new_fm_lines) + "\n---" + body
     else:
-        new_fm = f"---\ntags:\n  - {archive_tag}\n---\n\n"
+        new_fm = f"---\ntags: [{archive_tag}]\n---\n\n"
         new_content = new_fm + content
 
     with open(abs_path, "w", encoding="utf-8") as f:
@@ -533,7 +516,7 @@ def apply_feedback(project_path, action, worked, data):
     global_stats = data.setdefault("stats", {}).setdefault("globalStats", {"totalReviews": 0, "totalPomodoroTime": 0})
     settings = data.setdefault("settings", {})
 
-    rel_path, abs_path = find_project_file(VAULT_DIR, project_path)
+    rel_path, abs_path = find_project_file(VAULT_DIR, project_path, data)
 
     matched_key = None
     for k in stats.keys():
@@ -603,12 +586,16 @@ def apply_feedback(project_path, action, worked, data):
     if len(proj.get("reviewHistory", [])) > 100:
         proj["reviewHistory"] = proj["reviewHistory"][-100:]
 
-    save_data(data)
-    print(f"Feedback saved for '{matched_key}': action='{act}', new_score={new_score:.2f}, worked={worked}")
-
+    data_path = os.path.join(VAULT_DIR, ".obsidian", "plugins", "project-memory", "data.json")
     if act == "finished":
         update_note_frontmatter_archived(abs_path, settings)
+        stats.pop(matched_key, None)
+        save_data(data, data_path)
+        print(f"Feedback saved for '{matched_key}': action='finished', project purged from data.json")
+        return matched_key, 0.0
 
+    save_data(data, data_path)
+    print(f"Feedback saved for '{matched_key}': action='{act}', new_score={new_score:.2f}, worked={worked}")
     return matched_key, new_score
 
 
@@ -626,7 +613,7 @@ def cmd_complete_task(args, data):
     target = args.project_path
     task_text = args.task_text.strip()
 
-    rel_path, abs_path = find_project_file(VAULT_DIR, target)
+    rel_path, abs_path = find_project_file(VAULT_DIR, target, data)
 
     if not os.path.exists(abs_path):
         print(f"Error: Project note file not found for '{target}'.")
@@ -668,16 +655,27 @@ def cmd_complete_task(args, data):
 def cmd_work(args, data):
     rel_path, abs_path = find_project_file(VAULT_DIR, args.project_path, data)
     if not os.path.exists(abs_path):
-        print(f"Error: Project note file not found for '{args.project_path}'.")
+        print(f"Error: Project note file not found for '{args.project_path}'.", flush=True)
         sys.exit(1)
 
-    duration = args.duration if args.duration else data.get("settings", {}).get("pomodoroDuration", 25)
+    duration_min = args.duration if args.duration else data.get("settings", {}).get("pomodoroDuration", 25)
+    total_seconds = duration_min * 60
     title = os.path.splitext(os.path.basename(rel_path))[0]
 
-    print(f"⏱️ Session Pomodoro démarrée pour '{title}' ({duration} min)...")
-    for remaining in range(duration, 0, -1):
-        print(f"⏳ Temps restant : {remaining} min")
-        time.sleep(60)
+    print(f"⏱️ Session Pomodoro démarrée pour '{title}' ({duration_min} min)...", flush=True)
+    step_sec = 30
+    for elapsed_sec in range(0, total_seconds + 1, step_sec):
+        remaining_sec = total_seconds - elapsed_sec
+        remaining_min = math.ceil(remaining_sec / 60)
+        pct = int((elapsed_sec / total_seconds) * 100)
+        bar_len = 15
+        filled = int(bar_len * elapsed_sec / total_seconds)
+        bar = "█" * filled + "░" * (bar_len - filled)
+        m_rem = remaining_sec // 60
+        s_rem = remaining_sec % 60
+        print(f"⏳ [{bar}] {pct:3d}% | Temps restant : {m_rem:02d}:{s_rem:02d} ({remaining_min} min)", flush=True)
+        if remaining_sec > 0:
+            time.sleep(min(step_sec, remaining_sec))
 
     all_projects = scan_projects(VAULT_DIR, data)
     other_projects = [
@@ -687,26 +685,28 @@ def cmd_work(args, data):
     other_projects.sort(key=lambda p: -p["effective_score"])
     top3 = other_projects[:3]
 
-    print("============================================================")
-    print(f"🎉 POMODORO TERMINÉ pour '{title}' ({duration} min)")
-    print("============================================================")
-    print()
-    print("CONSIGNES ANTIGRAVITY POST-POMODORO :")
-    print(f"1. Mentionner à Henri que le travail sur '{title}' est terminé et l'encourager à faire une pause de 5 minutes.")
-    print("2. Évaluation autonome de l'urgence par Antigravity (Strict Anti-Biais d'optimisme & Marge de sécurité) :")
-    print("   - Mesurer si le rythme actuel garantit de respecter l'échéance avec une marge de sécurité.")
-    print("   - Appliquer le feedback approprié via CLI :")
-    print("     - 'ok' (Rythme sous contrôle / adapté)")
-    print("     - 'more-often' / 'emergency' (Sous-priorisé / Pression élevée / Risque de retard)")
-    print("     - 'less-often' (Rythme excessif / Priorité basse)")
-    print("   - Communiquer la décision et sa justification à Henri et lui permettre de contester.")
-    print("3. Proposer à Henri d'enchaîner sur l'un des 3 projets les plus urgents suivants :")
+    print("============================================================", flush=True)
+    print(f"🎉 POMODORO TERMINÉ pour '{title}' ({duration_min} min)", flush=True)
+    print("============================================================", flush=True)
+    print(flush=True)
+    print("CONSIGNES ANTIGRAVITY POST-POMODORO :", flush=True)
+    print(f"1. Mentionner à Henri que le travail sur '{title}' est terminé et l'encourager à faire une pause de 5 minutes.", flush=True)
+    print("2. Évaluation autonome de l'urgence par Antigravity (Strict Anti-Biais d'optimisme & Marge de sécurité) :", flush=True)
+    print("   - Mesurer si le rythme actuel garantit de respecter l'échéance avec une marge de sécurité.", flush=True)
+    print("   - Appliquer le feedback approprié via CLI :", flush=True)
+    print("     - 'ok' (Rythme sous contrôle / adapté)", flush=True)
+    print("     - 'more-often' / 'emergency' (Sous-priorisé / Pression élevée / Risque de retard)", flush=True)
+    print("     - 'less-often' (Rythme excessif / Priorité basse)", flush=True)
+    print("   - Communiquer la décision et sa justification à Henri et lui permettre de contester.", flush=True)
+    print("3. Proposer à Henri d'enchaîner sur l'un des 3 projets les plus urgents suivants :", flush=True)
     if not top3:
-        print("   (Aucun autre projet actif)")
+        print("   (Aucun autre projet actif)", flush=True)
     else:
         for idx, p in enumerate(top3, 1):
             deadline_info = f" - Deadline: {p['deadline']}" if p.get("deadline") else ""
-            print(f"   {idx}. {p['title']} (Score effectif: {p['effective_score']:.2f}{deadline_info})")
+            print(f"   {idx}. {p['title']} (Score effectif: {p['effective_score']:.2f}{deadline_info})", flush=True)
+
+
 
 
 def main():
