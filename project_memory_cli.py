@@ -350,19 +350,55 @@ def cmd_list(args, data):
     if top_n is None and getattr(args, "n", None) is not None:
         top_n = args.n
 
-    if top_n is not None and top_n > 0:
-        projects = projects[:top_n]
+    unreviewed = [p for p in projects if p["total_reviews"] == 0]
+    reviewed = [p for p in projects if p["total_reviews"] > 0]
+
+    show_unreviewed_only = getattr(args, "unreviewed", False) or getattr(args, "new", False)
+    show_reviewed_only = getattr(args, "reviewed", False)
+
+    if show_unreviewed_only:
+        unreviewed_disp = unreviewed[:top_n] if top_n is not None and top_n > 0 else unreviewed
+        reviewed_disp = []
+    elif show_reviewed_only:
+        unreviewed_disp = []
+        reviewed_disp = reviewed[:top_n] if top_n is not None and top_n > 0 else reviewed
+    else:
+        unreviewed_disp = unreviewed[:top_n] if top_n is not None and top_n > 0 else unreviewed
+        reviewed_disp = reviewed[:top_n] if top_n is not None and top_n > 0 else reviewed
 
     if getattr(args, "json", False):
-        clean_proj = []
-        for p in projects:
-            cp = dict(p)
-            cp.pop("full_path", None)
-            clean_proj.append(cp)
-        print(json.dumps(clean_proj, indent=2, ensure_ascii=False))
+        if show_unreviewed_only:
+            out = [dict(p, full_path=None) for p in unreviewed_disp]
+            for cp in out: cp.pop("full_path", None)
+            print(json.dumps(out, indent=2, ensure_ascii=False))
+        elif show_reviewed_only:
+            out = [dict(p, full_path=None) for p in reviewed_disp]
+            for cp in out: cp.pop("full_path", None)
+            print(json.dumps(out, indent=2, ensure_ascii=False))
+        else:
+            unrev_out = [dict(p, full_path=None) for p in unreviewed_disp]
+            for cp in unrev_out: cp.pop("full_path", None)
+            rev_out = [dict(p, full_path=None) for p in reviewed_disp]
+            for cp in rev_out: cp.pop("full_path", None)
+            print(json.dumps({
+                "unreviewed": unrev_out,
+                "reviewed": rev_out,
+                "total_unreviewed": len(unreviewed),
+                "total_reviewed": len(reviewed)
+            }, indent=2, ensure_ascii=False))
     else:
-        print(f"=== Project Memory List ({len(projects)} active projects) ===")
-        print(format_project_table(projects))
+        if show_unreviewed_only:
+            print(f"=== 🆕 Unreviewed Projects ({len(unreviewed)} projects awaiting initial evaluation) ===")
+            print(format_project_table(unreviewed_disp) if unreviewed_disp else "  (No unreviewed projects)")
+        elif show_reviewed_only:
+            print(f"=== 🔥 Reviewed Active Projects ({len(reviewed)} projects sorted by urgency) ===")
+            print(format_project_table(reviewed_disp) if reviewed_disp else "  (No reviewed active projects)")
+        else:
+            print(f"=== 🆕 Unreviewed Projects ({len(unreviewed)} awaiting initial evaluation, showing {len(unreviewed_disp)}) ===")
+            print(format_project_table(unreviewed_disp) if unreviewed_disp else "  (No unreviewed projects)")
+            print()
+            print(f"=== 🔥 Top Urgent Reviewed Projects ({len(reviewed)} active projects, showing {len(reviewed_disp)}) ===")
+            print(format_project_table(reviewed_disp) if reviewed_disp else "  (No reviewed projects)")
 
 
 def cmd_get(args, data):
@@ -552,36 +588,27 @@ def apply_feedback(project_path, action, worked, data):
     if act != "finished":
         new_score = max(1.0, min(100.0, new_score))
 
-    is_new = (proj.get("totalReviews", 0) == 0)
-
-    if not (is_new and not worked):
-        proj["currentScore"] = round(new_score, 3)
+    # Always record updated score
+    proj["currentScore"] = round(new_score, 3)
 
     now_iso = datetime.now(timezone.utc).isoformat()
+    proj["lastReviewDate"] = now_iso
+    proj["totalReviews"] = proj.get("totalReviews", 0) + 1
 
-    if is_new and not worked:
-        proj["totalReviews"] = 1
-    elif worked:
+    if worked:
         rot_inc = float(settings.get("rotationBonus", 0.1))
         for p_key, p_val in stats.items():
             if p_key != matched_key:
                 p_val["rotationBonus"] = float(p_val.get("rotationBonus", 0.0)) + rot_inc
 
         proj["rotationBonus"] = 0.0
-        proj["totalReviews"] = proj.get("totalReviews", 0) + 1
-        proj["lastReviewDate"] = now_iso
         global_stats["totalReviews"] = global_stats.get("totalReviews", 0) + 1
-        proj.setdefault("reviewHistory", []).append({
-            "date": now_iso,
-            "action": act,
-            "scoreAfter": round(new_score, 3)
-        })
-    else:
-        proj.setdefault("reviewHistory", []).append({
-            "date": now_iso,
-            "action": act,
-            "scoreAfter": round(new_score, 3)
-        })
+
+    proj.setdefault("reviewHistory", []).append({
+        "date": now_iso,
+        "action": act,
+        "scoreAfter": round(new_score, 3)
+    })
 
     if len(proj.get("reviewHistory", [])) > 100:
         proj["reviewHistory"] = proj["reviewHistory"][-100:]
@@ -717,6 +744,8 @@ def main():
     list_parser = subparsers.add_parser("list", help="List active projects sorted by score")
     list_parser.add_argument("--top", "-n", type=int, help="Limit output to top N projects")
     list_parser.add_argument("--json", action="store_true", help="Output in JSON format")
+    list_parser.add_argument("--unreviewed", "--new", action="store_true", help="List only unreviewed projects awaiting initial evaluation")
+    list_parser.add_argument("--reviewed", action="store_true", help="List only evaluated/reviewed projects sorted by score")
 
     # get
     get_parser = subparsers.add_parser("get", help="Get project details and roadmap tasks")
