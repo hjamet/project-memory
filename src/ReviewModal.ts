@@ -223,11 +223,93 @@ export default class ReviewModal extends Modal {
 			return;
 		}
 
-		// Separate candidates into new projects (totalReviews === 0) and existing projects
-		const newProjects: { file: import('obsidian').TFile; effectiveScore: number; baseScore: number, deadline?: string }[] = [];
-		const existingProjects: { file: import('obsidian').TFile; effectiveScore: number; baseScore: number, deadline?: string }[] = [];
+		// Perform graph absorption of sub-projects
+		const candPaths = new Set(candidates.map(c => c.file.path));
+		const projChildren: Map<string, Set<string>> = new Map();
+		const projParents: Map<string, Set<string>> = new Map();
 
-		for (const candidate of candidates) {
+		for (const c of candidates) {
+			projChildren.set(c.file.path, new Set());
+			projParents.set(c.file.path, new Set());
+		}
+
+		for (const c of candidates) {
+			const cache = this.app.metadataCache.getFileCache(c.file);
+			if (cache && cache.links) {
+				for (const linkObj of cache.links) {
+					const targetFile = this.app.metadataCache.getFirstLinkpathDest(linkObj.link, c.file.path);
+					if (targetFile && candPaths.has(targetFile.path) && targetFile.path !== c.file.path) {
+						projChildren.get(c.file.path)!.add(targetFile.path);
+						projParents.get(targetFile.path)!.add(c.file.path);
+					}
+				}
+			}
+		}
+
+		const rootCandidatesList: typeof candidates = [];
+		const subProjectsMap: Map<string, string[]> = new Map();
+
+		for (const c of candidates) {
+			if (projParents.get(c.file.path)!.size === 0) {
+				rootCandidatesList.push(c);
+			}
+		}
+
+		const rootPathsSet = new Set(rootCandidatesList.map(c => c.file.path));
+		for (const c of candidates) {
+			if (!rootPathsSet.has(c.file.path)) {
+				rootCandidatesList.push(c);
+				rootPathsSet.add(c.file.path);
+			}
+		}
+
+		const finalCandidates: typeof candidates = [];
+		for (const root of rootCandidatesList) {
+			const queue = Array.from(projChildren.get(root.file.path)!);
+			const seen = new Set<string>();
+			const subTitles: string[] = [];
+
+			let maxBaseScore = root.baseScore;
+			let earliestDeadline = root.deadline;
+
+			while (queue.length > 0) {
+				const childPath = queue.shift()!;
+				if (seen.has(childPath) || childPath === root.file.path) continue;
+				seen.add(childPath);
+
+				const childCand = candidates.find(x => x.file.path === childPath);
+				if (childCand) {
+					subTitles.push(childCand.file.basename);
+					if (childCand.baseScore > maxBaseScore) {
+						maxBaseScore = childCand.baseScore;
+					}
+					if (childCand.deadline) {
+						if (!earliestDeadline || childCand.deadline < earliestDeadline) {
+							earliestDeadline = childCand.deadline;
+						}
+					}
+				}
+
+				const grandChildren = projChildren.get(childPath);
+				if (grandChildren) {
+					for (const gc of grandChildren) {
+						if (!seen.has(gc)) queue.push(gc);
+					}
+				}
+			}
+
+			root.baseScore = maxBaseScore;
+			root.deadline = earliestDeadline;
+			root.effectiveScore = await this.calculateEffectiveScore(maxBaseScore, root.file.path, earliestDeadline);
+			subProjectsMap.set(root.file.path, subTitles);
+			finalCandidates.push(root);
+		}
+
+		// Separate final candidates into new projects (totalReviews === 0) and existing projects
+		const newProjects: typeof candidates = [];
+		const existingProjects: typeof candidates = [];
+
+		for (const candidate of finalCandidates) {
 			try {
 				const pluginAny = this.plugin as any;
 				const projectStats = await pluginAny.getProjectStats(candidate.file.path);
@@ -291,6 +373,16 @@ export default class ReviewModal extends Modal {
 				text: 'Nouveau',
 				cls: 'pm-new-indicator'
 			});
+		}
+
+		// Add "Sub-Projects" banner if chosen file absorbs sub-projects
+		const chosenSubProjs = subProjectsMap.get(chosen.file.path);
+		if (chosenSubProjs && chosenSubProjs.length > 0) {
+			const subBanner = headerSection.createEl('div', {
+				cls: 'pm-subprojects-banner',
+				text: `⚠️ INCLUT LES SOUS-PROJETS : ${chosenSubProjs.join(', ')}`
+			});
+			subBanner.setAttr('style', 'background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; padding: 10px 14px; border-radius: 6px; font-weight: bold; margin-bottom: 12px; font-size: 1.05em;');
 		}
 
 		// Create badges container

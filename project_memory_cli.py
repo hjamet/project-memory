@@ -291,17 +291,17 @@ def scan_projects(vault_dir, data):
             "full_path": abs_path,
         })
 
-    # Also scan Projects/ folder for any newly added active project notes
-    projects_dir = os.path.join(vault_dir, "Projects")
+    # Also scan all markdown files in vault for any unindexed active project notes
     known_paths = {p["rel_path"] for p in projects}
-    if os.path.exists(projects_dir):
-        for file in os.listdir(projects_dir):
+    for r_dir, dirs, files in os.walk(vault_dir):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        for file in files:
             if file.endswith(".md"):
-                abs_p = os.path.join(projects_dir, file)
+                abs_p = os.path.join(r_dir, file)
                 rel_p = os.path.relpath(abs_p, vault_dir).replace("\\", "/")
                 if rel_p in known_paths:
                     continue
-                fm, tags, checkboxes, _ = parse_markdown_file(abs_p, parse_checkboxes=True)
+                fm, tags, _, _ = parse_markdown_file(abs_p, parse_checkboxes=False)
                 has_project_tag = any(pt in tags or any(t.startswith(pt + "/") for t in tags) for pt in project_tags)
                 has_archive_tag = any(at in tags or any(t.startswith(at + "/") for t in tags) for at in done_tags)
                 if has_project_tag and not has_archive_tag:
@@ -320,13 +320,105 @@ def scan_projects(vault_dir, data):
                         "full_path": abs_p,
                     })
 
+    # Graph-Based Sub-Project Absorption Logic:
+    # 1. Build lookup maps for all candidate project nodes
+    cand_by_rel = {p["rel_path"]: p for p in projects}
+    cand_by_title = {}
+    for p in projects:
+        cand_by_title[p["title"].lower()] = p["rel_path"]
+        cand_by_title[os.path.splitext(os.path.basename(p["rel_path"]))[0].lower()] = p["rel_path"]
+
+    # 2. Parse outgoing Wikilinks [[link]] from candidate project markdown bodies
+    proj_children = {p["rel_path"]: set() for p in projects}
+    proj_parents = {p["rel_path"]: set() for p in projects}
+
+    for p in projects:
+        _, _, _, content = parse_markdown_file(p["full_path"], parse_checkboxes=False)
+        wikilinks = re.findall(r'\[\[([^\]\|]+)(?:\|[^\]]+)?\]\]', content)
+        for link in wikilinks:
+            link_clean = link.strip().lower()
+            if link_clean.endswith(".md"):
+                link_clean = link_clean[:-3]
+            target_rel = cand_by_title.get(link_clean)
+            if target_rel and target_rel != p["rel_path"]:
+                proj_children[p["rel_path"]].add(target_rel)
+                proj_parents[target_rel].add(p["rel_path"])
+
+    # 3. Determine Root Projects vs Absorbed Sub-Projects
+    # Root projects have no incoming project-to-project links
+    root_projects = [p for p in projects if not proj_parents[p["rel_path"]]]
+    root_paths = {p["rel_path"] for p in root_projects}
+
+    # Handle potential cycles among project nodes by picking unvisited ones as roots
+    visited_all = set(root_paths)
+    for p in projects:
+        if p["rel_path"] not in visited_all:
+            root_projects.append(p)
+            visited_all.add(p["rel_path"])
+
+    # 4. For each Root Project, perform transitive traversal to absorb sub-projects
+    final_projects = []
+    for root in root_projects:
+        r_rel = root["rel_path"]
+        absorbed_sub_titles = []
+
+        queue = list(proj_children[r_rel])
+        seen_descendants = set()
+
+        max_base_score = root["base_score"]
+        earliest_deadline = root["deadline"]
+
+        while queue:
+            child_rel = queue.pop(0)
+            if child_rel in seen_descendants or child_rel == r_rel:
+                continue
+            seen_descendants.add(child_rel)
+
+            child_proj = cand_by_rel[child_rel]
+            absorbed_sub_titles.append(child_proj["title"])
+
+            if child_proj["base_score"] > max_base_score:
+                max_base_score = child_proj["base_score"]
+
+            c_dead = child_proj["deadline"]
+            if c_dead:
+                if not earliest_deadline or c_dead < earliest_deadline:
+                    earliest_deadline = c_dead
+
+            for grand_child in proj_children[child_rel]:
+                if grand_child not in seen_descendants:
+                    queue.append(grand_child)
+
+        root["base_score"] = max_base_score
+        root["deadline"] = earliest_deadline
+        root["sub_projects"] = absorbed_sub_titles
+
+        # Recalculate deadline urgency & effective score for root
+        deadline_urgency = 0.0
+        if earliest_deadline:
+            try:
+                d_date = datetime.strptime(earliest_deadline[:10], "%Y-%m-%d").date()
+                today = datetime.now().date()
+                days_left = (d_date - today).days
+                p_factor = math.exp(-0.1 * days_left) if days_left > 0 else 1.0
+                rem = 100.0 - (max_base_score + root["rotation_bonus"])
+                if rem > 0:
+                    deadline_urgency = rem * p_factor
+            except Exception:
+                pass
+
+        root["deadline_urgency"] = deadline_urgency
+        root["effective_score"] = max_base_score + root["rotation_bonus"] + deadline_urgency
+
+        final_projects.append(root)
+
     # Sort matching Obsidian plugin review modal priority:
-    projects.sort(key=lambda p: (
+    final_projects.sort(key=lambda p: (
         0 if p["total_reviews"] == 0 else 1,
         -p["effective_score"] if p["total_reviews"] > 0 else 0,
         p["title"].lower()
     ))
-    return projects
+    return final_projects
 
 
 def format_project_table(projects):
@@ -336,6 +428,8 @@ def format_project_table(projects):
     lines.append("-" * len(header))
     for idx, p in enumerate(projects, 1):
         title = p["title"]
+        if p.get("sub_projects"):
+            title += f" [🔗 inclut: {', '.join(p['sub_projects'])}]"
         if len(title) > 42:
             title = title[:39] + "..."
         rev_str = "NEW" if p["total_reviews"] == 0 else str(p["total_reviews"])
@@ -421,6 +515,14 @@ def cmd_get(args, data):
     rotation_bonus = float(stats.get("rotationBonus", 0.0))
     deadline_val = fm.get(deadline_prop.lower()) or fm.get("deadline") or fm.get("due") or ""
 
+    # Check absorbed sub-projects from scan_projects
+    projects = scan_projects(VAULT_DIR, data)
+    sub_projs = []
+    for p in projects:
+        if p["rel_path"] == rel_path or os.path.basename(p["rel_path"]) == os.path.basename(rel_path):
+            sub_projs = p.get("sub_projects", [])
+            break
+
     proj_info = {
         "rel_path": rel_path,
         "title": os.path.splitext(os.path.basename(rel_path))[0],
@@ -432,6 +534,7 @@ def cmd_get(args, data):
         "total_reviews": stats.get("totalReviews", 0),
         "last_review_date": stats.get("lastReviewDate", ""),
         "review_history": stats.get("reviewHistory", []),
+        "sub_projects": sub_projs,
         "checkboxes": checkboxes,
         "frontmatter": fm,
         "tags": list(tags)
@@ -444,6 +547,8 @@ def cmd_get(args, data):
     else:
         print(f"=== Project Details: {proj_info['title']} ===")
         print(f"Path:             {proj_info['rel_path']}")
+        if proj_info.get("sub_projects"):
+            print(f"⚠️  🔗 INCLUT LES SOUS-PROJETS : {', '.join(proj_info['sub_projects'])}")
         print(f"Effective Score:  {proj_info['effective_score']:.2f}")
         print(f"Base Score:       {proj_info['base_score']:.1f}")
         print(f"Rotation Bonus:   {proj_info['rotation_bonus']:.1f}")
@@ -574,16 +679,19 @@ def apply_feedback(project_path, action, worked, data):
     rf = float(settings.get("rapprochementFactor") or settings.get("rapprochmentFactor") or 0.2)
     act = action.lower()
 
-    if act == "less-often":
-        new_score = current_score - rf * (current_score - 1.0)
-    elif act == "ok":
-        new_score = current_score
-    elif act in ("more-often", "emergency"):
-        new_score = current_score + rf * (100.0 - current_score)
-    elif act == "finished":
-        new_score = 0.0
-    else:
-        raise ValueError(f"Unknown action '{action}'. Options: ok, less-often, more-often, finished, emergency.")
+    try:
+        new_score = float(act)
+    except ValueError:
+        if act == "less-often":
+            new_score = current_score - rf * (current_score - 1.0)
+        elif act == "ok":
+            new_score = current_score
+        elif act in ("more-often", "emergency"):
+            new_score = current_score + rf * (100.0 - current_score)
+        elif act == "finished":
+            new_score = 0.0
+        else:
+            raise ValueError(f"Unknown action '{action}'. Options: ok, less-often, more-often, finished, emergency, or numeric score (1-100).")
 
     if act != "finished":
         new_score = max(1.0, min(100.0, new_score))
@@ -634,6 +742,10 @@ def cmd_feedback(args, data):
         sys.exit(1)
 
     apply_feedback(args.project_path, action, getattr(args, "worked", False), data)
+
+
+def cmd_set_score(args, data):
+    apply_feedback(args.project_path, str(args.score), getattr(args, "worked", False), data)
 
 
 def cmd_complete_task(args, data):
@@ -764,6 +876,12 @@ def main():
     comp_parser.add_argument("project_path", help="Relative path or name of project note")
     comp_parser.add_argument("task_text", help="Text snippet of the task to mark completed")
 
+    # set-score
+    set_score_parser = subparsers.add_parser("set-score", help="Set explicit urgency score (1-100) for a project")
+    set_score_parser.add_argument("project_path", help="Relative path or name of project note")
+    set_score_parser.add_argument("score", type=float, help="Explicit score between 1.0 and 100.0")
+    set_score_parser.add_argument("--worked", "-w", action="store_true", help="Set if user worked on the project")
+
     # work
     work_parser = subparsers.add_parser("work", help="Démarre une session Pomodoro active sur un projet")
     work_parser.add_argument("project_path", help="Chemin relatif ou nom du projet")
@@ -783,6 +901,8 @@ def main():
         cmd_get(args, data)
     elif args.command == "feedback":
         cmd_feedback(args, data)
+    elif args.command == "set-score":
+        cmd_set_score(args, data)
     elif args.command == "complete-task":
         cmd_complete_task(args, data)
     elif args.command == "work":
