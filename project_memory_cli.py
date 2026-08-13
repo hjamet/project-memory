@@ -683,6 +683,62 @@ def update_note_frontmatter_archived(abs_path, settings):
     print(f"Updated note frontmatter tags for '{abs_path}' (archived with tag '{archive_tag}').")
 
 
+def strip_project_tags(abs_path, settings):
+    raw_tags = settings.get("projectTags", "todo, project")
+    project_tags = [t.strip().lstrip("#").lower() for t in raw_tags.split(",") if t.strip()]
+
+    with open(abs_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    fm, existing_tags, _, body = parse_markdown_file(abs_path, parse_checkboxes=False)
+
+    if fm:
+        fm_lines = []
+        in_fm = False
+        lines = content.splitlines()
+        for line in lines:
+            if line.strip() == "---":
+                if not in_fm:
+                    in_fm = True
+                    continue
+                else:
+                    break
+            if in_fm:
+                fm_lines.append(line)
+
+        new_fm_lines = []
+        in_tags_list = False
+        for line in fm_lines:
+            s = line.strip()
+            if s.startswith("tags:"):
+                v = s[5:].strip()
+                if v.startswith("[") and v.endswith("]"):
+                    in_tags_list = False
+                elif not v:
+                    in_tags_list = True
+            elif in_tags_list:
+                if s.startswith("- "):
+                    pass
+                elif ":" in s:
+                    in_tags_list = False
+                    new_fm_lines.append(line)
+            else:
+                new_fm_lines.append(line)
+
+        final_tags = [t for t in existing_tags if t.lower() not in project_tags]
+        if final_tags:
+            tags_line = f"tags: [{', '.join(final_tags)}]"
+            new_fm_lines.insert(0, tags_line)
+
+        new_content = "---\n" + "\n".join(new_fm_lines) + "\n---\n" + body
+    else:
+        new_content = content
+
+    with open(abs_path, "w", encoding="utf-8") as f:
+        f.write(new_content)
+    print(f"Updated note frontmatter for '{abs_path}' (stripped project tags, marked as non-projet).")
+
+
 def apply_feedback(project_path, action, worked, data):
     stats = data.setdefault("stats", {}).setdefault("projects", {})
     global_stats = data.setdefault("stats", {}).setdefault("globalStats", {"totalReviews": 0, "totalPomodoroTime": 0})
@@ -719,7 +775,7 @@ def apply_feedback(project_path, action, worked, data):
     try:
         new_score = float(act)
     except ValueError:
-        if act == "finished":
+        if act in ("finished", "non-projet", "non_projet", "non-project", "not-a-project"):
             new_score = 0.0
         else:
             baseline = current_score if current_score is not None else 50.0
@@ -730,9 +786,9 @@ def apply_feedback(project_path, action, worked, data):
             elif act in ("more-often", "emergency"):
                 new_score = baseline + rf * (100.0 - baseline)
             else:
-                raise ValueError(f"Unknown action '{action}'. Options: ok, less-often, more-often, finished, emergency, or numeric score (1-100).")
+                raise ValueError(f"Unknown action '{action}'. Options: ok, less-often, more-often, finished, emergency, non-projet, or numeric score (1-100).")
 
-    if act != "finished":
+    if act not in ("finished", "non-projet", "non_projet", "non-project", "not-a-project"):
         new_score = max(1.0, min(100.0, new_score))
 
     # Always record updated score
@@ -766,6 +822,13 @@ def apply_feedback(project_path, action, worked, data):
         stats.pop(matched_key, None)
         save_data(data, data_path)
         print(f"Feedback saved for '{matched_key}': action='finished', project purged from data.json")
+        return matched_key, 0.0
+
+    if act in ("non-projet", "non_projet", "non-project", "not-a-project"):
+        strip_project_tags(abs_path, settings)
+        stats.pop(matched_key, None)
+        save_data(data, data_path)
+        print(f"Feedback saved for '{matched_key}': action='non-projet', project stripped of tags and purged from active projects.")
         return matched_key, 0.0
 
     save_data(data, data_path)
