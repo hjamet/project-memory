@@ -249,22 +249,13 @@ export default class ReviewModal extends Modal {
 		const rootCandidatesList: typeof candidates = [];
 		const subProjectsMap: Map<string, string[]> = new Map();
 
-		for (const c of candidates) {
-			if (projParents.get(c.file.path)!.size === 0) {
-				rootCandidatesList.push(c);
-			}
-		}
-
-		const rootPathsSet = new Set(rootCandidatesList.map(c => c.file.path));
-		for (const c of candidates) {
-			if (!rootPathsSet.has(c.file.path)) {
-				rootCandidatesList.push(c);
-				rootPathsSet.add(c.file.path);
-			}
-		}
-
+		const initialRoots = candidates.filter(c => projParents.get(c.file.path)!.size === 0);
+		const absorbedPaths = new Set<string>();
 		const finalCandidates: typeof candidates = [];
-		for (const root of rootCandidatesList) {
+
+		for (const root of initialRoots) {
+			if (absorbedPaths.has(root.file.path)) continue;
+
 			const queue = Array.from(projChildren.get(root.file.path)!);
 			const seen = new Set<string>();
 			const subTitles: string[] = [];
@@ -276,6 +267,7 @@ export default class ReviewModal extends Modal {
 				const childPath = queue.shift()!;
 				if (seen.has(childPath) || childPath === root.file.path) continue;
 				seen.add(childPath);
+				absorbedPaths.add(childPath);
 
 				const childCand = candidates.find(x => x.file.path === childPath);
 				if (childCand) {
@@ -303,6 +295,16 @@ export default class ReviewModal extends Modal {
 			root.effectiveScore = await this.calculateEffectiveScore(maxBaseScore, root.file.path, earliestDeadline);
 			subProjectsMap.set(root.file.path, subTitles);
 			finalCandidates.push(root);
+		}
+
+		// Handle orphan cycle nodes
+		const processedPaths = new Set([...finalCandidates.map(c => c.file.path), ...absorbedPaths]);
+		for (const c of candidates) {
+			if (!processedPaths.has(c.file.path)) {
+				subProjectsMap.set(c.file.path, []);
+				finalCandidates.push(c);
+				processedPaths.add(c.file.path);
+			}
 		}
 
 		// Separate final candidates into new projects (totalReviews === 0) and existing projects

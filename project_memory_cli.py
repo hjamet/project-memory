@@ -329,8 +329,16 @@ def scan_projects(vault_dir, data):
     cand_by_rel = {p["rel_path"]: p for p in projects}
     cand_by_title = {}
     for p in projects:
-        cand_by_title[p["title"].lower()] = p["rel_path"]
-        cand_by_title[os.path.splitext(os.path.basename(p["rel_path"]))[0].lower()] = p["rel_path"]
+        rel_l = p["rel_path"].lower()
+        title_l = p["title"].lower()
+        cand_by_title[title_l] = p["rel_path"]
+        cand_by_title[rel_l] = p["rel_path"]
+        if rel_l.endswith(".md"):
+            cand_by_title[rel_l[:-3]] = p["rel_path"]
+        base_l = os.path.basename(rel_l)
+        cand_by_title[base_l] = p["rel_path"]
+        if base_l.endswith(".md"):
+            cand_by_title[base_l[:-3]] = p["rel_path"]
 
     # 2. Parse outgoing Wikilinks [[link]] from candidate project markdown bodies
     proj_children = {p["rel_path"]: set() for p in projects}
@@ -343,29 +351,26 @@ def scan_projects(vault_dir, data):
             link_clean = link.strip().lower()
             if link_clean.endswith(".md"):
                 link_clean = link_clean[:-3]
-            target_rel = cand_by_title.get(link_clean)
+            target_rel = cand_by_title.get(link_clean) or cand_by_title.get(link_clean + ".md")
             if target_rel and target_rel != p["rel_path"]:
                 proj_children[p["rel_path"]].add(target_rel)
                 proj_parents[target_rel].add(p["rel_path"])
 
     # 3. Determine Root Projects vs Absorbed Sub-Projects
-    # Root projects have no incoming project-to-project links
-    root_projects = [p for p in projects if not proj_parents[p["rel_path"]]]
-    root_paths = {p["rel_path"] for p in root_projects}
-
-    # Handle potential cycles among project nodes by picking unvisited ones as roots
-    visited_all = set(root_paths)
-    for p in projects:
-        if p["rel_path"] not in visited_all:
-            root_projects.append(p)
-            visited_all.add(p["rel_path"])
-
-    # 4. For each Root Project, perform transitive traversal to absorb sub-projects
+    # Initial root projects have no incoming project-to-project links
+    root_candidates = [p for p in projects if not proj_parents[p["rel_path"]]]
+    
+    # Track all absorbed sub-project paths across all roots
+    absorbed_paths = set()
     final_projects = []
-    for root in root_projects:
-        r_rel = root["rel_path"]
-        absorbed_sub_titles = []
 
+    # Process initial root projects first
+    for root in root_candidates:
+        r_rel = root["rel_path"]
+        if r_rel in absorbed_paths:
+            continue
+
+        absorbed_sub_titles = []
         queue = list(proj_children[r_rel])
         seen_descendants = set()
 
@@ -377,6 +382,7 @@ def scan_projects(vault_dir, data):
             if child_rel in seen_descendants or child_rel == r_rel:
                 continue
             seen_descendants.add(child_rel)
+            absorbed_paths.add(child_rel)
 
             child_proj = cand_by_rel[child_rel]
             absorbed_sub_titles.append(child_proj["title"])
@@ -417,6 +423,14 @@ def scan_projects(vault_dir, data):
         root["effective_score"] = (max_base_score + root["rotation_bonus"] + deadline_urgency) if max_base_score is not None else None
 
         final_projects.append(root)
+
+    # Handle remaining orphan/cycle project nodes that were neither root nor absorbed
+    processed_paths = {p["rel_path"] for p in final_projects}.union(absorbed_paths)
+    for p in projects:
+        if p["rel_path"] not in processed_paths:
+            p["sub_projects"] = []
+            final_projects.append(p)
+            processed_paths.add(p["rel_path"])
 
     # Sort matching Obsidian plugin review modal priority:
     final_projects.sort(key=lambda p: (
