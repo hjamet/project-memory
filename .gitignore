@@ -1,6 +1,5 @@
 # Node
 node_modules
-main.js
 
 # Cursor
 repo.md
@@ -11,6 +10,7 @@ diff
 
 # Plugin
 data.json
+data.json.bak
 stats.json
 # Cursor Memory Bank
 .cursor/mcp
@@ -19,8 +19,3 @@ stats.json
 tomd.py
 repo.md
 diff
-
-
-
-
-
