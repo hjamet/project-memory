@@ -629,7 +629,7 @@ def update_note_frontmatter_archived(abs_path, settings):
 
     if content.startswith("---"):
         parts = content.split("---", 2)
-        fm_raw = parts[1]
+        fm_raw = parts[1] if len(parts) >= 2 else ""
         body = parts[2] if len(parts) >= 3 else ""
 
         fm_lines = fm_raw.splitlines()
@@ -639,6 +639,8 @@ def update_note_frontmatter_archived(abs_path, settings):
 
         for line in fm_lines:
             s = line.strip()
+            if not s:
+                continue
             if s.startswith("tags:"):
                 v = s[5:].strip()
                 if v.startswith("[") and v.endswith("]"):
@@ -673,7 +675,8 @@ def update_note_frontmatter_archived(abs_path, settings):
         tags_line = f"tags: [{', '.join(final_tags)}]"
         new_fm_lines.insert(0, tags_line)
 
-        new_content = "---" + "\n".join(new_fm_lines) + "\n---" + body
+        body_prefix = "" if body.startswith("\n") else "\n"
+        new_content = "---\n" + "\n".join(new_fm_lines) + "\n---" + body_prefix + body
     else:
         new_fm = f"---\ntags: [{archive_tag}]\n---\n\n"
         new_content = new_fm + content
@@ -687,38 +690,43 @@ def strip_project_tags(abs_path, settings):
     raw_tags = settings.get("projectTags", "todo, project")
     project_tags = [t.strip().lstrip("#").lower() for t in raw_tags.split(",") if t.strip()]
 
+    if not os.path.exists(abs_path):
+        return
+
     with open(abs_path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    fm, existing_tags, _, body = parse_markdown_file(abs_path, parse_checkboxes=False)
+    if content.startswith("---"):
+        parts = content.split("---", 2)
+        fm_raw = parts[1] if len(parts) >= 2 else ""
+        body = parts[2] if len(parts) >= 3 else ""
 
-    if fm:
-        fm_lines = []
-        in_fm = False
-        lines = content.splitlines()
-        for line in lines:
-            if line.strip() == "---":
-                if not in_fm:
-                    in_fm = True
-                    continue
-                else:
-                    break
-            if in_fm:
-                fm_lines.append(line)
-
+        fm_lines = fm_raw.splitlines()
         new_fm_lines = []
+        existing_tags = []
         in_tags_list = False
+
         for line in fm_lines:
             s = line.strip()
+            if not s:
+                continue
             if s.startswith("tags:"):
                 v = s[5:].strip()
                 if v.startswith("[") and v.endswith("]"):
+                    items = [i.strip().strip('"\'').lstrip("#") for i in v[1:-1].split(",") if i.strip()]
+                    existing_tags.extend(items)
                     in_tags_list = False
-                elif not v:
+                elif v:
+                    val_clean = v.strip('"\'').lstrip("#")
+                    existing_tags.append(val_clean)
+                    in_tags_list = False
+                else:
                     in_tags_list = True
             elif in_tags_list:
                 if s.startswith("- "):
-                    pass
+                    t_val = s[2:].strip().strip('"\'').lstrip("#")
+                    if t_val:
+                        existing_tags.append(t_val)
                 elif ":" in s:
                     in_tags_list = False
                     new_fm_lines.append(line)
@@ -730,7 +738,8 @@ def strip_project_tags(abs_path, settings):
             tags_line = f"tags: [{', '.join(final_tags)}]"
             new_fm_lines.insert(0, tags_line)
 
-        new_content = "---\n" + "\n".join(new_fm_lines) + "\n---\n" + body
+        body_prefix = "" if body.startswith("\n") else "\n"
+        new_content = "---\n" + "\n".join(new_fm_lines) + "\n---" + body_prefix + body
     else:
         new_content = content
 
