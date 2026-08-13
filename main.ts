@@ -7,7 +7,6 @@ import StatsView, { VIEW_TYPE_STATS } from './src/StatsView';
 
 interface ProjectsMemorySettings {
 	projectTags: string;
-	defaultScore: number;
 	archiveTag: string;
 	rotationBonus: number; // bonus points added to other projects when one is worked on
 	rapprochmentFactor: number; // fraction between 0 and 1
@@ -54,7 +53,6 @@ function createEmptyStatsData(): StatsData {
 
 const DEFAULT_SETTINGS: ProjectsMemorySettings = {
 	projectTags: 'projet',
-	defaultScore: 100,
 	archiveTag: 'projet-fini',
 	rotationBonus: 0.1,
 	rapprochmentFactor: 0.2,
@@ -220,26 +218,22 @@ export default class ProjectsMemoryPlugin extends Plugin {
 		await this.saveSettings();
 	}
 
-	// Get or create project stats
-	async getProjectStats(filePath: string): Promise<ProjectStats> {
+	// Get project stats (returns null if unreviewed or stats don't exist)
+	async getProjectStats(filePath: string): Promise<ProjectStats | null> {
 		const stats = await this.loadStatsData();
-		if (!stats.projects[filePath]) {
-			stats.projects[filePath] = {
-				currentScore: this.settings.defaultScore,
-				rotationBonus: 0,
-				totalReviews: 0,
-				lastReviewDate: '',
-				reviewHistory: []
-			};
-			// Persist the created entry
-			await this.saveStatsData(stats);
+		const projectStats = stats.projects[filePath];
+		if (!projectStats || projectStats.totalReviews === 0 || projectStats.currentScore === undefined || projectStats.currentScore === null) {
+			return null;
 		}
-		return stats.projects[filePath];
+		return projectStats;
 	}
 
-	// Get the current score for a project
-	async getProjectScore(filePath: string): Promise<number> {
+	// Get the current score for a project (returns null if unreviewed or no score recorded)
+	async getProjectScore(filePath: string): Promise<number | null> {
 		const projectStats = await this.getProjectStats(filePath);
+		if (!projectStats) {
+			return null;
+		}
 		return projectStats.currentScore;
 	}
 
@@ -247,19 +241,19 @@ export default class ProjectsMemoryPlugin extends Plugin {
 	async updateProjectScore(filePath: string, newScore: number): Promise<void> {
 		const stats = await this.loadStatsData();
 		let projectStats = stats.projects[filePath];
+		const clampedScore = Math.min(100, Math.max(1, newScore));
 		if (!projectStats) {
 			projectStats = {
-				currentScore: this.settings.defaultScore,
+				currentScore: clampedScore,
 				rotationBonus: 0,
 				totalReviews: 0,
 				lastReviewDate: '',
 				reviewHistory: []
 			};
 			stats.projects[filePath] = projectStats;
+		} else {
+			projectStats.currentScore = clampedScore;
 		}
-
-		// Clamp score to [1, 100] range
-		projectStats.currentScore = Math.min(100, Math.max(1, newScore));
 
 		await this.saveStatsData(stats);
 	}
@@ -282,7 +276,7 @@ export default class ProjectsMemoryPlugin extends Plugin {
 		let projectStats = stats.projects[filePath];
 		if (!projectStats) {
 			projectStats = {
-				currentScore: this.settings.defaultScore,
+				currentScore: scoreAfter,
 				rotationBonus: 0,
 				totalReviews: 0,
 				lastReviewDate: '',
@@ -373,7 +367,8 @@ export default class ProjectsMemoryPlugin extends Plugin {
 			if (hasArchiveTag) continue;
 
 			const projectStats = stats.projects[file.path];
-			let baseScore = projectStats ? projectStats.currentScore : this.settings.defaultScore;
+			const isUnreviewed = !projectStats || projectStats.totalReviews === 0 || projectStats.currentScore === undefined || projectStats.currentScore === null;
+			let baseScore = isUnreviewed ? 0 : projectStats.currentScore;
 			let effectiveScore = baseScore + (projectStats ? projectStats.rotationBonus : 0);
 
 			const fm = (cache as any).frontmatter;
@@ -507,7 +502,7 @@ export default class ProjectsMemoryPlugin extends Plugin {
 			if (stats.projects[file.path]) continue;
 
 			const fm = (cache as any).frontmatter ?? {};
-			let initialScore = this.settings.defaultScore;
+			let initialScore: number | null = null;
 
 			if (typeof fm.pertinence_score !== 'undefined') {
 				const frontmatterScore = Number(fm.pertinence_score);
@@ -516,15 +511,16 @@ export default class ProjectsMemoryPlugin extends Plugin {
 				}
 			}
 
-			stats.projects[file.path] = {
-				currentScore: initialScore,
-				rotationBonus: 0,
-				totalReviews: 0,
-				lastReviewDate: '',
-				reviewHistory: []
-			};
-
-			migratedCount++;
+			if (initialScore !== null) {
+				stats.projects[file.path] = {
+					currentScore: initialScore,
+					rotationBonus: 0,
+					totalReviews: 1,
+					lastReviewDate: new Date().toISOString(),
+					reviewHistory: []
+				};
+				migratedCount++;
+			}
 		}
 
 		await this.saveStatsData(stats);
@@ -730,21 +726,6 @@ class ProjectsMemorySettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.deadlineProperty)
 					.onChange(async (value) => {
 						this.plugin.settings.deadlineProperty = value || 'deadline';
-						await this.plugin.saveSettings();
-					});
-			});
-
-		// Default Score configuration
-		new Setting(containerEl)
-			.setName('Default Score')
-			.setDesc('Score initial pour les nouveaux projets (min: 1, max: 100, défaut: 100).')
-			.addText(text => {
-				text
-					.setPlaceholder('100')
-					.setValue(String(this.plugin.settings.defaultScore))
-					.onChange(async (value) => {
-						const n = Number(value);
-						this.plugin.settings.defaultScore = isFinite(n) ? Math.min(100, Math.max(1, n)) : 100;
 						await this.plugin.saveSettings();
 					});
 			});

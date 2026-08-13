@@ -46,7 +46,6 @@ EXCLUDED_DIRS = {
 
 DEFAULT_SETTINGS = {
     "projectTags": "todo, project",
-    "defaultScore": 100,
     "archiveTag": "done",
     "rotationBonus": 0.1,
     "rapprochmentFactor": 0.2,
@@ -212,10 +211,10 @@ def scan_projects(vault_dir, data):
     Reads active projects directly from data.json (stats.projects) and matches Obsidian plugin logic:
     1. Must contain at least one tag in `settings.projectTags` (e.g. #todo).
     2. Must NOT contain `settings.archiveTag` or #done.
+    Unreviewed projects (totalReviews == 0) have base_score = None until explicitly set.
     """
     stats_projects = data.get("stats", {}).get("projects", {})
     settings = data.get("settings", {})
-    default_score = float(settings.get("defaultScore", 100))
 
     raw_tags = settings.get("projectTags", "todo, project")
     project_tags = [t.strip().lstrip("#").lower() for t in raw_tags.split(",") if t.strip()]
@@ -241,16 +240,21 @@ def scan_projects(vault_dir, data):
         if not has_project_tag or has_archive_tag:
             continue
 
-        current_score = float(proj_stat.get("currentScore", default_score))
+        total_reviews = int(proj_stat.get("totalReviews", 0))
+        raw_score = proj_stat.get("currentScore")
+        if total_reviews == 0 or raw_score is None:
+            current_score = None
+        else:
+            current_score = float(raw_score)
+
         review_history = proj_stat.get("reviewHistory", [])
         last_action = review_history[-1].get("action") if review_history else ""
 
         # Skip finished projects
-        if current_score == 0 or last_action == "finished":
+        if (current_score is not None and current_score == 0) or last_action == "finished":
             continue
 
         rotation_bonus = float(proj_stat.get("rotationBonus", 0.0))
-        total_reviews = int(proj_stat.get("totalReviews", 0))
         last_review_date = proj_stat.get("lastReviewDate", "")
 
         title = os.path.splitext(os.path.basename(rel_path))[0]
@@ -263,7 +267,7 @@ def scan_projects(vault_dir, data):
             if deadline_val:
                 deadline_str = str(deadline_val).strip()
 
-        if deadline_str:
+        if deadline_str and current_score is not None:
             try:
                 d_date = datetime.strptime(deadline_str[:10], "%Y-%m-%d").date()
                 today = datetime.now().date()
@@ -275,7 +279,7 @@ def scan_projects(vault_dir, data):
             except Exception:
                 pass
 
-        effective_score = current_score + rotation_bonus + deadline_urgency
+        effective_score = (current_score + rotation_bonus + deadline_urgency) if current_score is not None else None
 
         projects.append({
             "rel_path": rel_path,
@@ -309,10 +313,10 @@ def scan_projects(vault_dir, data):
                     projects.append({
                         "rel_path": rel_p,
                         "title": title,
-                        "base_score": default_score,
+                        "base_score": None,
                         "rotation_bonus": 0.0,
                         "deadline_urgency": 0.0,
-                        "effective_score": default_score,
+                        "effective_score": None,
                         "deadline": str(fm.get("due") or fm.get("deadline") or ""),
                         "total_reviews": 0,
                         "last_review_date": "",
@@ -377,8 +381,10 @@ def scan_projects(vault_dir, data):
             child_proj = cand_by_rel[child_rel]
             absorbed_sub_titles.append(child_proj["title"])
 
-            if child_proj["base_score"] > max_base_score:
-                max_base_score = child_proj["base_score"]
+            c_base = child_proj["base_score"]
+            if c_base is not None:
+                if max_base_score is None or c_base > max_base_score:
+                    max_base_score = c_base
 
             c_dead = child_proj["deadline"]
             if c_dead:
@@ -395,7 +401,7 @@ def scan_projects(vault_dir, data):
 
         # Recalculate deadline urgency & effective score for root
         deadline_urgency = 0.0
-        if earliest_deadline:
+        if earliest_deadline and max_base_score is not None:
             try:
                 d_date = datetime.strptime(earliest_deadline[:10], "%Y-%m-%d").date()
                 today = datetime.now().date()
@@ -408,14 +414,14 @@ def scan_projects(vault_dir, data):
                 pass
 
         root["deadline_urgency"] = deadline_urgency
-        root["effective_score"] = max_base_score + root["rotation_bonus"] + deadline_urgency
+        root["effective_score"] = (max_base_score + root["rotation_bonus"] + deadline_urgency) if max_base_score is not None else None
 
         final_projects.append(root)
 
     # Sort matching Obsidian plugin review modal priority:
     final_projects.sort(key=lambda p: (
         0 if p["total_reviews"] == 0 else 1,
-        -p["effective_score"] if p["total_reviews"] > 0 else 0,
+        -p["effective_score"] if (p["total_reviews"] > 0 and p["effective_score"] is not None) else 0,
         p["title"].lower()
     ))
     return final_projects
@@ -433,7 +439,11 @@ def format_project_table(projects):
         if len(title) > 42:
             title = title[:39] + "..."
         rev_str = "NEW" if p["total_reviews"] == 0 else str(p["total_reviews"])
-        line = f"{idx:<5} {title:<45} {p['effective_score']:<10.2f} {p['base_score']:<7.1f} {p['rotation_bonus']:<10.1f} {p['deadline_urgency']:<14.2f} {p['deadline'] or 'N/A':<12} {rev_str:<8}"
+        eff_str = f"{p['effective_score']:.2f}" if p['effective_score'] is not None else "N/A"
+        base_str = f"{p['base_score']:.1f}" if p['base_score'] is not None else "N/A"
+        rot_str = f"{p['rotation_bonus']:.1f}" if p['rotation_bonus'] is not None else "0.0"
+        urg_str = f"{p['deadline_urgency']:.2f}" if p['deadline_urgency'] is not None else "0.00"
+        line = f"{idx:<5} {title:<45} {eff_str:<10} {base_str:<7} {rot_str:<10} {urg_str:<14} {p['deadline'] or 'N/A':<12} {rev_str:<8}"
         lines.append(line)
     return "\n".join(lines)
 
@@ -508,10 +518,15 @@ def cmd_get(args, data):
 
     fm, tags, checkboxes, content = parse_markdown_file(abs_path)
     stats = data.get("stats", {}).get("projects", {}).get(rel_path, {})
-    default_score = float(data.get("settings", {}).get("defaultScore", 100))
     deadline_prop = data.get("settings", {}).get("deadlineProperty", "deadline")
 
-    base_score = float(stats.get("currentScore", default_score))
+    total_reviews = int(stats.get("totalReviews", 0))
+    raw_score = stats.get("currentScore")
+    if total_reviews == 0 or raw_score is None:
+        base_score = None
+    else:
+        base_score = float(raw_score)
+
     rotation_bonus = float(stats.get("rotationBonus", 0.0))
     deadline_val = fm.get(deadline_prop.lower()) or fm.get("deadline") or fm.get("due") or ""
 
@@ -529,9 +544,9 @@ def cmd_get(args, data):
         "base_score": base_score,
         "rotation_bonus": rotation_bonus,
         "deadline_urgency": 0.0,
-        "effective_score": base_score + rotation_bonus,
+        "effective_score": (base_score + rotation_bonus) if base_score is not None else None,
         "deadline": str(deadline_val),
-        "total_reviews": stats.get("totalReviews", 0),
+        "total_reviews": total_reviews,
         "last_review_date": stats.get("lastReviewDate", ""),
         "review_history": stats.get("reviewHistory", []),
         "sub_projects": sub_projs,
@@ -549,8 +564,10 @@ def cmd_get(args, data):
         print(f"Path:             {proj_info['rel_path']}")
         if proj_info.get("sub_projects"):
             print(f"⚠️  🔗 INCLUT LES SOUS-PROJETS : {', '.join(proj_info['sub_projects'])}")
-        print(f"Effective Score:  {proj_info['effective_score']:.2f}")
-        print(f"Base Score:       {proj_info['base_score']:.1f}")
+        eff_str = f"{proj_info['effective_score']:.2f}" if proj_info['effective_score'] is not None else "N/A"
+        base_str = f"{proj_info['base_score']:.1f}" if proj_info['base_score'] is not None else "N/A"
+        print(f"Effective Score:  {eff_str}")
+        print(f"Base Score:       {base_str}")
         print(f"Rotation Bonus:   {proj_info['rotation_bonus']:.1f}")
         print(f"Deadline Urgency: {proj_info['deadline_urgency']:.2f}")
         print(f"Deadline:         {proj_info['deadline'] or 'N/A'}")
@@ -667,31 +684,39 @@ def apply_feedback(project_path, action, worked, data):
     if not matched_key:
         matched_key = rel_path
 
-    proj = stats.setdefault(matched_key, {
-        "currentScore": float(settings.get("defaultScore", 100)),
-        "rotationBonus": 0.0,
-        "totalReviews": 0,
-        "lastReviewDate": "",
-        "reviewHistory": []
-    })
+    if matched_key not in stats:
+        proj = {
+            "rotationBonus": 0.0,
+            "totalReviews": 0,
+            "lastReviewDate": "",
+            "reviewHistory": []
+        }
+        stats[matched_key] = proj
+    else:
+        proj = stats[matched_key]
 
-    current_score = float(proj.get("currentScore", settings.get("defaultScore", 100)))
+    total_reviews = int(proj.get("totalReviews", 0))
+    raw_score = proj.get("currentScore")
+    current_score = float(raw_score) if (total_reviews > 0 and raw_score is not None) else None
+
     rf = float(settings.get("rapprochementFactor") or settings.get("rapprochmentFactor") or 0.2)
     act = action.lower()
 
     try:
         new_score = float(act)
     except ValueError:
-        if act == "less-often":
-            new_score = current_score - rf * (current_score - 1.0)
-        elif act == "ok":
-            new_score = current_score
-        elif act in ("more-often", "emergency"):
-            new_score = current_score + rf * (100.0 - current_score)
-        elif act == "finished":
+        if act == "finished":
             new_score = 0.0
         else:
-            raise ValueError(f"Unknown action '{action}'. Options: ok, less-often, more-often, finished, emergency, or numeric score (1-100).")
+            baseline = current_score if current_score is not None else 50.0
+            if act == "less-often":
+                new_score = baseline - rf * (baseline - 1.0)
+            elif act == "ok":
+                new_score = baseline
+            elif act in ("more-often", "emergency"):
+                new_score = baseline + rf * (100.0 - baseline)
+            else:
+                raise ValueError(f"Unknown action '{action}'. Options: ok, less-often, more-often, finished, emergency, or numeric score (1-100).")
 
     if act != "finished":
         new_score = max(1.0, min(100.0, new_score))
@@ -701,7 +726,7 @@ def apply_feedback(project_path, action, worked, data):
 
     now_iso = datetime.now(timezone.utc).isoformat()
     proj["lastReviewDate"] = now_iso
-    proj["totalReviews"] = proj.get("totalReviews", 0) + 1
+    proj["totalReviews"] = total_reviews + 1
 
     if worked:
         rot_inc = float(settings.get("rotationBonus", 0.1))
@@ -821,7 +846,7 @@ def cmd_work(args, data):
         p for p in all_projects
         if p["rel_path"] != rel_path and p["full_path"] != abs_path and p["title"] != title
     ]
-    other_projects.sort(key=lambda p: -p["effective_score"])
+    other_projects.sort(key=lambda p: -p["effective_score"] if p.get("effective_score") is not None else 0)
     top3 = other_projects[:3]
 
     print("============================================================", flush=True)
@@ -843,9 +868,8 @@ def cmd_work(args, data):
     else:
         for idx, p in enumerate(top3, 1):
             deadline_info = f" - Deadline: {p['deadline']}" if p.get("deadline") else ""
-            print(f"   {idx}. {p['title']} (Score effectif: {p['effective_score']:.2f}{deadline_info})", flush=True)
-
-
+            eff_info = f"{p['effective_score']:.2f}" if p.get("effective_score") is not None else "N/A"
+            print(f"   {idx}. {p['title']} (Score effectif: {eff_info}{deadline_info})", flush=True)
 
 
 def main():

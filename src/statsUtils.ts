@@ -368,7 +368,7 @@ export function processStatsData(statsData: any, options: StatsProcessingOptions
     const projectStates: { [path: string]: { currentScore: number; bonusSnapshot: number } } = {};
     Object.keys(statsData.projects).forEach(p => {
         projectStates[p] = {
-            currentScore: (plugin as any).settings.defaultScore || 50,
+            currentScore: statsData.projects[p]?.currentScore ?? 0,
             bonusSnapshot: 0
         };
     });
@@ -413,7 +413,7 @@ export function processStatsData(statsData: any, options: StatsProcessingOptions
 
             if (!projectStates[event.projectPath]) {
                 projectStates[event.projectPath] = {
-                    currentScore: (plugin as any).settings.defaultScore || 50,
+                    currentScore: event.scoreAfter,
                     bonusSnapshot: globalRotationAccumulator
                 };
             }
@@ -503,7 +503,7 @@ export function calculateProjectStats(statsData: any, plugin: Plugin): ProjectSt
         const projectName = projectPath.split('/').pop()?.replace('.md', '') || projectPath;
         const color = colors[index];
         const timeSpent = project.totalReviews * 25;
-        const currentScore = project.currentScore || 50;
+        const currentScore = project.currentScore ?? 0;
         const effectiveScore = currentScore + project.rotationBonus;
 
         return {

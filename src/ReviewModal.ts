@@ -190,13 +190,13 @@ export default class ReviewModal extends Modal {
 			const hasArchiveTag = normalizedArchiveTag ? allTags.includes(normalizedArchiveTag) : false;
 			if (hasArchiveTag) continue;
 			// Get current score from stats.json
-			let baseScore: number;
+			let baseScore: number | null = null;
 			try {
 				const pluginAny = this.plugin as any;
 				baseScore = await pluginAny.getProjectScore(file.path);
 			} catch (e) {
 				console.error('Failed to get project score:', e);
-				baseScore = Number((this.plugin as any).settings.defaultScore ?? 50);
+				baseScore = null;
 			}
 
 			// Get deadline from frontmatter (if any)
@@ -213,8 +213,8 @@ export default class ReviewModal extends Modal {
 			}
 
 			// calculate effective score using extracted helper to keep logic consistent
-			const effectiveScore = await this.calculateEffectiveScore(baseScore, file.path, deadline);
-			candidates.push({ file, effectiveScore, baseScore, deadline });
+			const effectiveScore = baseScore !== null ? await this.calculateEffectiveScore(baseScore, file.path, deadline) : 0;
+			candidates.push({ file, effectiveScore, baseScore: baseScore ?? 0, deadline });
 		}
 
 		if (candidates.length === 0) {
@@ -313,14 +313,14 @@ export default class ReviewModal extends Modal {
 			try {
 				const pluginAny = this.plugin as any;
 				const projectStats = await pluginAny.getProjectStats(candidate.file.path);
-				if (projectStats.totalReviews === 0) {
+				if (!projectStats || projectStats.totalReviews === 0) {
 					newProjects.push(candidate);
 				} else {
 					existingProjects.push(candidate);
 				}
 			} catch (e) {
-				// If we can't get stats, treat as existing project
-				existingProjects.push(candidate);
+				// If we can't get stats, treat as new project
+				newProjects.push(candidate);
 			}
 		}
 
@@ -366,9 +366,10 @@ export default class ReviewModal extends Modal {
 
 		// Get project stats early to check if it's a new project
 		const projectStats = await (this.plugin as any).getProjectStats(chosen.file.path);
+		const isUnreviewed = !projectStats || projectStats.totalReviews === 0;
 
 		// Add "Nouveau" badge if this is a new project (totalReviews === 0)
-		if (projectStats.totalReviews === 0) {
+		if (isUnreviewed) {
 			titleEl.createEl('span', {
 				text: 'Nouveau',
 				cls: 'pm-new-indicator'
@@ -390,22 +391,27 @@ export default class ReviewModal extends Modal {
 
 		// Badge 1: Score d'urgence (score de base)
 		const urgencyBadge = badgesContainer.createEl('span', {
-			text: `${Math.round(chosen.baseScore)}`,
+			text: isUnreviewed ? '?' : `${Math.round(chosen.baseScore)}`,
 			cls: 'pm-stat-badge pm-badge-urgency'
 		});
 		// Dynamic color based on score (green -> yellow -> red)
-		const urgencyColor = this.getUrgencyColor(chosen.baseScore);
-		urgencyBadge.setAttr('style', `background-color: ${urgencyColor};`);
+		if (isUnreviewed) {
+			urgencyBadge.setAttr('style', 'background-color: var(--text-muted, #888);');
+		} else {
+			const urgencyColor = this.getUrgencyColor(chosen.baseScore);
+			urgencyBadge.setAttr('style', `background-color: ${urgencyColor};`);
+		}
 
 		// Badge 2: Score de session (effectiveScore)
 		const sessionBadge = badgesContainer.createEl('span', {
-			text: `⚡ ${Math.round(chosen.effectiveScore)}`,
+			text: isUnreviewed ? '⚡ ?' : `⚡ ${Math.round(chosen.effectiveScore)}`,
 			cls: 'pm-stat-badge pm-badge-session'
 		});
 
 		// Badge 3: Temps total (calculé dynamiquement)
 		const pomodoroDuration = (this.plugin as any).settings.pomodoroDuration || 25;
-		const totalMinutes = projectStats.totalReviews * pomodoroDuration;
+		const totalReviewsCount = projectStats ? projectStats.totalReviews : 0;
+		const totalMinutes = totalReviewsCount * pomodoroDuration;
 
 		const timeText = totalMinutes >= 60 ?
 			`${Math.floor(totalMinutes / 60)}h${totalMinutes % 60 > 0 ? ` ${totalMinutes % 60}m` : ''}` :
@@ -418,7 +424,7 @@ export default class ReviewModal extends Modal {
 		// Function to update the time badge
 		const updateTimeBadge = async () => {
 			const updatedStats = await (this.plugin as any).getProjectStats(chosen.file.path);
-			const updatedMinutes = updatedStats.totalReviews * pomodoroDuration;
+			const updatedMinutes = (updatedStats ? updatedStats.totalReviews : 0) * pomodoroDuration;
 			const updatedText = updatedMinutes >= 60 ?
 				`${Math.floor(updatedMinutes / 60)}h${updatedMinutes % 60 > 0 ? ` ${updatedMinutes % 60}m` : ''}` :
 				`${updatedMinutes}m`;
@@ -465,6 +471,79 @@ export default class ReviewModal extends Modal {
 
 		// Create the feeling buttons row (Step 1)
 		const buttonsRow = this.contentEl.createEl('div', { cls: 'review-buttons' });
+
+		let isInitialScorePending = isUnreviewed;
+		let initialScoreContainer: HTMLElement | null = null;
+
+		if (isUnreviewed) {
+			buttonsRow.style.display = 'none';
+
+			initialScoreContainer = this.contentEl.createEl('div', { cls: 'pm-initial-score-container' });
+
+			initialScoreContainer.createEl('span', {
+				text: 'Score initial de pertinence (1 - 100) :',
+				cls: 'pm-initial-score-label'
+			});
+
+			const initialScoreInput = initialScoreContainer.createEl('input', {
+				type: 'number',
+				cls: 'pm-initial-score-input',
+				attr: {
+					min: '1',
+					max: '100',
+					placeholder: '1-100'
+				}
+			}) as HTMLInputElement;
+
+			const validateBtn = initialScoreContainer.createEl('button', {
+				text: 'Valider',
+				cls: 'pm-initial-score-submit'
+			});
+
+			const handleValidateInitialScore = async () => {
+				const valStr = initialScoreInput.value.trim();
+				const scoreNum = Number(valStr);
+				if (!valStr || isNaN(scoreNum) || scoreNum < 1 || scoreNum > 100) {
+					new Notice('Veuillez entrer un score valide entre 1 et 100.');
+					initialScoreInput.focus();
+					return;
+				}
+
+				const validatedScore = Math.min(100, Math.max(1, Math.round(scoreNum)));
+
+				try {
+					await (this.plugin as any).updateProjectScore(chosen.file.path, validatedScore);
+				} catch (err) {
+					console.error('Failed to update initial score:', err);
+					new Notice('Erreur lors de la sauvegarde du score.');
+					return;
+				}
+
+				chosen.baseScore = validatedScore;
+				chosen.effectiveScore = await this.calculateEffectiveScore(validatedScore, chosen.file.path, chosen.deadline);
+
+				urgencyBadge.setText(`${Math.round(validatedScore)}`);
+				urgencyBadge.setAttr('style', `background-color: ${this.getUrgencyColor(validatedScore)};`);
+				sessionBadge.setText(`⚡ ${Math.round(chosen.effectiveScore)}`);
+
+				initialScoreContainer!.style.display = 'none';
+				buttonsRow.style.display = 'flex';
+				isInitialScorePending = false;
+
+				setupStep1Keyboard();
+			};
+
+			validateBtn.addEventListener('click', () => {
+				handleValidateInitialScore();
+			});
+
+			initialScoreInput.addEventListener('keydown', (e) => {
+				if (e.key === 'Enter') {
+					e.preventDefault();
+					handleValidateInitialScore();
+				}
+			});
+		}
 
 		// Step 2: work confirmation overlay (hidden by default)
 		const workConfirmOverlay = this.contentEl.createEl('div', { cls: 'pm-work-confirm' });
@@ -533,11 +612,12 @@ export default class ReviewModal extends Modal {
 		const getCurrentScore = async (): Promise<number> => {
 			try {
 				const pluginAny = this.plugin as any;
-				return await pluginAny.getProjectScore(chosen.file.path);
+				const s = await pluginAny.getProjectScore(chosen.file.path);
+				if (s !== null && s !== undefined) return s;
 			} catch (e) {
 				console.error('Failed to get project score:', e);
-				return Number((this.plugin as any).settings.defaultScore ?? 50);
 			}
+			return chosen.baseScore ?? 100;
 		};
 
 		// Helper to perform the actual score update and optional stat recording
@@ -547,7 +627,7 @@ export default class ReviewModal extends Modal {
 			try {
 				const pluginAny = this.plugin as any;
 				const currentProjectStats = await pluginAny.getProjectStats(chosen.file.path);
-				isFirstReview = currentProjectStats.totalReviews === 0;
+				isFirstReview = !currentProjectStats || currentProjectStats.totalReviews === 0;
 			} catch (e) {
 				console.error('Failed to get project stats:', e);
 			}
@@ -607,6 +687,12 @@ export default class ReviewModal extends Modal {
 				window.removeEventListener('keydown', this.keydownHandler);
 			}
 			this.keydownHandler = (e: KeyboardEvent) => {
+				if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+					return;
+				}
+				if (isInitialScorePending) {
+					return;
+				}
 				const k = e.key;
 				switch (k) {
 					case '1':
@@ -638,6 +724,9 @@ export default class ReviewModal extends Modal {
 				window.removeEventListener('keydown', this.keydownHandler);
 			}
 			this.keydownHandler = (e: KeyboardEvent) => {
+				if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+					return;
+				}
 				if (e.key === 'o' || e.key === 'O' || e.key === 'Enter') {
 					workYesBtn.click();
 				} else if (e.key === 'n' || e.key === 'N') {
@@ -731,7 +820,7 @@ export default class ReviewModal extends Modal {
 			try {
 				const pluginAny = this.plugin as any;
 				const currentProjectStats = await pluginAny.getProjectStats(chosen.file.path);
-				isFirstReview = currentProjectStats.totalReviews === 0;
+				isFirstReview = !currentProjectStats || currentProjectStats.totalReviews === 0;
 			} catch (e) {
 				console.error('Failed to get project stats:', e);
 			}
