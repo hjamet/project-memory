@@ -12,10 +12,9 @@ diff
 data.json
 data.json.bak
 stats.json
-# Cursor Memory Bank
-.cursor/mcp
-.cursor/mcp.json
-.cursor/screenshots
-tomd.py
-repo.md
-diff
+# Python & Cache
+__pycache__/
+*.pyc
+.project_cache.json
+.cache.json
+

