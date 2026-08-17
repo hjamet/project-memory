@@ -1008,18 +1008,54 @@ def cmd_work(args, data):
         print(f"Error: Project note file not found for '{args.project_path}'.", flush=True)
         sys.exit(1)
 
-    duration_min = args.duration if args.duration else data.get("settings", {}).get("pomodoroDuration", 25)
-    total_seconds = duration_min * 60
-    title = os.path.splitext(os.path.basename(rel_path))[0]
+    stats = data.setdefault("stats", {}).setdefault("projects", {})
+    global_stats = data.setdefault("stats", {}).setdefault("globalStats", {"totalReviews": 0, "totalPomodoroTime": 0})
+    settings = data.setdefault("settings", {})
 
+    matched_key = None
+    for k in stats.keys():
+        if k == rel_path or os.path.basename(k) == os.path.basename(rel_path) or k.endswith(rel_path):
+            matched_key = k
+            break
+    if not matched_key:
+        matched_key = rel_path
+
+    if matched_key not in stats:
+        proj = {
+            "rotationBonus": 0.0,
+            "totalReviews": 0,
+            "lastReviewDate": "",
+            "reviewHistory": []
+        }
+        stats[matched_key] = proj
+    else:
+        proj = stats[matched_key]
+
+    # Apply immediate rotation bonus upon starting work session
+    rot_inc = float(settings.get("rotationBonus", 0.1))
+    for p_key, p_val in stats.items():
+        if p_key != matched_key:
+            p_val["rotationBonus"] = round(float(p_val.get("rotationBonus", 0.0)) + rot_inc, 3)
+
+    proj["rotationBonus"] = 0.0
+
+    duration_min = args.duration if args.duration is not None else data.get("settings", {}).get("pomodoroDuration", 25)
+    total_seconds = duration_min * 60
+    global_stats["totalPomodoroTime"] = global_stats.get("totalPomodoroTime", 0) + duration_min
+
+    data_path = os.path.join(VAULT_DIR, ".obsidian", "plugins", "project-memory", "data.json")
+    save_data(data, data_path)
+
+    title = os.path.splitext(os.path.basename(rel_path))[0]
+    print(f"🔄 Rotation appliquée dans data.json (+{rot_inc:.1f} aux autres projets, réinitialisé à 0.0 pour '{title}').", flush=True)
     print(f"⏱️ Session Pomodoro démarrée pour '{title}' ({duration_min} min)...", flush=True)
     step_sec = 30
     for elapsed_sec in range(0, total_seconds + 1, step_sec):
-        remaining_sec = total_seconds - elapsed_sec
+        remaining_sec = max(0, total_seconds - elapsed_sec)
         remaining_min = math.ceil(remaining_sec / 60)
-        pct = int((elapsed_sec / total_seconds) * 100)
+        pct = int((elapsed_sec / total_seconds) * 100) if total_seconds > 0 else 100
         bar_len = 15
-        filled = int(bar_len * elapsed_sec / total_seconds)
+        filled = int(bar_len * elapsed_sec / total_seconds) if total_seconds > 0 else bar_len
         bar = "█" * filled + "░" * (bar_len - filled)
         m_rem = remaining_sec // 60
         s_rem = remaining_sec % 60
