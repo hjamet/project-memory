@@ -839,6 +839,109 @@ def strip_project_tags(abs_path, settings):
     print(f"Updated note frontmatter for '{abs_path}' (stripped project tags, marked as non-projet).")
 
 
+def compute_feedback_score(current_score, action, rf):
+    act = action.lower()
+    try:
+        new_score = float(act)
+    except ValueError:
+        if act in ("finished", "non-projet", "non_projet", "non-project", "not-a-project"):
+            return 0.0
+        baseline = current_score if current_score is not None else 50.0
+        if act == "less-often":
+            new_score = baseline - rf * (baseline - 1.0)
+        elif act == "ok":
+            new_score = baseline
+        elif act in ("more-often", "emergency"):
+            new_score = baseline + rf * (100.0 - baseline)
+        else:
+            raise ValueError(f"Unknown action '{action}'. Options: ok, less-often, more-often, finished, emergency, non-projet, or numeric score (1-100).")
+
+    if act not in ("finished", "non-projet", "non_projet", "non-project", "not-a-project"):
+        new_score = max(1.0, min(100.0, new_score))
+
+    return round(new_score, 3)
+
+
+def get_absorbed_subprojects(target_rel_path, vault_dir=VAULT_DIR, data=None, cache=None):
+    """
+    Returns a list of relative paths for all descendant (absorbed) sub-projects of target_rel_path.
+    Traverses the wikilink graph recursively across notes in data.json and active vault project notes.
+    """
+    if cache is None:
+        cache = sync_vault_cache(vault_dir, fast_mode=True)
+
+    cand_by_title = {}
+    stats_projects = data.get("stats", {}).get("projects", {}) if data else {}
+
+    # 1. Index from data.json stats
+    for rel_p in stats_projects.keys():
+        norm_rel = rel_p.replace("\\", "/")
+        title = os.path.splitext(os.path.basename(norm_rel))[0]
+        rel_l = norm_rel.lower()
+        title_l = title.lower()
+        cand_by_title[title_l] = norm_rel
+        cand_by_title[rel_l] = norm_rel
+        if rel_l.endswith(".md"):
+            cand_by_title[rel_l[:-3]] = norm_rel
+        base_l = os.path.basename(rel_l)
+        cand_by_title[base_l] = norm_rel
+        if base_l.endswith(".md"):
+            cand_by_title[base_l[:-3]] = norm_rel
+
+    # 2. Index from cache
+    for rel_p, cached in cache.items():
+        norm_rel = rel_p.replace("\\", "/")
+        title = os.path.splitext(os.path.basename(norm_rel))[0]
+        rel_l = norm_rel.lower()
+        title_l = title.lower()
+        if title_l not in cand_by_title:
+            cand_by_title[title_l] = norm_rel
+        if rel_l not in cand_by_title:
+            cand_by_title[rel_l] = norm_rel
+        if rel_l.endswith(".md") and rel_l[:-3] not in cand_by_title:
+            cand_by_title[rel_l[:-3]] = norm_rel
+        base_l = os.path.basename(rel_l)
+        if base_l not in cand_by_title:
+            cand_by_title[base_l] = norm_rel
+        if base_l.endswith(".md") and base_l[:-3] not in cand_by_title:
+            cand_by_title[base_l[:-3]] = norm_rel
+
+    clean_target = target_rel_path.strip().replace("\\", "/").lower()
+    target_clean_no_ext = clean_target[:-3] if clean_target.endswith(".md") else clean_target
+    canonical_target = cand_by_title.get(clean_target) or cand_by_title.get(target_clean_no_ext) or target_rel_path.replace("\\", "/")
+
+    queue = [canonical_target]
+    seen = {canonical_target.lower()}
+    if canonical_target.lower().endswith(".md"):
+        seen.add(canonical_target.lower()[:-3])
+    absorbed = []
+
+    while queue:
+        curr_rel = queue.pop(0)
+        cached = cache.get(curr_rel)
+        if cached and "wikilinks" in cached:
+            wikilinks = cached["wikilinks"]
+        else:
+            abs_p = os.path.join(vault_dir, curr_rel.replace("/", os.sep))
+            if not os.path.exists(abs_p):
+                continue
+            _, _, _, _, wikilinks = parse_markdown_file(abs_p, parse_checkboxes=False)
+
+        for link_clean in wikilinks:
+            match_rel = cand_by_title.get(link_clean) or cand_by_title.get(link_clean + ".md")
+            if match_rel:
+                match_norm = match_rel.replace("\\", "/")
+                match_norm_l = match_norm.lower()
+                if match_norm_l not in seen:
+                    seen.add(match_norm_l)
+                    if match_norm_l.endswith(".md"):
+                        seen.add(match_norm_l[:-3])
+                    queue.append(match_norm)
+                    absorbed.append(match_norm)
+
+    return absorbed
+
+
 def apply_feedback(project_path, action, worked, data):
     stats = data.setdefault("stats", {}).setdefault("projects", {})
     global_stats = data.setdefault("stats", {}).setdefault("globalStats", {"totalReviews": 0, "totalPomodoroTime": 0})
@@ -872,76 +975,150 @@ def apply_feedback(project_path, action, worked, data):
     rf = float(settings.get("rapprochementFactor") or settings.get("rapprochmentFactor") or 0.2)
     act = action.lower()
 
-    try:
-        new_score = float(act)
-    except ValueError:
-        if act in ("finished", "non-projet", "non_projet", "non-project", "not-a-project"):
-            new_score = 0.0
-        else:
-            baseline = current_score if current_score is not None else 50.0
-            if act == "less-often":
-                new_score = baseline - rf * (baseline - 1.0)
-            elif act == "ok":
-                new_score = baseline
-            elif act in ("more-often", "emergency"):
-                new_score = baseline + rf * (100.0 - baseline)
-            else:
-                raise ValueError(f"Unknown action '{action}'. Options: ok, less-often, more-often, finished, emergency, non-projet, or numeric score (1-100).")
-
-    if act not in ("finished", "non-projet", "non_projet", "non-project", "not-a-project"):
-        new_score = max(1.0, min(100.0, new_score))
-
-    proj["currentScore"] = round(new_score, 3)
+    new_score = compute_feedback_score(current_score, action, rf)
     now_iso = datetime.now(timezone.utc).isoformat()
+
+    proj["currentScore"] = new_score
     proj["lastReviewDate"] = now_iso
     proj["totalReviews"] = total_reviews + 1
-
-    if worked:
-        rot_inc = float(settings.get("rotationBonus", 0.1))
-        for p_key, p_val in stats.items():
-            if p_key != matched_key:
-                p_val["rotationBonus"] = float(p_val.get("rotationBonus", 0.0)) + rot_inc
-
-        proj["rotationBonus"] = 0.0
-        global_stats["totalReviews"] = global_stats.get("totalReviews", 0) + 1
-
     proj.setdefault("reviewHistory", []).append({
         "date": now_iso,
         "action": act,
-        "scoreAfter": round(new_score, 3)
+        "scoreAfter": new_score
     })
-
     if len(proj.get("reviewHistory", [])) > 100:
         proj["reviewHistory"] = proj["reviewHistory"][-100:]
 
-    data_path = os.path.join(VAULT_DIR, ".obsidian", "plugins", "project-memory", "data.json")
+    # 1. Discover all absorbed sub-projects recursively
+    cache = sync_vault_cache(VAULT_DIR, fast_mode=True)
+    absorbed_sub_paths = get_absorbed_subprojects(rel_path, VAULT_DIR, data, cache)
 
-    # Invalidate cache entry for the modified file
-    cache = load_cache()
+    raw_tags = settings.get("projectTags", "todo, project")
+    project_tags = [t.strip().lstrip("#").lower() for t in raw_tags.split(",") if t.strip()]
+    archive_tag = settings.get("archiveTag", "done").strip().lstrip("#").lower()
+    done_tags = {"done", "projet-fini", archive_tag}
+
+    # Find which absorbed paths correspond to projects in stats or active projects
+    subproject_entries = []
+    for s_rel in absorbed_sub_paths:
+        sub_key = None
+        for k in stats.keys():
+            if k.lower() == s_rel.lower() or os.path.basename(k).lower() == os.path.basename(s_rel).lower() or k.lower().endswith(s_rel.lower()) or s_rel.lower().endswith(k.lower()):
+                sub_key = k
+                break
+        if sub_key:
+            if sub_key != matched_key and sub_key not in [se[0] for se in subproject_entries]:
+                subproject_entries.append((sub_key, s_rel))
+        else:
+            cached_s = cache.get(s_rel)
+            if cached_s:
+                s_tags = set(cached_s.get("tags", []))
+                has_proj_tag = any(pt in s_tags or any(t.startswith(pt + "/") for t in s_tags) for pt in project_tags)
+                has_arch_tag = any(at in s_tags or any(t.startswith(at + "/") for t in s_tags) for at in done_tags)
+                if has_proj_tag and not has_arch_tag and s_rel != matched_key and s_rel not in [se[0] for se in subproject_entries]:
+                    subproject_entries.append((s_rel, s_rel))
+
+    # Apply cascaded feedback to each subproject
+    cascaded_results = []
+    for sub_key, sub_rel in subproject_entries:
+        sub_abs_p = os.path.join(VAULT_DIR, sub_rel.replace("/", os.sep))
+        if sub_key not in stats:
+            sub_p = {
+                "rotationBonus": 0.0,
+                "totalReviews": 0,
+                "lastReviewDate": "",
+                "reviewHistory": []
+            }
+            stats[sub_key] = sub_p
+        else:
+            sub_p = stats[sub_key]
+
+        sub_tot_rev = int(sub_p.get("totalReviews", 0))
+        sub_raw_sc = sub_p.get("currentScore")
+        sub_curr_sc = float(sub_raw_sc) if (sub_tot_rev > 0 and sub_raw_sc is not None) else None
+
+        sub_new_sc = compute_feedback_score(sub_curr_sc, action, rf)
+        sub_p["currentScore"] = sub_new_sc
+        sub_p["lastReviewDate"] = now_iso
+        sub_p["totalReviews"] = sub_tot_rev + 1
+        sub_p.setdefault("reviewHistory", []).append({
+            "date": now_iso,
+            "action": act,
+            "scoreAfter": sub_new_sc
+        })
+        if len(sub_p.get("reviewHistory", [])) > 100:
+            sub_p["reviewHistory"] = sub_p["reviewHistory"][-100:]
+
+        cascaded_results.append((sub_key, sub_abs_p, sub_new_sc))
+
+    # Rotation bonus update on review/feedback: reset target project & cascaded subprojects, increment all other projects
+    rot_inc = float(settings.get("rotationBonus", 0.1))
+    all_reviewed_keys = {matched_key}.union({sub_k for sub_k, _, _ in cascaded_results})
+    for p_key, p_val in stats.items():
+        if p_key not in all_reviewed_keys:
+            p_val["rotationBonus"] = round(float(p_val.get("rotationBonus", 0.0)) + rot_inc, 3)
+        else:
+            p_val["rotationBonus"] = 0.0
+
+    global_stats["totalReviews"] = global_stats.get("totalReviews", 0) + 1
+
+    data_path = os.path.join(VAULT_DIR, ".obsidian", "plugins", "project-memory", "data.json")
+    cache_dirty = False
     norm_rel = rel_path.replace("\\", "/")
 
     if act == "finished":
         update_note_frontmatter_archived(abs_path, settings)
         stats.pop(matched_key, None)
-        save_data(data, data_path)
         if norm_rel in cache:
             cache.pop(norm_rel, None)
+            cache_dirty = True
+
+        for sub_key, sub_abs_p, _ in cascaded_results:
+            update_note_frontmatter_archived(sub_abs_p, settings)
+            stats.pop(sub_key, None)
+            sub_norm = os.path.relpath(sub_abs_p, VAULT_DIR).replace("\\", "/")
+            if sub_norm in cache:
+                cache.pop(sub_norm, None)
+                cache_dirty = True
+
+        save_data(data, data_path)
+        if cache_dirty:
             save_cache(cache)
+
         print(f"Feedback saved for '{matched_key}': action='finished', project purged from data.json")
+        for sub_key, _, _ in cascaded_results:
+            print(f"  ↳ [Cascade Sub-Project] Feedback 'finished' applied to '{sub_key}' (archived and purged).")
         return matched_key, 0.0
 
     if act in ("non-projet", "non_projet", "non-project", "not-a-project"):
         strip_project_tags(abs_path, settings)
         stats.pop(matched_key, None)
-        save_data(data, data_path)
         if norm_rel in cache:
             cache.pop(norm_rel, None)
+            cache_dirty = True
+
+        for sub_key, sub_abs_p, _ in cascaded_results:
+            strip_project_tags(sub_abs_p, settings)
+            stats.pop(sub_key, None)
+            sub_norm = os.path.relpath(sub_abs_p, VAULT_DIR).replace("\\", "/")
+            if sub_norm in cache:
+                cache.pop(sub_norm, None)
+                cache_dirty = True
+
+        save_data(data, data_path)
+        if cache_dirty:
             save_cache(cache)
+
         print(f"Feedback saved for '{matched_key}': action='non-projet', project stripped of tags and purged from active projects.")
+        for sub_key, _, _ in cascaded_results:
+            print(f"  ↳ [Cascade Sub-Project] Feedback 'non-projet' applied to '{sub_key}' (stripped tags and purged).")
         return matched_key, 0.0
 
     save_data(data, data_path)
-    print(f"Feedback saved for '{matched_key}': action='{act}', new_score={new_score:.2f}, worked={worked}")
+    print(f"Feedback saved for '{matched_key}': action='{act}', new_score={new_score:.2f}")
+    for sub_key, _, sub_new_sc in cascaded_results:
+        print(f"  ↳ [Cascade Sub-Project] Feedback saved for '{sub_key}': action='{act}', new_score={sub_new_sc:.2f}")
+
     return matched_key, new_score
 
 
@@ -952,11 +1129,11 @@ def cmd_feedback(args, data):
         print("Options: ok, less-often, more-often, finished, emergency, non-projet, or numeric score (1-100)")
         sys.exit(1)
 
-    apply_feedback(args.project_path, action, getattr(args, "worked", False), data)
+    apply_feedback(args.project_path, action, getattr(args, "worked", True), data)
 
 
 def cmd_set_score(args, data):
-    apply_feedback(args.project_path, str(args.score), getattr(args, "worked", False), data)
+    apply_feedback(args.project_path, str(args.score), getattr(args, "worked", True), data)
 
 
 def cmd_complete_task(args, data):
@@ -1008,46 +1185,10 @@ def cmd_work(args, data):
         print(f"Error: Project note file not found for '{args.project_path}'.", flush=True)
         sys.exit(1)
 
-    stats = data.setdefault("stats", {}).setdefault("projects", {})
-    global_stats = data.setdefault("stats", {}).setdefault("globalStats", {"totalReviews": 0, "totalPomodoroTime": 0})
-    settings = data.setdefault("settings", {})
-
-    matched_key = None
-    for k in stats.keys():
-        if k == rel_path or os.path.basename(k) == os.path.basename(rel_path) or k.endswith(rel_path):
-            matched_key = k
-            break
-    if not matched_key:
-        matched_key = rel_path
-
-    if matched_key not in stats:
-        proj = {
-            "rotationBonus": 0.0,
-            "totalReviews": 0,
-            "lastReviewDate": "",
-            "reviewHistory": []
-        }
-        stats[matched_key] = proj
-    else:
-        proj = stats[matched_key]
-
-    # Apply immediate rotation bonus upon starting work session
-    rot_inc = float(settings.get("rotationBonus", 0.1))
-    for p_key, p_val in stats.items():
-        if p_key != matched_key:
-            p_val["rotationBonus"] = round(float(p_val.get("rotationBonus", 0.0)) + rot_inc, 3)
-
-    proj["rotationBonus"] = 0.0
-
     duration_min = args.duration if args.duration is not None else data.get("settings", {}).get("pomodoroDuration", 25)
     total_seconds = duration_min * 60
-    global_stats["totalPomodoroTime"] = global_stats.get("totalPomodoroTime", 0) + duration_min
-
-    data_path = os.path.join(VAULT_DIR, ".obsidian", "plugins", "project-memory", "data.json")
-    save_data(data, data_path)
-
     title = os.path.splitext(os.path.basename(rel_path))[0]
-    print(f"🔄 Rotation appliquée dans data.json (+{rot_inc:.1f} aux autres projets, réinitialisé à 0.0 pour '{title}').", flush=True)
+
     print(f"⏱️ Session Pomodoro démarrée pour '{title}' ({duration_min} min)...", flush=True)
     step_sec = 30
     for elapsed_sec in range(0, total_seconds + 1, step_sec):
