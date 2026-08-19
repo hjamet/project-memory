@@ -4,7 +4,8 @@ Project Memory CLI
 ------------------
 High-performance CLI interface for Obsidian project-memory plugin.
 Calculates project scores, lists urgent tasks, logs session feedback,
-extracts roadmap checkboxes, completes tasks, and manages Pomodoro sessions.
+extracts roadmap checkboxes, completes tasks, cleans orphan entries,
+and manages Pomodoro sessions.
 Uses data.json and a persistent incremental mtime cache for sub-millisecond to
 low-millisecond execution even on large Obsidian vaults.
 """
@@ -15,6 +16,7 @@ import json
 import math
 import re
 import time
+import shutil
 import argparse
 from datetime import datetime, timezone
 
@@ -117,20 +119,19 @@ def save_cache(cache, cache_path=CACHE_PATH):
 
 def parse_markdown_file(file_path, content=None, parse_checkboxes=True):
     """
-    Parses a markdown file in a single fast pass for frontmatter, tags, checkboxes, wikilinks, and content.
-    Returns: (frontmatter_dict, tags_set, checkboxes_list, content_str, wikilinks_list)
+    Parses a markdown file in a single fast pass for frontmatter, tags, checkboxes, and content.
+    Returns: (frontmatter_dict, tags_set, checkboxes_list, content_str)
     """
     try:
         if content is None:
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 content = f.read()
     except Exception:
-        return {}, set(), [], "", []
+        return {}, set(), [], ""
 
     frontmatter = {}
     tags = set()
     checkboxes = []
-    wikilinks = []
 
     lines = content.splitlines()
     body_lines = lines
@@ -179,15 +180,6 @@ def parse_markdown_file(file_path, content=None, parse_checkboxes=True):
         for tag in inline_tags:
             tags.add(tag.lower())
 
-    # Wikilinks `[[Link]]`
-    if "[[" in content:
-        raw_links = re.findall(r'\[\[([^\]\|]+)(?:\|[^\]]+)?\]\]', content)
-        for link in raw_links:
-            clean_link = link.strip().lower()
-            if clean_link.endswith(".md"):
-                clean_link = clean_link[:-3]
-            wikilinks.append(clean_link)
-
     # Checkboxes `[ ]` and `[x]`
     if parse_checkboxes and "[" in content and "]" in content:
         for idx, line in enumerate(body_lines, 1):
@@ -203,7 +195,7 @@ def parse_markdown_file(file_path, content=None, parse_checkboxes=True):
                         "raw": line
                     })
 
-    return frontmatter, tags, checkboxes, content, wikilinks
+    return frontmatter, tags, checkboxes, content
 
 
 def sync_vault_cache(vault_dir=VAULT_DIR, cache_path=CACHE_PATH, fast_mode=False):
@@ -232,13 +224,12 @@ def sync_vault_cache(vault_dir=VAULT_DIR, cache_path=CACHE_PATH, fast_mode=False
 
                 cached = cache.get(rel_p)
                 if not cached or cached.get("mtime") != mt:
-                    fm, tags, _, _, wikilinks = parse_markdown_file(abs_p, parse_checkboxes=False)
+                    fm, tags, _, _ = parse_markdown_file(abs_p, parse_checkboxes=False)
                     deadline = str(fm.get("deadline") or fm.get("due") or "")
                     cache[rel_p] = {
                         "mtime": mt,
                         "tags": list(tags),
-                        "deadline": deadline,
-                        "wikilinks": wikilinks
+                        "deadline": deadline
                     }
                     cache_dirty = True
 
@@ -297,7 +288,7 @@ def scan_projects(vault_dir, data, cache=None, fast_mode=False):
     Matches Obsidian plugin rules:
     1. Must contain at least one tag in `settings.projectTags` (e.g. #todo).
     2. Must NOT contain `settings.archiveTag` or #done.
-    Performs graph-based sub-project absorption based on [[wikilinks]].
+    All projects are treated as fully autonomous candidates (no graph-based absorption).
     """
     if cache is None:
         cache = sync_vault_cache(vault_dir, fast_mode=fast_mode)
@@ -324,11 +315,10 @@ def scan_projects(vault_dir, data, cache=None, fast_mode=False):
         if cached:
             tags = set(cached.get("tags", []))
             deadline_str = cached.get("deadline", "")
-            wikilinks = cached.get("wikilinks", [])
         else:
             if not os.path.exists(abs_path):
                 continue
-            fm, tags_set, _, _, wikilinks = parse_markdown_file(abs_path, parse_checkboxes=False)
+            fm, tags_set, _, _ = parse_markdown_file(abs_path, parse_checkboxes=False)
             tags = tags_set
             deadline_str = str(fm.get(deadline_prop) or fm.get("deadline") or fm.get("due") or "")
 
@@ -386,8 +376,7 @@ def scan_projects(vault_dir, data, cache=None, fast_mode=False):
             "total_reviews": total_reviews,
             "last_review_date": last_review_date,
             "review_history": review_history,
-            "full_path": abs_path,
-            "wikilinks": wikilinks
+            "full_path": abs_path
         })
 
     # 2. Check unindexed active project notes from cache
@@ -402,7 +391,6 @@ def scan_projects(vault_dir, data, cache=None, fast_mode=False):
             abs_p = os.path.join(vault_dir, rel_p.replace("/", os.sep))
             title = os.path.splitext(os.path.basename(rel_p))[0]
             deadline_str = cached.get("deadline", "")
-            wikilinks = cached.get("wikilinks", [])
             known_paths.add(rel_p)
             projects.append({
                 "rel_path": rel_p,
@@ -415,115 +403,18 @@ def scan_projects(vault_dir, data, cache=None, fast_mode=False):
                 "total_reviews": 0,
                 "last_review_date": "",
                 "review_history": [],
-                "full_path": abs_p,
-                "wikilinks": wikilinks
+                "full_path": abs_p
             })
 
-    # 3. Graph-Based Sub-Project Absorption Logic
-    cand_by_rel = {p["rel_path"]: p for p in projects}
-    cand_by_title = {}
-    for p in projects:
-        rel_l = p["rel_path"].lower()
-        title_l = p["title"].lower()
-        cand_by_title[title_l] = p["rel_path"]
-        cand_by_title[rel_l] = p["rel_path"]
-        if rel_l.endswith(".md"):
-            cand_by_title[rel_l[:-3]] = p["rel_path"]
-        base_l = os.path.basename(rel_l)
-        cand_by_title[base_l] = p["rel_path"]
-        if base_l.endswith(".md"):
-            cand_by_title[base_l[:-3]] = p["rel_path"]
-
-    proj_children = {p["rel_path"]: set() for p in projects}
-    proj_parents = {p["rel_path"]: set() for p in projects}
-
-    for p in projects:
-        for link_clean in p["wikilinks"]:
-            target_rel = cand_by_title.get(link_clean) or cand_by_title.get(link_clean + ".md")
-            if target_rel and target_rel != p["rel_path"]:
-                proj_children[p["rel_path"]].add(target_rel)
-                proj_parents[target_rel].add(p["rel_path"])
-
-    root_candidates = [p for p in projects if not proj_parents[p["rel_path"]]]
-    absorbed_paths = set()
-    final_projects = []
-
-    for root in root_candidates:
-        r_rel = root["rel_path"]
-        if r_rel in absorbed_paths:
-            continue
-
-        absorbed_sub_titles = []
-        queue = list(proj_children[r_rel])
-        seen_descendants = set()
-
-        max_base_score = root["base_score"]
-        earliest_deadline = root["deadline"]
-
-        while queue:
-            child_rel = queue.pop(0)
-            if child_rel in seen_descendants or child_rel == r_rel:
-                continue
-            seen_descendants.add(child_rel)
-            absorbed_paths.add(child_rel)
-
-            child_proj = cand_by_rel[child_rel]
-            absorbed_sub_titles.append(child_proj["title"])
-
-            c_base = child_proj["base_score"]
-            if c_base is not None:
-                if max_base_score is None or c_base > max_base_score:
-                    max_base_score = c_base
-
-            c_dead = child_proj["deadline"]
-            if c_dead:
-                if not earliest_deadline or c_dead < earliest_deadline:
-                    earliest_deadline = c_dead
-
-            for grand_child in proj_children[child_rel]:
-                if grand_child not in seen_descendants:
-                    queue.append(grand_child)
-
-        root["base_score"] = max_base_score
-        root["deadline"] = earliest_deadline
-        root["sub_projects"] = absorbed_sub_titles
-
-        # Recalculate deadline urgency & effective score for root
-        deadline_urgency = 0.0
-        if earliest_deadline and max_base_score is not None:
-            try:
-                d_date = datetime.strptime(earliest_deadline[:10], "%Y-%m-%d").date()
-                today = datetime.now().date()
-                days_left = (d_date - today).days
-                p_factor = math.exp(-0.1 * days_left) if days_left > 0 else 1.0
-                rem = 100.0 - (max_base_score + root["rotation_bonus"])
-                if rem > 0:
-                    deadline_urgency = rem * p_factor
-            except Exception:
-                pass
-
-        root["deadline_urgency"] = deadline_urgency
-        root["effective_score"] = (max_base_score + root["rotation_bonus"] + deadline_urgency) if max_base_score is not None else None
-
-        final_projects.append(root)
-
-    # Handle remaining orphan/cycle project nodes that were neither root nor absorbed
-    processed_paths = {p["rel_path"] for p in final_projects}.union(absorbed_paths)
-    for p in projects:
-        if p["rel_path"] not in processed_paths:
-            p["sub_projects"] = []
-            final_projects.append(p)
-            processed_paths.add(p["rel_path"])
-
     # Sort matching Obsidian plugin review modal priority:
-    # 1. Unreviewed projects (totalReviews == 0) first (alphabetical)
+    # 1. Unreviewed projects (totalReviews == 0) first (alphabetical by title)
     # 2. Reviewed projects (totalReviews > 0) by effective score descending
-    final_projects.sort(key=lambda p: (
+    projects.sort(key=lambda p: (
         0 if p["total_reviews"] == 0 else 1,
         -p["effective_score"] if (p["total_reviews"] > 0 and p["effective_score"] is not None) else 0,
         p["title"].lower()
     ))
-    return final_projects
+    return projects
 
 
 def format_project_table(projects):
@@ -533,8 +424,6 @@ def format_project_table(projects):
     lines.append("-" * len(header))
     for idx, p in enumerate(projects, 1):
         title = p["title"]
-        if p.get("sub_projects"):
-            title += f" [🔗 inclut: {', '.join(p['sub_projects'])}]"
         if len(title) > 42:
             title = title[:39] + "..."
         rev_str = "NEW" if p["total_reviews"] == 0 else str(p["total_reviews"])
@@ -547,7 +436,86 @@ def format_project_table(projects):
     return "\n".join(lines)
 
 
+def clean_orphans(vault_dir=VAULT_DIR, data_path=DATA_JSON_PATH, cache_path=CACHE_PATH, dry_run=False):
+    """
+    Scans stats.projects in data.json and removes orphaned entries whose files no longer exist on disk.
+    If dry_run is True, only returns the list of orphaned paths without modifying data.json or cache.
+    If dry_run is False and orphans exist: creates a safety backup (data.json.bak_clean_orphans),
+    removes keys from data.json and cache, and saves.
+    Returns: list of orphaned rel_paths
+    """
+    data = load_data(data_path)
+    stats_projects = data.get("stats", {}).get("projects", {})
+    orphans = []
+
+    for rel_path in list(stats_projects.keys()):
+        abs_p = os.path.join(vault_dir, rel_path.replace("/", os.sep).replace("\\", os.sep))
+        if not os.path.exists(abs_p) or not os.path.isfile(abs_p):
+            orphans.append(rel_path)
+
+    if orphans and not dry_run:
+        # Create safety backup
+        backup_path = data_path + ".bak_clean_orphans"
+        try:
+            shutil.copy2(data_path, backup_path)
+        except Exception as e:
+            print(f"Warning: Could not create backup file: {e}", file=sys.stderr)
+
+        for orphan in orphans:
+            stats_projects.pop(orphan, None)
+
+        save_data(data, data_path)
+
+        # Also purge from cache
+        cache = load_cache(cache_path)
+        cache_dirty = False
+        for orphan in orphans:
+            norm_rel = orphan.replace("\\", "/")
+            if norm_rel in cache:
+                cache.pop(norm_rel, None)
+                cache_dirty = True
+            if orphan in cache:
+                cache.pop(orphan, None)
+                cache_dirty = True
+
+        if cache_dirty:
+            save_cache(cache, cache_path)
+
+    return orphans
+
+
+def cmd_clean_orphans(args, data_path=DATA_JSON_PATH, cache_path=CACHE_PATH):
+    dry_run = getattr(args, "dry_run", False)
+    as_json = getattr(args, "json", False)
+
+    orphans = clean_orphans(VAULT_DIR, data_path=data_path, cache_path=cache_path, dry_run=dry_run)
+
+    if as_json:
+        print(json.dumps({
+            "dry_run": dry_run,
+            "orphans_count": len(orphans),
+            "orphans": orphans
+        }, indent=2, ensure_ascii=False))
+    else:
+        mode_str = "[DRY-RUN] " if dry_run else ""
+        if not orphans:
+            print(f"✨ {mode_str}Aucune note orpheline détectée dans data.json. Tout est propre !")
+        else:
+            action_str = "détectée(s) (non supprimée(s))" if dry_run else "purgée(s) de data.json et du cache"
+            print(f"🧹 {mode_str}{len(orphans)} note(s) orpheline(s) {action_str} :")
+            for o in orphans:
+                print(f"  - {o}")
+            if not dry_run:
+                print(f"💾 Backup de sécurité créé : {data_path}.bak_clean_orphans")
+
+
 def cmd_list(args, data):
+    if getattr(args, "clean_orphans", False):
+        orphans = clean_orphans(VAULT_DIR, DATA_JSON_PATH, CACHE_PATH, dry_run=False)
+        if orphans and not getattr(args, "json", False):
+            print(f"🧹 Purge automatique : {len(orphans)} note(s) orpheline(s) nettoyée(s).")
+        data = load_data(DATA_JSON_PATH)
+
     fast_mode = getattr(args, "fast", False)
     projects = scan_projects(VAULT_DIR, data, fast_mode=fast_mode)
     top_n = getattr(args, "top", None)
@@ -616,7 +584,7 @@ def cmd_get(args, data):
             print(f"Error: Project note file not found for '{target}'.")
         sys.exit(1)
 
-    fm, tags, checkboxes, content, _ = parse_markdown_file(abs_path)
+    fm, tags, checkboxes, content = parse_markdown_file(abs_path)
     stats = data.get("stats", {}).get("projects", {}).get(rel_path, {})
     deadline_prop = data.get("settings", {}).get("deadlineProperty", "deadline")
 
@@ -630,14 +598,6 @@ def cmd_get(args, data):
     rotation_bonus = float(stats.get("rotationBonus", 0.0))
     deadline_val = fm.get(deadline_prop.lower()) or fm.get("deadline") or fm.get("due") or ""
 
-    # Check absorbed sub-projects from scan_projects
-    projects = scan_projects(VAULT_DIR, data)
-    sub_projs = []
-    for p in projects:
-        if p["rel_path"] == rel_path or os.path.basename(p["rel_path"]) == os.path.basename(rel_path):
-            sub_projs = p.get("sub_projects", [])
-            break
-
     proj_info = {
         "rel_path": rel_path,
         "title": os.path.splitext(os.path.basename(rel_path))[0],
@@ -649,7 +609,6 @@ def cmd_get(args, data):
         "total_reviews": total_reviews,
         "last_review_date": stats.get("lastReviewDate", ""),
         "review_history": stats.get("reviewHistory", []),
-        "sub_projects": sub_projs,
         "checkboxes": checkboxes,
         "frontmatter": fm,
         "tags": list(tags)
@@ -662,8 +621,6 @@ def cmd_get(args, data):
     else:
         print(f"=== Project Details: {proj_info['title']} ===")
         print(f"Path:             {proj_info['rel_path']}")
-        if proj_info.get("sub_projects"):
-            print(f"⚠️  🔗 INCLUT LES SOUS-PROJETS : {', '.join(proj_info['sub_projects'])}")
         eff_str = f"{proj_info['effective_score']:.2f}" if proj_info['effective_score'] is not None else "N/A"
         base_str = f"{proj_info['base_score']:.1f}" if proj_info['base_score'] is not None else "N/A"
         print(f"Effective Score:  {eff_str}")
@@ -862,86 +819,6 @@ def compute_feedback_score(current_score, action, rf):
     return round(new_score, 3)
 
 
-def get_absorbed_subprojects(target_rel_path, vault_dir=VAULT_DIR, data=None, cache=None):
-    """
-    Returns a list of relative paths for all descendant (absorbed) sub-projects of target_rel_path.
-    Traverses the wikilink graph recursively across notes in data.json and active vault project notes.
-    """
-    if cache is None:
-        cache = sync_vault_cache(vault_dir, fast_mode=True)
-
-    cand_by_title = {}
-    stats_projects = data.get("stats", {}).get("projects", {}) if data else {}
-
-    # 1. Index from data.json stats
-    for rel_p in stats_projects.keys():
-        norm_rel = rel_p.replace("\\", "/")
-        title = os.path.splitext(os.path.basename(norm_rel))[0]
-        rel_l = norm_rel.lower()
-        title_l = title.lower()
-        cand_by_title[title_l] = norm_rel
-        cand_by_title[rel_l] = norm_rel
-        if rel_l.endswith(".md"):
-            cand_by_title[rel_l[:-3]] = norm_rel
-        base_l = os.path.basename(rel_l)
-        cand_by_title[base_l] = norm_rel
-        if base_l.endswith(".md"):
-            cand_by_title[base_l[:-3]] = norm_rel
-
-    # 2. Index from cache
-    for rel_p, cached in cache.items():
-        norm_rel = rel_p.replace("\\", "/")
-        title = os.path.splitext(os.path.basename(norm_rel))[0]
-        rel_l = norm_rel.lower()
-        title_l = title.lower()
-        if title_l not in cand_by_title:
-            cand_by_title[title_l] = norm_rel
-        if rel_l not in cand_by_title:
-            cand_by_title[rel_l] = norm_rel
-        if rel_l.endswith(".md") and rel_l[:-3] not in cand_by_title:
-            cand_by_title[rel_l[:-3]] = norm_rel
-        base_l = os.path.basename(rel_l)
-        if base_l not in cand_by_title:
-            cand_by_title[base_l] = norm_rel
-        if base_l.endswith(".md") and base_l[:-3] not in cand_by_title:
-            cand_by_title[base_l[:-3]] = norm_rel
-
-    clean_target = target_rel_path.strip().replace("\\", "/").lower()
-    target_clean_no_ext = clean_target[:-3] if clean_target.endswith(".md") else clean_target
-    canonical_target = cand_by_title.get(clean_target) or cand_by_title.get(target_clean_no_ext) or target_rel_path.replace("\\", "/")
-
-    queue = [canonical_target]
-    seen = {canonical_target.lower()}
-    if canonical_target.lower().endswith(".md"):
-        seen.add(canonical_target.lower()[:-3])
-    absorbed = []
-
-    while queue:
-        curr_rel = queue.pop(0)
-        cached = cache.get(curr_rel)
-        if cached and "wikilinks" in cached:
-            wikilinks = cached["wikilinks"]
-        else:
-            abs_p = os.path.join(vault_dir, curr_rel.replace("/", os.sep))
-            if not os.path.exists(abs_p):
-                continue
-            _, _, _, _, wikilinks = parse_markdown_file(abs_p, parse_checkboxes=False)
-
-        for link_clean in wikilinks:
-            match_rel = cand_by_title.get(link_clean) or cand_by_title.get(link_clean + ".md")
-            if match_rel:
-                match_norm = match_rel.replace("\\", "/")
-                match_norm_l = match_norm.lower()
-                if match_norm_l not in seen:
-                    seen.add(match_norm_l)
-                    if match_norm_l.endswith(".md"):
-                        seen.add(match_norm_l[:-3])
-                    queue.append(match_norm)
-                    absorbed.append(match_norm)
-
-    return absorbed
-
-
 def apply_feedback(project_path, action, worked, data):
     stats = data.setdefault("stats", {}).setdefault("projects", {})
     global_stats = data.setdefault("stats", {}).setdefault("globalStats", {"totalReviews": 0, "totalPomodoroTime": 0})
@@ -989,73 +866,10 @@ def apply_feedback(project_path, action, worked, data):
     if len(proj.get("reviewHistory", [])) > 100:
         proj["reviewHistory"] = proj["reviewHistory"][-100:]
 
-    # 1. Discover all absorbed sub-projects recursively
-    cache = sync_vault_cache(VAULT_DIR, fast_mode=True)
-    absorbed_sub_paths = get_absorbed_subprojects(rel_path, VAULT_DIR, data, cache)
-
-    raw_tags = settings.get("projectTags", "todo, project")
-    project_tags = [t.strip().lstrip("#").lower() for t in raw_tags.split(",") if t.strip()]
-    archive_tag = settings.get("archiveTag", "done").strip().lstrip("#").lower()
-    done_tags = {"done", "projet-fini", archive_tag}
-
-    # Find which absorbed paths correspond to projects in stats or active projects
-    subproject_entries = []
-    for s_rel in absorbed_sub_paths:
-        sub_key = None
-        for k in stats.keys():
-            if k.lower() == s_rel.lower() or os.path.basename(k).lower() == os.path.basename(s_rel).lower() or k.lower().endswith(s_rel.lower()) or s_rel.lower().endswith(k.lower()):
-                sub_key = k
-                break
-        if sub_key:
-            if sub_key != matched_key and sub_key not in [se[0] for se in subproject_entries]:
-                subproject_entries.append((sub_key, s_rel))
-        else:
-            cached_s = cache.get(s_rel)
-            if cached_s:
-                s_tags = set(cached_s.get("tags", []))
-                has_proj_tag = any(pt in s_tags or any(t.startswith(pt + "/") for t in s_tags) for pt in project_tags)
-                has_arch_tag = any(at in s_tags or any(t.startswith(at + "/") for t in s_tags) for at in done_tags)
-                if has_proj_tag and not has_arch_tag and s_rel != matched_key and s_rel not in [se[0] for se in subproject_entries]:
-                    subproject_entries.append((s_rel, s_rel))
-
-    # Apply cascaded feedback to each subproject
-    cascaded_results = []
-    for sub_key, sub_rel in subproject_entries:
-        sub_abs_p = os.path.join(VAULT_DIR, sub_rel.replace("/", os.sep))
-        if sub_key not in stats:
-            sub_p = {
-                "rotationBonus": 0.0,
-                "totalReviews": 0,
-                "lastReviewDate": "",
-                "reviewHistory": []
-            }
-            stats[sub_key] = sub_p
-        else:
-            sub_p = stats[sub_key]
-
-        sub_tot_rev = int(sub_p.get("totalReviews", 0))
-        sub_raw_sc = sub_p.get("currentScore")
-        sub_curr_sc = float(sub_raw_sc) if (sub_tot_rev > 0 and sub_raw_sc is not None) else None
-
-        sub_new_sc = compute_feedback_score(sub_curr_sc, action, rf)
-        sub_p["currentScore"] = sub_new_sc
-        sub_p["lastReviewDate"] = now_iso
-        sub_p["totalReviews"] = sub_tot_rev + 1
-        sub_p.setdefault("reviewHistory", []).append({
-            "date": now_iso,
-            "action": act,
-            "scoreAfter": sub_new_sc
-        })
-        if len(sub_p.get("reviewHistory", [])) > 100:
-            sub_p["reviewHistory"] = sub_p["reviewHistory"][-100:]
-
-        cascaded_results.append((sub_key, sub_abs_p, sub_new_sc))
-
-    # Rotation bonus update on review/feedback: reset target project & cascaded subprojects, increment all other projects
+    # Rotation bonus update on review/feedback: reset target project, increment all other projects
     rot_inc = float(settings.get("rotationBonus", 0.1))
-    all_reviewed_keys = {matched_key}.union({sub_k for sub_k, _, _ in cascaded_results})
     for p_key, p_val in stats.items():
-        if p_key not in all_reviewed_keys:
+        if p_key != matched_key:
             p_val["rotationBonus"] = round(float(p_val.get("rotationBonus", 0.0)) + rot_inc, 3)
         else:
             p_val["rotationBonus"] = 0.0
@@ -1063,6 +877,8 @@ def apply_feedback(project_path, action, worked, data):
     global_stats["totalReviews"] = global_stats.get("totalReviews", 0) + 1
 
     data_path = os.path.join(VAULT_DIR, ".obsidian", "plugins", "project-memory", "data.json")
+    cache_path = os.path.join(VAULT_DIR, ".obsidian", "plugins", "project-memory", ".project_cache.json")
+    cache = load_cache(cache_path)
     cache_dirty = False
     norm_rel = rel_path.replace("\\", "/")
 
@@ -1072,22 +888,15 @@ def apply_feedback(project_path, action, worked, data):
         if norm_rel in cache:
             cache.pop(norm_rel, None)
             cache_dirty = True
-
-        for sub_key, sub_abs_p, _ in cascaded_results:
-            update_note_frontmatter_archived(sub_abs_p, settings)
-            stats.pop(sub_key, None)
-            sub_norm = os.path.relpath(sub_abs_p, VAULT_DIR).replace("\\", "/")
-            if sub_norm in cache:
-                cache.pop(sub_norm, None)
-                cache_dirty = True
+        if matched_key in cache:
+            cache.pop(matched_key, None)
+            cache_dirty = True
 
         save_data(data, data_path)
         if cache_dirty:
-            save_cache(cache)
+            save_cache(cache, cache_path)
 
         print(f"Feedback saved for '{matched_key}': action='finished', project purged from data.json")
-        for sub_key, _, _ in cascaded_results:
-            print(f"  ↳ [Cascade Sub-Project] Feedback 'finished' applied to '{sub_key}' (archived and purged).")
         return matched_key, 0.0
 
     if act in ("non-projet", "non_projet", "non-project", "not-a-project"):
@@ -1096,28 +905,19 @@ def apply_feedback(project_path, action, worked, data):
         if norm_rel in cache:
             cache.pop(norm_rel, None)
             cache_dirty = True
-
-        for sub_key, sub_abs_p, _ in cascaded_results:
-            strip_project_tags(sub_abs_p, settings)
-            stats.pop(sub_key, None)
-            sub_norm = os.path.relpath(sub_abs_p, VAULT_DIR).replace("\\", "/")
-            if sub_norm in cache:
-                cache.pop(sub_norm, None)
-                cache_dirty = True
+        if matched_key in cache:
+            cache.pop(matched_key, None)
+            cache_dirty = True
 
         save_data(data, data_path)
         if cache_dirty:
-            save_cache(cache)
+            save_cache(cache, cache_path)
 
         print(f"Feedback saved for '{matched_key}': action='non-projet', project stripped of tags and purged from active projects.")
-        for sub_key, _, _ in cascaded_results:
-            print(f"  ↳ [Cascade Sub-Project] Feedback 'non-projet' applied to '{sub_key}' (stripped tags and purged).")
         return matched_key, 0.0
 
     save_data(data, data_path)
     print(f"Feedback saved for '{matched_key}': action='{act}', new_score={new_score:.2f}")
-    for sub_key, _, sub_new_sc in cascaded_results:
-        print(f"  ↳ [Cascade Sub-Project] Feedback saved for '{sub_key}': action='{act}', new_score={sub_new_sc:.2f}")
 
     return matched_key, new_score
 
@@ -1164,7 +964,7 @@ def cmd_complete_task(args, data):
     if not found:
         print(f"Warning: Pending task matching '{task_text}' not found in '{rel_path}'.")
         print("Available pending tasks:")
-        _, _, checkboxes, _, _ = parse_markdown_file(abs_path)
+        _, _, checkboxes, _ = parse_markdown_file(abs_path)
         pending = [c for c in checkboxes if not c["completed"]]
         if not pending:
             print("  (No pending tasks found in file)")
@@ -1246,6 +1046,12 @@ def main():
     list_parser.add_argument("--unreviewed", "--new", action="store_true", help="List only unreviewed projects awaiting initial evaluation")
     list_parser.add_argument("--reviewed", action="store_true", help="List only evaluated/reviewed projects sorted by score")
     list_parser.add_argument("--fast", action="store_true", help="Fast mode using existing cache without filesystem scan")
+    list_parser.add_argument("--clean-orphans", action="store_true", help="Nettoie d'abord les notes orphelines de data.json avant de lister")
+
+    # clean-orphans
+    clean_parser = subparsers.add_parser("clean-orphans", help="Nettoie les projets de data.json dont les fichiers n'existent plus sur le disque")
+    clean_parser.add_argument("--dry-run", action="store_true", help="Simule le nettoyage sans modifier data.json ni le cache")
+    clean_parser.add_argument("--json", action="store_true", help="Sortie au format JSON")
 
     # get
     get_parser = subparsers.add_parser("get", help="Get project details and roadmap tasks")
@@ -1285,6 +1091,8 @@ def main():
 
     if args.command == "list":
         cmd_list(args, data)
+    elif args.command == "clean-orphans":
+        cmd_clean_orphans(args, DATA_JSON_PATH, CACHE_PATH)
     elif args.command == "get":
         cmd_get(args, data)
     elif args.command == "feedback":

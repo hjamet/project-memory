@@ -223,89 +223,7 @@ export default class ReviewModal extends Modal {
 			return;
 		}
 
-		// Perform graph absorption of sub-projects
-		const candPaths = new Set(candidates.map(c => c.file.path));
-		const projChildren: Map<string, Set<string>> = new Map();
-		const projParents: Map<string, Set<string>> = new Map();
-
-		for (const c of candidates) {
-			projChildren.set(c.file.path, new Set());
-			projParents.set(c.file.path, new Set());
-		}
-
-		for (const c of candidates) {
-			const cache = this.app.metadataCache.getFileCache(c.file);
-			if (cache && cache.links) {
-				for (const linkObj of cache.links) {
-					const targetFile = this.app.metadataCache.getFirstLinkpathDest(linkObj.link, c.file.path);
-					if (targetFile && candPaths.has(targetFile.path) && targetFile.path !== c.file.path) {
-						projChildren.get(c.file.path)!.add(targetFile.path);
-						projParents.get(targetFile.path)!.add(c.file.path);
-					}
-				}
-			}
-		}
-
-		const rootCandidatesList: typeof candidates = [];
-		const subProjectsMap: Map<string, string[]> = new Map();
-
-		const initialRoots = candidates.filter(c => projParents.get(c.file.path)!.size === 0);
-		const absorbedPaths = new Set<string>();
-		const finalCandidates: typeof candidates = [];
-
-		for (const root of initialRoots) {
-			if (absorbedPaths.has(root.file.path)) continue;
-
-			const queue = Array.from(projChildren.get(root.file.path)!);
-			const seen = new Set<string>();
-			const subTitles: string[] = [];
-
-			let maxBaseScore = root.baseScore;
-			let earliestDeadline = root.deadline;
-
-			while (queue.length > 0) {
-				const childPath = queue.shift()!;
-				if (seen.has(childPath) || childPath === root.file.path) continue;
-				seen.add(childPath);
-				absorbedPaths.add(childPath);
-
-				const childCand = candidates.find(x => x.file.path === childPath);
-				if (childCand) {
-					subTitles.push(childCand.file.basename);
-					if (childCand.baseScore > maxBaseScore) {
-						maxBaseScore = childCand.baseScore;
-					}
-					if (childCand.deadline) {
-						if (!earliestDeadline || childCand.deadline < earliestDeadline) {
-							earliestDeadline = childCand.deadline;
-						}
-					}
-				}
-
-				const grandChildren = projChildren.get(childPath);
-				if (grandChildren) {
-					for (const gc of grandChildren) {
-						if (!seen.has(gc)) queue.push(gc);
-					}
-				}
-			}
-
-			root.baseScore = maxBaseScore;
-			root.deadline = earliestDeadline;
-			root.effectiveScore = await this.calculateEffectiveScore(maxBaseScore, root.file.path, earliestDeadline);
-			subProjectsMap.set(root.file.path, subTitles);
-			finalCandidates.push(root);
-		}
-
-		// Handle orphan cycle nodes
-		const processedPaths = new Set([...finalCandidates.map(c => c.file.path), ...absorbedPaths]);
-		for (const c of candidates) {
-			if (!processedPaths.has(c.file.path)) {
-				subProjectsMap.set(c.file.path, []);
-				finalCandidates.push(c);
-				processedPaths.add(c.file.path);
-			}
-		}
+		const finalCandidates = candidates;
 
 		// Separate final candidates into new projects (totalReviews === 0) and existing projects
 		const newProjects: typeof candidates = [];
@@ -378,15 +296,6 @@ export default class ReviewModal extends Modal {
 			});
 		}
 
-		// Add "Sub-Projects" banner if chosen file absorbs sub-projects
-		const chosenSubProjs = subProjectsMap.get(chosen.file.path);
-		if (chosenSubProjs && chosenSubProjs.length > 0) {
-			const subBanner = headerSection.createEl('div', {
-				cls: 'pm-subprojects-banner',
-				text: `⚠️ INCLUT LES SOUS-PROJETS : ${chosenSubProjs.join(', ')}`
-			});
-			subBanner.setAttr('style', 'background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; padding: 10px 14px; border-radius: 6px; font-weight: bold; margin-bottom: 12px; font-size: 1.05em;');
-		}
 
 		// Create badges container
 		const badgesContainer = headerSection.createEl('div', { cls: 'pm-badges-container' });
