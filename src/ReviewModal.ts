@@ -84,12 +84,15 @@ export default class ReviewModal extends Modal {
 	// Calculate the effective score for display/selection purposes.
 	private async calculateEffectiveScore(baseScore: number, filePath: string, deadline?: string): Promise<number> {
 		let effectiveScore = baseScore;
+		let projectStats: any = null;
 
 		// Add rotation bonus from stats
 		try {
 			const pluginAny = this.plugin as any;
-			const projectStats = await pluginAny.getProjectStats(filePath);
-			effectiveScore += projectStats.rotationBonus;
+			projectStats = await pluginAny.getProjectStats(filePath);
+			if (projectStats && projectStats.rotationBonus) {
+				effectiveScore += projectStats.rotationBonus;
+			}
 		} catch (e) {
 			// If plugin doesn't expose expected fields, ignore and proceed with base effectiveScore
 		}
@@ -120,29 +123,28 @@ export default class ReviewModal extends Modal {
 			}
 		}
 
-		// Apply temporary per-session recency penalty if configured
+		// Apply cumulative temporal recency penalty over 6h sliding window
 		try {
 			const pluginAny = this.plugin as any;
 			const weight = Number(pluginAny.settings?.recencyPenaltyWeight ?? 0.5);
-			if (isFinite(weight) && weight > 0 && pluginAny.sessionReviewCounts instanceof Map) {
-				const count = pluginAny.sessionReviewCounts.get(filePath) ?? 0;
-				if (count > 0) {
-					// Allow fractional multipliers by splitting into integer and fractional parts
-					const totalMultiplier = count * weight;
-					const integerPart = Math.floor(totalMultiplier);
-					const fractionalPart = totalMultiplier - integerPart;
-					const rapprochment = Number(pluginAny.settings?.rapprochementFactor ?? 0.2);
-					for (let i = 0; i < integerPart; i++) {
-						// apply same reduction as 'Moins souvent' action: reduce by rapprochment * (s - 1)
-						const perte = rapprochment * (effectiveScore - 1);
-						effectiveScore = effectiveScore - perte;
-					}
-					if (fractionalPart > 0) {
-						// apply fractional part on the already-reduced score to respect compounded effect
-						const finalPerte = rapprochment * (effectiveScore - 1);
-						effectiveScore -= finalPerte * fractionalPart;
+			const rf = Number(pluginAny.settings?.rapprochementFactor ?? pluginAny.settings?.rapprochmentFactor ?? 0.2);
+			if (isFinite(weight) && weight > 0 && isFinite(rf) && projectStats && projectStats.recentWorkDates && Array.isArray(projectStats.recentWorkDates) && projectStats.recentWorkDates.length > 0) {
+				const nowMs = Date.now();
+				const sixHoursMs = 6 * 60 * 60 * 1000;
+				let K = 0;
+				for (const dateStr of projectStats.recentWorkDates) {
+					const d = new Date(dateStr);
+					const t = d.getTime();
+					if (isNaN(t)) continue;
+					const deltaMs = nowMs - t;
+					if (deltaMs >= 0 && deltaMs < sixHoursMs) {
+						const deltaHours = deltaMs / (1000 * 60 * 60);
+						const ki = 1.0 - (deltaHours / 6.0);
+						K += ki;
 					}
 				}
+				const malus = K * rf * weight * Math.max(0, baseScore - 1.0);
+				effectiveScore = Math.max(1, effectiveScore - malus);
 			}
 		} catch (e) {
 			// If plugin doesn't expose expected fields, ignore and proceed with base effectiveScore
@@ -667,17 +669,9 @@ export default class ReviewModal extends Modal {
 		btn1.innerHTML = sunSVG;
 		btn1.addEventListener('click', async () => {
 			const s = await getCurrentScore();
-			const rapprochment = Number((this.plugin as any).settings.rapprochementFactor ?? 0.2);
+			const pluginAny = this.plugin as any;
+			const rapprochment = Number(pluginAny.settings?.rapprochementFactor ?? pluginAny.settings?.rapprochmentFactor ?? 0.2);
 			const perte = rapprochment * (s - 1);
-			// Update session review count
-			try {
-				const pluginAny = this.plugin as any;
-				if (!(pluginAny.sessionReviewCounts instanceof Map)) pluginAny.sessionReviewCounts = new Map<string, number>();
-				const prev = pluginAny.sessionReviewCounts.get(chosen.file.path) ?? 0;
-				pluginAny.sessionReviewCounts.set(chosen.file.path, prev + 1);
-			} catch (e) {
-				console.error('Failed to update session review counts', e);
-			}
 			showWorkConfirm(s - perte, 'less-often');
 		});
 
@@ -685,14 +679,6 @@ export default class ReviewModal extends Modal {
 		btn2.innerHTML = balanceSVG;
 		btn2.addEventListener('click', async () => {
 			const s = await getCurrentScore();
-			try {
-				const pluginAny = this.plugin as any;
-				if (!(pluginAny.sessionReviewCounts instanceof Map)) pluginAny.sessionReviewCounts = new Map<string, number>();
-				const prev = pluginAny.sessionReviewCounts.get(chosen.file.path) ?? 0;
-				pluginAny.sessionReviewCounts.set(chosen.file.path, prev + 1);
-			} catch (e) {
-				console.error('Failed to update session review counts', e);
-			}
 			showWorkConfirm(s, 'ok');
 		});
 
@@ -700,31 +686,15 @@ export default class ReviewModal extends Modal {
 		btn3.innerHTML = flameSVG;
 		btn3.addEventListener('click', async () => {
 			const s = await getCurrentScore();
-			const rapprochment = Number((this.plugin as any).settings.rapprochementFactor ?? 0.2);
+			const pluginAny = this.plugin as any;
+			const rapprochment = Number(pluginAny.settings?.rapprochementFactor ?? pluginAny.settings?.rapprochmentFactor ?? 0.2);
 			const gain = rapprochment * (100 - s);
-			try {
-				const pluginAny = this.plugin as any;
-				if (!(pluginAny.sessionReviewCounts instanceof Map)) pluginAny.sessionReviewCounts = new Map<string, number>();
-				const prev = pluginAny.sessionReviewCounts.get(chosen.file.path) ?? 0;
-				pluginAny.sessionReviewCounts.set(chosen.file.path, prev + 1);
-			} catch (e) {
-				console.error('Failed to update session review counts', e);
-			}
 			showWorkConfirm(s + gain, 'more-often');
 		});
 
 		const btn5 = buttonsRow.createEl('button', { cls: 'pm-feeling-btn pm-feeling-done', attr: { 'aria-label': 'Fini', 'title': 'Fini' } });
 		btn5.innerHTML = checkSVG;
 		btn5.addEventListener('click', async () => {
-			// Update session review count
-			try {
-				const pluginAny = this.plugin as any;
-				if (!(pluginAny.sessionReviewCounts instanceof Map)) pluginAny.sessionReviewCounts = new Map<string, number>();
-				const prev = pluginAny.sessionReviewCounts.get(chosen.file.path) ?? 0;
-				pluginAny.sessionReviewCounts.set(chosen.file.path, prev + 1);
-			} catch (e) {
-				console.error('Failed to update session review counts', e);
-			}
 
 			// Check if this is the first review
 			let isFirstReview = false;

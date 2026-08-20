@@ -373,7 +373,7 @@ export function processStatsData(statsData: any, options: StatsProcessingOptions
         };
     });
     let globalRotationAccumulator = 0;
-    const rotationBonusAmount = (plugin as any).settings.rotationBonus || 0.1;
+    const rotationBonusAmount = (plugin as any).settings.rotationBonus || 0.3;
 
     // Prepare dataset maps
     const realScoreMap: { [path: string]: (number | null)[] } = {};
@@ -498,13 +498,38 @@ export function calculateProjectStats(statsData: any, plugin: Plugin): ProjectSt
     const projectNames = filterArchivedProjects(Object.keys(statsData.projects), plugin);
     const colors = generateColors(projectNames.length);
 
+    const pluginAny = plugin as any;
+    const weight = Number(pluginAny?.settings?.recencyPenaltyWeight ?? 0.5);
+    const rf = Number(pluginAny?.settings?.rapprochementFactor ?? pluginAny?.settings?.rapprochmentFactor ?? 0.2);
+    const nowMs = Date.now();
+    const sixHoursMs = 6 * 60 * 60 * 1000;
+
     return projectNames.map((projectPath, index) => {
         const project = statsData.projects[projectPath];
         const projectName = projectPath.split('/').pop()?.replace('.md', '') || projectPath;
         const color = colors[index];
-        const timeSpent = project.totalReviews * 25;
+        const pomodoroDuration = pluginAny?.settings?.pomodoroDuration || 25;
+        const timeSpent = (project.totalReviews || 0) * pomodoroDuration;
         const currentScore = project.currentScore ?? 0;
-        const effectiveScore = currentScore + project.rotationBonus;
+        let effectiveScore = currentScore + (project.rotationBonus || 0);
+
+        // Malus temporel cumulatif 6h
+        if (isFinite(weight) && weight > 0 && isFinite(rf) && project.recentWorkDates && Array.isArray(project.recentWorkDates) && project.recentWorkDates.length > 0) {
+            let K = 0;
+            for (const dateStr of project.recentWorkDates) {
+                const d = new Date(dateStr);
+                const t = d.getTime();
+                if (isNaN(t)) continue;
+                const deltaMs = nowMs - t;
+                if (deltaMs >= 0 && deltaMs < sixHoursMs) {
+                    const deltaHours = deltaMs / (1000 * 60 * 60);
+                    const ki = 1.0 - (deltaHours / 6.0);
+                    K += ki;
+                }
+            }
+            const malus = K * rf * weight * Math.max(0, currentScore - 1.0);
+            effectiveScore = Math.max(1, effectiveScore - malus);
+        }
 
         return {
             path: projectPath,
@@ -524,7 +549,7 @@ export async function handleUrgentAction(projectPath: string, plugin: Plugin): P
     try {
         const pluginAny = plugin as any;
         let s = await pluginAny.getProjectScore(projectPath);
-        const rapprochment = Number(pluginAny.settings.rapprochementFactor ?? 0.2);
+        const rapprochment = Number(pluginAny.settings?.rapprochementFactor ?? pluginAny.settings?.rapprochmentFactor ?? 0.2);
         const gain = rapprochment * (100 - s);
         const newScore = s + gain;
 

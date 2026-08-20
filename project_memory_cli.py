@@ -5,7 +5,7 @@ Project Memory CLI
 High-performance CLI interface for Obsidian project-memory plugin.
 Calculates project scores, lists urgent tasks, logs session feedback,
 extracts roadmap checkboxes, completes tasks, cleans orphan entries,
-and manages Pomodoro sessions.
+and manages Pomodoro sessions with dynamic temporal recency malus.
 Uses data.json and a persistent incremental mtime cache for sub-millisecond to
 low-millisecond execution even on large Obsidian vaults.
 """
@@ -34,7 +34,12 @@ def find_vault_dir(start_dir):
     while curr and os.path.dirname(curr) != curr:
         if os.path.exists(os.path.join(curr, ".obsidian")):
             return curr
+        if os.path.exists(os.path.join(curr, "VoiceNotes", ".obsidian")):
+            return os.path.join(curr, "VoiceNotes")
         curr = os.path.dirname(curr)
+    candidate = os.path.abspath(os.path.join(start_dir, "..", "VoiceNotes"))
+    if os.path.exists(os.path.join(candidate, ".obsidian")):
+        return candidate
     return os.path.abspath(os.path.join(start_dir, "..", ".."))
 
 
@@ -55,7 +60,7 @@ SYSTEM_FILES = {"agents.md", "readme.md", "claude.md", "gemini.md"}
 DEFAULT_SETTINGS = {
     "projectTags": "todo, project",
     "archiveTag": "done",
-    "rotationBonus": 0.1,
+    "rotationBonus": 0.3,
     "rapprochmentFactor": 0.2,
     "recencyPenaltyWeight": 0.5,
     "pomodoroDuration": 25,
@@ -115,6 +120,62 @@ def save_cache(cache, cache_path=CACHE_PATH):
         os.replace(tmp, cache_path)
     except Exception:
         pass
+
+
+def parse_iso_datetime(dt_str):
+    """
+    Robust ISO datetime parser supporting UTC strings with 'Z', '+00:00', and microseconds.
+    """
+    if not dt_str:
+        return None
+    try:
+        s = str(dt_str).strip()
+        if s.endswith("Z") or s.endswith("z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+def compute_temporal_recency_malus(recent_work_dates, pre_score, rf, weight, now_dt=None):
+    """
+    Calculates the temporal recency malus based on active work sessions in the last 6 hours.
+    For each session i within 6h:
+      k_i = 1.0 - (delta_t_i / 6.0)
+      K = sum(k_i)
+    Malus = K * rf * weight * max(0.0, pre_score - 1.0)
+    Returns: (malus, K, valid_dates_within_6h)
+    """
+    if now_dt is None:
+        now_dt = datetime.now(timezone.utc)
+    elif now_dt.tzinfo is None:
+        now_dt = now_dt.replace(tzinfo=timezone.utc)
+
+    if not recent_work_dates:
+        return 0.0, 0.0, []
+
+    k_sum = 0.0
+    valid_dates = []
+
+    for d_str in recent_work_dates:
+        d_dt = parse_iso_datetime(d_str)
+        if not d_dt:
+            continue
+        delta_hours = (now_dt - d_dt).total_seconds() / 3600.0
+        if -0.05 <= delta_hours < 6.0:
+            delta_h = max(0.0, delta_hours)
+            k_i = 1.0 - (delta_h / 6.0)
+            k_sum += k_i
+            valid_dates.append(d_str)
+
+    if pre_score is None or pre_score <= 1.0 or k_sum <= 0.0:
+        return 0.0, round(k_sum, 4), valid_dates
+
+    malus = k_sum * float(rf) * float(weight) * max(0.0, float(pre_score) - 1.0)
+    return round(malus, 3), round(k_sum, 4), valid_dates
 
 
 def parse_markdown_file(file_path, content=None, parse_checkboxes=True):
@@ -249,7 +310,7 @@ def sync_vault_cache(vault_dir=VAULT_DIR, cache_path=CACHE_PATH, fast_mode=False
 def find_project_file(vault_dir, project_path_or_name, data=None):
     """
     Resolves relative path or project title to absolute path in vault.
-    First checks data.json project keys for instant resolution, falling back to filesystem checks.
+    First checks data.json project keys and cache for instant resolution, falling back to filesystem checks.
     """
     clean_target = project_path_or_name.strip().replace("\\", "/").lower()
     if clean_target.endswith(".md"):
@@ -258,6 +319,11 @@ def find_project_file(vault_dir, project_path_or_name, data=None):
         clean_target_no_ext = clean_target
 
     candidate_abs = os.path.join(vault_dir, project_path_or_name.replace("/", os.sep))
+    if not candidate_abs.endswith(".md") and os.path.exists(candidate_abs + ".md") and os.path.isfile(candidate_abs + ".md"):
+        candidate_abs = candidate_abs + ".md"
+        rel = os.path.relpath(candidate_abs, vault_dir).replace("\\", "/")
+        return rel, candidate_abs
+
     if os.path.exists(candidate_abs) and os.path.isfile(candidate_abs):
         rel = os.path.relpath(candidate_abs, vault_dir).replace("\\", "/")
         return rel, candidate_abs
@@ -279,19 +345,47 @@ def find_project_file(vault_dir, project_path_or_name, data=None):
         if candidates:
             return candidates[0]
 
+    # Search in cache (.project_cache.json)
+    cache = load_cache()
+    if cache:
+        candidates = []
+        for rel_path in cache.keys():
+            rel_lower = rel_path.lower()
+            title_lower = os.path.splitext(os.path.basename(rel_path))[0].lower()
+            if rel_lower == clean_target or rel_lower == clean_target + ".md" or title_lower == clean_target_no_ext:
+                abs_p = os.path.join(vault_dir, rel_path.replace("/", os.sep))
+                if os.path.exists(abs_p):
+                    return rel_path, abs_p
+            if clean_target_no_ext in title_lower or clean_target_no_ext in rel_lower:
+                abs_p = os.path.join(vault_dir, rel_path.replace("/", os.sep))
+                if os.path.exists(abs_p):
+                    candidates.append((rel_path, abs_p))
+        if candidates:
+            return candidates[0]
+
+    # Search directly in notes/ folder
+    for sub in ["notes", ""]:
+        direct_p = os.path.join(vault_dir, sub, project_path_or_name if project_path_or_name.endswith(".md") else project_path_or_name + ".md")
+        if os.path.exists(direct_p) and os.path.isfile(direct_p):
+            rel = os.path.relpath(direct_p, vault_dir).replace("\\", "/")
+            return rel, direct_p
+
     return project_path_or_name, candidate_abs
 
 
-def scan_projects(vault_dir, data, cache=None, fast_mode=False):
+def scan_projects(vault_dir, data, cache=None, fast_mode=False, now_dt=None):
     """
     Reads active projects from data.json and unindexed project notes via fast cache.
     Matches Obsidian plugin rules:
     1. Must contain at least one tag in `settings.projectTags` (e.g. #todo).
     2. Must NOT contain `settings.archiveTag` or #done.
-    All projects are treated as fully autonomous candidates (no graph-based absorption).
+    Calculates dynamic temporal recency penalty (malus) based on recentWorkDates.
     """
     if cache is None:
         cache = sync_vault_cache(vault_dir, fast_mode=fast_mode)
+
+    if now_dt is None:
+        now_dt = datetime.now(timezone.utc)
 
     stats_projects = data.get("stats", {}).get("projects", {})
     settings = data.get("settings", {})
@@ -302,6 +396,9 @@ def scan_projects(vault_dir, data, cache=None, fast_mode=False):
     archive_tag = settings.get("archiveTag", "done").strip().lstrip("#").lower()
     done_tags = {"done", "projet-fini", archive_tag}
     deadline_prop = settings.get("deadlineProperty", "deadline").lower()
+
+    rf = float(settings.get("rapprochementFactor") or settings.get("rapprochmentFactor") or 0.2)
+    recency_weight = float(settings.get("recencyPenaltyWeight", 0.5))
 
     projects = []
     known_paths = set()
@@ -362,7 +459,14 @@ def scan_projects(vault_dir, data, cache=None, fast_mode=False):
             except Exception:
                 pass
 
-        effective_score = (current_score + rotation_bonus + deadline_urgency) if current_score is not None else None
+        pre_score = (current_score + rotation_bonus + deadline_urgency) if current_score is not None else None
+
+        recent_work_dates = proj_stat.get("recentWorkDates", [])
+        temporal_malus, k_factor, valid_dates = compute_temporal_recency_malus(
+            recent_work_dates, pre_score, rf, recency_weight, now_dt=now_dt
+        )
+
+        effective_score = max(1.0, pre_score - temporal_malus) if pre_score is not None else None
 
         known_paths.add(norm_rel)
         projects.append({
@@ -371,6 +475,11 @@ def scan_projects(vault_dir, data, cache=None, fast_mode=False):
             "base_score": current_score,
             "rotation_bonus": rotation_bonus,
             "deadline_urgency": deadline_urgency,
+            "pre_score": pre_score,
+            "temporal_malus": temporal_malus,
+            "k_factor": k_factor,
+            "active_sessions_count": len(valid_dates),
+            "recent_work_dates": valid_dates,
             "effective_score": effective_score,
             "deadline": deadline_str,
             "total_reviews": total_reviews,
@@ -398,6 +507,11 @@ def scan_projects(vault_dir, data, cache=None, fast_mode=False):
                 "base_score": None,
                 "rotation_bonus": 0.0,
                 "deadline_urgency": 0.0,
+                "pre_score": None,
+                "temporal_malus": 0.0,
+                "k_factor": 0.0,
+                "active_sessions_count": 0,
+                "recent_work_dates": [],
                 "effective_score": None,
                 "deadline": deadline_str,
                 "total_reviews": 0,
@@ -419,19 +533,25 @@ def scan_projects(vault_dir, data, cache=None, fast_mode=False):
 
 def format_project_table(projects):
     lines = []
-    header = f"{'Rank':<5} {'Title':<45} {'Eff.Score':<10} {'Base':<7} {'Rot.Bonus':<10} {'Deadline Urg.':<14} {'Deadline':<12} {'Reviews':<8}"
+    header = f"{'Rank':<5} {'Title':<40} {'Eff.Score':<10} {'Base':<7} {'Rot.Bonus':<10} {'Deadline Urg.':<14} {'Malus(K)':<12} {'Deadline':<12} {'Reviews':<8}"
     lines.append(header)
     lines.append("-" * len(header))
     for idx, p in enumerate(projects, 1):
         title = p["title"]
-        if len(title) > 42:
-            title = title[:39] + "..."
+        if len(title) > 37:
+            title = title[:34] + "..."
         rev_str = "NEW" if p["total_reviews"] == 0 else str(p["total_reviews"])
         eff_str = f"{p['effective_score']:.2f}" if p['effective_score'] is not None else "N/A"
         base_str = f"{p['base_score']:.1f}" if p['base_score'] is not None else "N/A"
         rot_str = f"{p['rotation_bonus']:.1f}" if p['rotation_bonus'] is not None else "0.0"
         urg_str = f"{p['deadline_urgency']:.2f}" if p['deadline_urgency'] is not None else "0.00"
-        line = f"{idx:<5} {title:<45} {eff_str:<10} {base_str:<7} {rot_str:<10} {urg_str:<14} {p['deadline'] or 'N/A':<12} {rev_str:<8}"
+
+        if p.get("temporal_malus") is not None and p.get("temporal_malus", 0.0) > 0:
+            malus_str = f"-{p['temporal_malus']:.1f}({p.get('k_factor', 0.0):.1f})"
+        else:
+            malus_str = "0.0(0.0)"
+
+        line = f"{idx:<5} {title:<40} {eff_str:<10} {base_str:<7} {rot_str:<10} {urg_str:<14} {malus_str:<12} {p['deadline'] or 'N/A':<12} {rev_str:<8}"
         lines.append(line)
     return "\n".join(lines)
 
@@ -586,7 +706,8 @@ def cmd_get(args, data):
 
     fm, tags, checkboxes, content = parse_markdown_file(abs_path)
     stats = data.get("stats", {}).get("projects", {}).get(rel_path, {})
-    deadline_prop = data.get("settings", {}).get("deadlineProperty", "deadline")
+    settings = data.get("settings", {})
+    deadline_prop = settings.get("deadlineProperty", "deadline")
 
     total_reviews = int(stats.get("totalReviews", 0))
     raw_score = stats.get("currentScore")
@@ -597,14 +718,44 @@ def cmd_get(args, data):
 
     rotation_bonus = float(stats.get("rotationBonus", 0.0))
     deadline_val = fm.get(deadline_prop.lower()) or fm.get("deadline") or fm.get("due") or ""
+    if not deadline_val:
+        deadline_val = stats.get("deadline", "")
 
+    deadline_urgency = 0.0
+    if deadline_val and base_score is not None:
+        try:
+            d_date = datetime.strptime(str(deadline_val)[:10], "%Y-%m-%d").date()
+            today = datetime.now().date()
+            days_left = (d_date - today).days
+            p_factor = math.exp(-0.1 * days_left) if days_left > 0 else 1.0
+            rem = 100.0 - (base_score + rotation_bonus)
+            if rem > 0:
+                deadline_urgency = rem * p_factor
+        except Exception:
+            pass
+
+    pre_score = (base_score + rotation_bonus + deadline_urgency) if base_score is not None else None
+
+    recent_work_dates = stats.get("recentWorkDates", [])
+    rf = float(settings.get("rapprochementFactor") or settings.get("rapprochmentFactor") or 0.2)
+    recency_weight = float(settings.get("recencyPenaltyWeight", 0.5))
+
+    temporal_malus, k_factor, valid_dates = compute_temporal_recency_malus(
+        recent_work_dates, pre_score, rf, recency_weight
+    )
+    effective_score = max(1.0, pre_score - temporal_malus) if pre_score is not None else None
     proj_info = {
         "rel_path": rel_path,
         "title": os.path.splitext(os.path.basename(rel_path))[0],
         "base_score": base_score,
         "rotation_bonus": rotation_bonus,
-        "deadline_urgency": 0.0,
-        "effective_score": (base_score + rotation_bonus) if base_score is not None else None,
+        "deadline_urgency": deadline_urgency,
+        "pre_score": pre_score,
+        "temporal_malus": temporal_malus,
+        "k_factor": k_factor,
+        "active_sessions_count": len(valid_dates),
+        "recent_work_dates": valid_dates,
+        "effective_score": effective_score,
         "deadline": str(deadline_val),
         "total_reviews": total_reviews,
         "last_review_date": stats.get("lastReviewDate", ""),
@@ -620,16 +771,22 @@ def cmd_get(args, data):
         print(json.dumps(clean_p, indent=2, ensure_ascii=False))
     else:
         print(f"=== Project Details: {proj_info['title']} ===")
-        print(f"Path:             {proj_info['rel_path']}")
+        print(f"Path:                   {proj_info['rel_path']}")
         eff_str = f"{proj_info['effective_score']:.2f}" if proj_info['effective_score'] is not None else "N/A"
         base_str = f"{proj_info['base_score']:.1f}" if proj_info['base_score'] is not None else "N/A"
-        print(f"Effective Score:  {eff_str}")
-        print(f"Base Score:       {base_str}")
-        print(f"Rotation Bonus:   {proj_info['rotation_bonus']:.1f}")
-        print(f"Deadline Urgency: {proj_info['deadline_urgency']:.2f}")
-        print(f"Deadline:         {proj_info['deadline'] or 'N/A'}")
-        print(f"Total Reviews:    {proj_info['total_reviews']}")
-        print(f"Last Review Date: {proj_info['last_review_date'] or 'N/A'}")
+        pre_str = f"{proj_info['pre_score']:.2f}" if proj_info['pre_score'] is not None else "N/A"
+        print(f"Effective Score:        {eff_str}")
+        print(f"Base Score:             {base_str}")
+        print(f"Rotation Bonus:         {proj_info['rotation_bonus']:.1f}")
+        print(f"Deadline Urgency:       {proj_info['deadline_urgency']:.2f}")
+        print(f"Pre-Score (avant malus): {pre_str}")
+        malus_str = f"-{proj_info['temporal_malus']:.2f} (K={proj_info['k_factor']:.2f}, {proj_info['active_sessions_count']} session(s) < 6h)"
+        print(f"Temporal Recency Malus: {malus_str}")
+        print(f"Deadline:               {proj_info['deadline'] or 'N/A'}")
+        print(f"Total Reviews:          {proj_info['total_reviews']}")
+        print(f"Last Review Date:       {proj_info['last_review_date'] or 'N/A'}")
+        if proj_info['recent_work_dates']:
+            print(f"Recent Sessions (<6h):  {', '.join(proj_info['recent_work_dates'])}")
 
         print("\n--- Review History ---")
         history = proj_info.get("review_history", [])
@@ -839,7 +996,8 @@ def apply_feedback(project_path, action, worked, data):
             "rotationBonus": 0.0,
             "totalReviews": 0,
             "lastReviewDate": "",
-            "reviewHistory": []
+            "reviewHistory": [],
+            "recentWorkDates": []
         }
         stats[matched_key] = proj
     else:
@@ -853,11 +1011,11 @@ def apply_feedback(project_path, action, worked, data):
     act = action.lower()
 
     new_score = compute_feedback_score(current_score, action, rf)
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_dt = datetime.now(timezone.utc)
+    now_iso = now_dt.isoformat()
 
     proj["currentScore"] = new_score
     proj["lastReviewDate"] = now_iso
-    proj["totalReviews"] = total_reviews + 1
     proj.setdefault("reviewHistory", []).append({
         "date": now_iso,
         "action": act,
@@ -866,15 +1024,33 @@ def apply_feedback(project_path, action, worked, data):
     if len(proj.get("reviewHistory", [])) > 100:
         proj["reviewHistory"] = proj["reviewHistory"][-100:]
 
-    # Rotation bonus update on review/feedback: reset target project, increment all other projects
-    rot_inc = float(settings.get("rotationBonus", 0.1))
-    for p_key, p_val in stats.items():
-        if p_key != matched_key:
-            p_val["rotationBonus"] = round(float(p_val.get("rotationBonus", 0.0)) + rot_inc, 3)
-        else:
-            p_val["rotationBonus"] = 0.0
+    rot_inc = float(settings.get("rotationBonus", 0.3))
 
-    global_stats["totalReviews"] = global_stats.get("totalReviews", 0) + 1
+    if worked:
+        # Update recentWorkDates: purge older than 6h and push current session
+        existing_work = proj.get("recentWorkDates", [])
+        valid_dates = []
+        for d_str in existing_work:
+            d_dt = parse_iso_datetime(d_str)
+            if d_dt:
+                delta_h = (now_dt - d_dt).total_seconds() / 3600.0
+                if -0.05 <= delta_h < 6.0:
+                    valid_dates.append(d_str)
+        valid_dates.append(now_iso)
+        proj["recentWorkDates"] = valid_dates
+
+        # Reset rotationBonus for current project, increment all other projects
+        proj["rotationBonus"] = 0.0
+        for p_key, p_val in stats.items():
+            if p_key != matched_key:
+                p_val["rotationBonus"] = round(float(p_val.get("rotationBonus", 0.0)) + rot_inc, 3)
+
+        proj["totalReviews"] = total_reviews + 1
+        global_stats["totalReviews"] = global_stats.get("totalReviews", 0) + 1
+    else:
+        # Not worked: keep recentWorkDates intact, do not increment other projects' rotation bonus
+        if total_reviews == 0:
+            proj["totalReviews"] = 1
 
     data_path = os.path.join(VAULT_DIR, ".obsidian", "plugins", "project-memory", "data.json")
     cache_path = os.path.join(VAULT_DIR, ".obsidian", "plugins", "project-memory", ".project_cache.json")
@@ -929,11 +1105,11 @@ def cmd_feedback(args, data):
         print("Options: ok, less-often, more-often, finished, emergency, non-projet, or numeric score (1-100)")
         sys.exit(1)
 
-    apply_feedback(args.project_path, action, getattr(args, "worked", True), data)
+    apply_feedback(args.project_path, action, getattr(args, "worked", False), data)
 
 
 def cmd_set_score(args, data):
-    apply_feedback(args.project_path, str(args.score), getattr(args, "worked", True), data)
+    apply_feedback(args.project_path, str(args.score), getattr(args, "worked", False), data)
 
 
 def cmd_complete_task(args, data):
