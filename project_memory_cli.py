@@ -379,6 +379,7 @@ def scan_projects(vault_dir, data, cache=None, fast_mode=False, now_dt=None):
     Matches Obsidian plugin rules:
     1. Must contain at least one tag in `settings.projectTags` (e.g. #todo).
     2. Must NOT contain `settings.archiveTag` or #done.
+    All projects are treated as fully autonomous candidates (no graph-based absorption).
     Calculates dynamic temporal recency penalty (malus) based on recentWorkDates.
     """
     if cache is None:
@@ -574,7 +575,6 @@ def clean_orphans(vault_dir=VAULT_DIR, data_path=DATA_JSON_PATH, cache_path=CACH
             orphans.append(rel_path)
 
     if orphans and not dry_run:
-        # Create safety backup
         backup_path = data_path + ".bak_clean_orphans"
         try:
             shutil.copy2(data_path, backup_path)
@@ -586,7 +586,6 @@ def clean_orphans(vault_dir=VAULT_DIR, data_path=DATA_JSON_PATH, cache_path=CACH
 
         save_data(data, data_path)
 
-        # Also purge from cache
         cache = load_cache(cache_path)
         cache_dirty = False
         for orphan in orphans:
@@ -744,6 +743,7 @@ def cmd_get(args, data):
         recent_work_dates, pre_score, rf, recency_weight
     )
     effective_score = max(1.0, pre_score - temporal_malus) if pre_score is not None else None
+
     proj_info = {
         "rel_path": rel_path,
         "title": os.path.splitext(os.path.basename(rel_path))[0],
@@ -1105,7 +1105,10 @@ def cmd_feedback(args, data):
         print("Options: ok, less-often, more-often, finished, emergency, non-projet, or numeric score (1-100)")
         sys.exit(1)
 
-    apply_feedback(args.project_path, action, getattr(args, "worked", False), data)
+    # By default, giving feedback implies a work session (worked=True) unless explicitly specified with --no-work / --review-only
+    is_not_worked = getattr(args, "no_work", False) or getattr(args, "review_only", False) or getattr(args, "not_worked", False)
+    worked = not is_not_worked
+    apply_feedback(args.project_path, action, worked, data)
 
 
 def cmd_set_score(args, data):
@@ -1239,7 +1242,8 @@ def main():
     fb_parser.add_argument("project_path", help="Relative path or name of project note")
     fb_parser.add_argument("pos_action", nargs="?", help="Action: ok, less-often, more-often, finished, emergency, non-projet")
     fb_parser.add_argument("--action", "-a", help="Action to perform")
-    fb_parser.add_argument("--worked", "-w", action="store_true", help="Set if user worked on the project")
+    fb_parser.add_argument("--worked", "-w", action="store_true", default=True, help="Set if user worked on the project (Default: True)")
+    fb_parser.add_argument("--no-work", "--not-worked", "--review-only", dest="no_work", action="store_true", help="Set if feedback is only a review without working on the project")
 
     # complete-task
     comp_parser = subparsers.add_parser("complete-task", help="Check off a task in a project note")
