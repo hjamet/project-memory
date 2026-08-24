@@ -2,6 +2,7 @@ import { App, Plugin, PluginSettingTab, Setting, AbstractInputSuggest, TFile, ge
 import ReviewModal from './src/ReviewModal';
 import StatsModal from './src/StatsModal';
 import StatsView, { VIEW_TYPE_STATS } from './src/StatsView';
+import { calculateTemporalBonus } from './src/statsUtils';
 import {
 	ProjectsMemorySettings,
 	ProjectStats,
@@ -239,7 +240,7 @@ export default class ProjectsMemoryPlugin extends Plugin {
 	}
 
 	// Record a review action for a project
-	async recordReviewAction(filePath: string, action: string, scoreAfter: number, isReview = true): Promise<void> {
+	async recordReviewAction(filePath: string, action: string, scoreAfter: number, isReview = true, satisfiedMilestoneDate?: string): Promise<void> {
 		const stats = await this.loadStatsData();
 		let projectStats = stats.projects[filePath];
 		if (!projectStats) {
@@ -257,6 +258,9 @@ export default class ProjectsMemoryPlugin extends Plugin {
 			projectStats.rotationBonus = 0;
 			projectStats.totalReviews++;
 			projectStats.lastReviewDate = new Date().toISOString();
+			if (satisfiedMilestoneDate) {
+				projectStats.lastSatisfiedMilestoneDate = satisfiedMilestoneDate;
+			}
 			stats.globalStats.totalReviews++;
 		}
 
@@ -316,11 +320,13 @@ export default class ProjectsMemoryPlugin extends Plugin {
 		const normalizedArchiveTag = archiveTag ? (archiveTag.startsWith('#') ? archiveTag : `#${archiveTag}`) : '';
 
 		const mdFiles = this.app.vault.getMarkdownFiles();
-		let topScore = -1;
-		let topName = '';
 
 		const stats = await this.loadStatsData();
 		const deadlineProp = this.settings.deadlineProperty || 'deadline';
+		const milestoneProp = this.settings.milestoneProperty || 'milestone';
+
+		const newProjects: { file: TFile }[] = [];
+		const existingProjects: { file: TFile; effectiveScore: number }[] = [];
 
 		for (const file of mdFiles) {
 			if (this.sessionIgnoredProjects && this.sessionIgnoredProjects.has(file.path)) continue;
@@ -336,25 +342,37 @@ export default class ProjectsMemoryPlugin extends Plugin {
 
 			const projectStats = stats.projects[file.path];
 			const isUnreviewed = !projectStats || projectStats.totalReviews === 0 || projectStats.currentScore === undefined || projectStats.currentScore === null;
-			let baseScore = isUnreviewed ? 0 : projectStats.currentScore;
-			let effectiveScore = baseScore + (projectStats ? projectStats.rotationBonus : 0);
 
+			if (isUnreviewed) {
+				newProjects.push({ file });
+				continue;
+			}
+
+			const baseScore = projectStats.currentScore;
+			const rotationBonus = projectStats.rotationBonus || 0;
+			const lastSatisfiedMilestoneDate = projectStats.lastSatisfiedMilestoneDate;
+
+			let deadline: string | undefined;
+			let milestone: string | undefined;
 			const fm = (cache as any).frontmatter;
-			if (fm && fm[deadlineProp]) {
-				const deadline = String(fm[deadlineProp]);
-				const deadlineDate = new Date(deadline);
-				if (!isNaN(deadlineDate.getTime())) {
-					const now = new Date();
-					const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-					const deadlineDay = new Date(deadlineDate.getFullYear(), deadlineDate.getMonth(), deadlineDate.getDate());
-					const diffTime = deadlineDay.getTime() - today.getTime();
-					const daysRemaining = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-					let factor = 1.0;
-					if (daysRemaining > 0) factor = Math.exp(-0.1 * daysRemaining);
-					const gap = 100 - effectiveScore;
-					if (gap > 0) effectiveScore += gap * factor;
+			if (fm) {
+				if (fm[deadlineProp]) {
+					deadline = String(fm[deadlineProp]);
+				}
+				if (fm[milestoneProp]) {
+					milestone = String(fm[milestoneProp]);
 				}
 			}
+
+			const temporalRes = calculateTemporalBonus(
+				baseScore,
+				rotationBonus,
+				deadline,
+				milestone,
+				lastSatisfiedMilestoneDate,
+				new Date()
+			);
+			let effectiveScore = temporalRes.effectiveScore;
 
 			const weight = Number(this.settings.recencyPenaltyWeight ?? 0.5);
 			if (isFinite(weight) && weight > 0 && this.sessionReviewCounts) {
@@ -363,7 +381,7 @@ export default class ProjectsMemoryPlugin extends Plugin {
 					const totalMultiplier = count * weight;
 					const integerPart = Math.floor(totalMultiplier);
 					const fractionalPart = totalMultiplier - integerPart;
-					const rapprochment = Number(this.settings.rapprochmentFactor ?? 0.2);
+					const rapprochment = Number((this.settings as any).rapprochementFactor ?? this.settings.rapprochmentFactor ?? 0.2);
 					let currentEffective = effectiveScore;
 					for (let i = 0; i < integerPart; i++) {
 						const perte = rapprochment * (currentEffective - 1);
@@ -377,20 +395,20 @@ export default class ProjectsMemoryPlugin extends Plugin {
 				}
 			}
 
-			if (projectStats && projectStats.totalReviews === 0) {
-				effectiveScore += 1000;
-			} else if (!projectStats) {
-				effectiveScore += 1000;
-			}
-
-			if (effectiveScore > topScore) {
-				topScore = effectiveScore;
-				topName = file.basename;
-			} else if (effectiveScore === topScore && topName === '') {
-				topName = file.basename; // Fallback
-			}
+			existingProjects.push({ file, effectiveScore });
 		}
-		return topName;
+
+		if (newProjects.length > 0) {
+			newProjects.sort((a, b) => a.file.basename.localeCompare(b.file.basename));
+			return newProjects[0].file.basename;
+		}
+
+		if (existingProjects.length > 0) {
+			existingProjects.sort((a, b) => b.effectiveScore - a.effectiveScore);
+			return existingProjects[0].file.basename;
+		}
+
+		return '';
 	}
 
 	private async updateStatusBar() {
