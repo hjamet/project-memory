@@ -1722,6 +1722,10 @@ def apply_feedback(project_path, action, worked, data):
 
     rot_inc = float(settings.get("rotationBonus", 0.3))
 
+    # Always increment totalReviews and globalStats totalReviews on review/feedback
+    proj["totalReviews"] = total_reviews + 1
+    global_stats["totalReviews"] = global_stats.get("totalReviews", 0) + 1
+
     if worked:
         # Update recentWorkDates: purge older than 6h and push current session
         existing_work = proj.get("recentWorkDates", [])
@@ -1743,13 +1747,10 @@ def apply_feedback(project_path, action, worked, data):
         for p_key, p_val in stats.items():
             if p_key != matched_key:
                 p_val["rotationBonus"] = round(float(p_val.get("rotationBonus", 0.0)) + rot_inc, 3)
-
-        proj["totalReviews"] = total_reviews + 1
-        global_stats["totalReviews"] = global_stats.get("totalReviews", 0) + 1
     else:
-        # Not worked: keep recentWorkDates intact, do not increment other projects' rotation bonus
-        if total_reviews == 0:
-            proj["totalReviews"] = 1
+        # Metacognitive review only: keep recentWorkDates and lastSatisfiedMilestoneDate intact,
+        # do NOT modify rotationBonus for current or other projects.
+        pass
 
     data_path = os.path.join(VAULT_DIR, ".obsidian", "plugins", "project-memory", "data.json")
     cache_path = os.path.join(VAULT_DIR, ".obsidian", "plugins", "project-memory", ".project_cache.json")
@@ -1792,7 +1793,8 @@ def apply_feedback(project_path, action, worked, data):
         return matched_key, 0.0
 
     save_data(data, data_path)
-    print(f"Feedback saved for '{matched_key}': action='{act}', new_score={new_score:.2f}")
+    mode_str = "work session" if worked else "review only"
+    print(f"Feedback ({mode_str}) saved for '{matched_key}': action='{act}', new_score={new_score:.2f}")
 
     return matched_key, new_score
 
@@ -1804,13 +1806,17 @@ def cmd_feedback(args, data):
         print("Options: ok, less-often, more-often, finished, emergency, non-projet, or numeric score (1-100)")
         sys.exit(1)
 
-    is_not_worked = getattr(args, "no_work", False) or getattr(args, "review_only", False) or getattr(args, "not_worked", False)
-    worked = not is_not_worked
+    # Metacognitive reviews (feedback, priority evaluation, comfort check) are review-only by default (worked=False).
+    # A work session recency penalty (recentWorkDates) and milestone satisfaction are ONLY recorded if --worked / -w is explicitly specified.
+    worked = bool(getattr(args, "worked", False)) and not bool(
+        getattr(args, "no_work", False) or getattr(args, "review_only", False) or getattr(args, "not_worked", False)
+    )
     apply_feedback(args.project_path, action, worked, data)
 
 
 def cmd_set_score(args, data):
-    apply_feedback(args.project_path, str(args.score), getattr(args, "worked", False), data)
+    worked = bool(getattr(args, "worked", False))
+    apply_feedback(args.project_path, str(args.score), worked, data)
 
 
 def cmd_complete_task(args, data):
@@ -1881,6 +1887,62 @@ def cmd_work(args, data):
         if remaining_sec > 0:
             time.sleep(min(step_sec, remaining_sec))
 
+    # Record work session directly in data.json
+    now_dt = datetime.now(timezone.utc)
+    now_iso = now_dt.isoformat()
+
+    stats = data.setdefault("stats", {}).setdefault("projects", {})
+    global_stats = data.setdefault("stats", {}).setdefault("globalStats", {"totalReviews": 0, "totalPomodoroTime": 0})
+    settings = data.setdefault("settings", {})
+    rot_inc = float(settings.get("rotationBonus", 0.3))
+
+    matched_key = None
+    for k in stats.keys():
+        if k == rel_path or os.path.basename(k) == os.path.basename(rel_path) or k.endswith(rel_path):
+            matched_key = k
+            break
+    if not matched_key:
+        matched_key = rel_path
+
+    if matched_key not in stats:
+        proj = {
+            "rotationBonus": 0.0,
+            "totalReviews": 0,
+            "lastReviewDate": "",
+            "reviewHistory": [],
+            "recentWorkDates": []
+        }
+        stats[matched_key] = proj
+    else:
+        proj = stats[matched_key]
+
+    # Update recentWorkDates: purge older than 6h and push current session
+    existing_work = proj.get("recentWorkDates", [])
+    valid_dates = []
+    for d_str in existing_work:
+        d_dt = parse_iso_datetime(d_str)
+        if d_dt:
+            delta_h = (now_dt - d_dt).total_seconds() / 3600.0
+            if -0.05 <= delta_h < 6.0:
+                valid_dates.append(d_str)
+    valid_dates.append(now_iso)
+    proj["recentWorkDates"] = valid_dates
+
+    # Set lastSatisfiedMilestoneDate to mark milestone cycle as satisfied
+    proj["lastSatisfiedMilestoneDate"] = now_iso
+
+    # Reset rotationBonus for current project, increment all other projects
+    proj["rotationBonus"] = 0.0
+    for p_key, p_val in stats.items():
+        if p_key != matched_key:
+            p_val["rotationBonus"] = round(float(p_val.get("rotationBonus", 0.0)) + rot_inc, 3)
+
+    # Accumulate pomodoro duration
+    global_stats["totalPomodoroTime"] = global_stats.get("totalPomodoroTime", 0) + duration_min
+
+    data_path = os.path.join(VAULT_DIR, ".obsidian", "plugins", "project-memory", "data.json")
+    save_data(data, data_path)
+
     all_projects = scan_projects(VAULT_DIR, data)
     other_projects = [
         p for p in all_projects
@@ -1921,8 +1983,8 @@ def main():
     parser = argparse.ArgumentParser(description="Project Memory CLI")
     subparsers = parser.add_subparsers(dest="command", help="Sub-commands")
 
-    # list
-    list_parser = subparsers.add_parser("list", help="List active projects sorted by score")
+    # list / priority / top
+    list_parser = subparsers.add_parser("list", aliases=["priority", "top"], help="List active projects sorted by score")
     list_parser.add_argument("--top", "-n", type=int, help="Limit output to top N projects")
     list_parser.add_argument("--json", action="store_true", help="Output in JSON format")
     list_parser.add_argument("--unreviewed", "--new", action="store_true", help="List only unreviewed projects awaiting initial evaluation")
@@ -1945,8 +2007,8 @@ def main():
     fb_parser.add_argument("project_path", help="Relative path or name of project note")
     fb_parser.add_argument("pos_action", nargs="?", help="Action: ok, less-often, more-often, finished, emergency, non-projet")
     fb_parser.add_argument("--action", "-a", help="Action to perform")
-    fb_parser.add_argument("--worked", "-w", action="store_true", default=True, help="Set if user worked on the project (Default: True)")
-    fb_parser.add_argument("--no-work", "--not-worked", "--review-only", dest="no_work", action="store_true", help="Set if feedback is only a review without working on the project")
+    fb_parser.add_argument("--worked", "-w", action="store_true", default=False, help="Set ONLY if user actively worked on the project during this session (Default: False)")
+    fb_parser.add_argument("--no-work", "--not-worked", "--review-only", dest="no_work", action="store_true", help="Explicitly mark as review-only without recording a work session.")
 
     # complete-task
     comp_parser = subparsers.add_parser("complete-task", help="Check off a task in a project note")
@@ -1957,7 +2019,7 @@ def main():
     set_score_parser = subparsers.add_parser("set-score", help="Set explicit urgency score (1-100) for a project")
     set_score_parser.add_argument("project_path", help="Relative path or name of project note")
     set_score_parser.add_argument("score", type=float, help="Explicit score between 1.0 and 100.0")
-    set_score_parser.add_argument("--worked", "-w", action="store_true", help="Set if user worked on the project")
+    set_score_parser.add_argument("--worked", "-w", action="store_true", default=False, help="Set ONLY if user actively worked on the project during this session (Default: False)")
 
     # work
     work_parser = subparsers.add_parser("work", help="Démarre une session Pomodoro active sur un projet")
@@ -1972,7 +2034,7 @@ def main():
 
     data = load_data(DATA_JSON_PATH)
 
-    if args.command == "list":
+    if args.command in ("list", "priority", "top"):
         cmd_list(args, data)
     elif args.command == "clean-orphans":
         cmd_clean_orphans(args, DATA_JSON_PATH, CACHE_PATH)
