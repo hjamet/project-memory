@@ -1806,9 +1806,9 @@ def cmd_feedback(args, data):
         print("Options: ok, less-often, more-often, finished, emergency, non-projet, or numeric score (1-100)")
         sys.exit(1)
 
-    # Metacognitive reviews (feedback, priority evaluation, comfort check) are review-only by default (worked=False).
-    # A work session recency penalty (recentWorkDates) and milestone satisfaction are ONLY recorded if --worked / -w is explicitly specified.
-    worked = bool(getattr(args, "worked", False)) and not bool(
+    # Feedback represents a work session by default (worked=True), recording recentWorkDates and recency penalty.
+    # To perform a review-only update without recording work, use --no-work / --review-only.
+    worked = not bool(
         getattr(args, "no_work", False) or getattr(args, "review_only", False) or getattr(args, "not_worked", False)
     )
     apply_feedback(args.project_path, action, worked, data)
@@ -2007,7 +2007,7 @@ def main():
     fb_parser.add_argument("project_path", help="Relative path or name of project note")
     fb_parser.add_argument("pos_action", nargs="?", help="Action: ok, less-often, more-often, finished, emergency, non-projet")
     fb_parser.add_argument("--action", "-a", help="Action to perform")
-    fb_parser.add_argument("--worked", "-w", action="store_true", default=False, help="Set ONLY if user actively worked on the project during this session (Default: False)")
+    fb_parser.add_argument("--worked", "-w", action="store_true", default=True, help="Record a work session with recency penalty (Default: True)")
     fb_parser.add_argument("--no-work", "--not-worked", "--review-only", dest="no_work", action="store_true", help="Explicitly mark as review-only without recording a work session.")
 
     # complete-task
