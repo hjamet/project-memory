@@ -5,51 +5,33 @@
 
 import { App, Plugin, TFile, getAllTags, Notice } from 'obsidian';
 
-// ─── Interfaces ───────────────────────────────────────────────────────────
+// ─── Interfaces & Types ───────────────────────────────────────────────────
 
-export interface ChartDataset {
-    label: string;
-    data: number[];
-    borderColor: string;
-    backgroundColor: string;
-    fill?: boolean;
-    tension?: number;
-}
+export type {
+    ChartDataset,
+    ChartData,
+    DailyActions,
+    ProjectStatEntry,
+    ProcessedChartData,
+    StatsProcessingOptions,
+    MilestoneInfo,
+    TemporalBonusResult,
+    ProjectStats,
+    StatsData,
+    ProjectsMemorySettings,
+    PersistedPayload
+} from './types';
 
-export interface ChartData {
-    labels: string[];
-    datasets: ChartDataset[];
-}
-
-export interface DailyActions {
-    [date: string]: {
-        [projectName: string]: number;
-    };
-}
-
-export interface ProjectStatEntry {
-    name: string;
-    path: string;
-    timeSpent: number;
-    effectiveScore: number;
-    totalReviews: number;
-    color: string;
-}
-
-export interface ProcessedChartData {
-    realScoreData: ChartData;
-    effectiveScoreData: ChartData;
-    dailyActionsData: ChartData;
-}
-
-export interface StatsProcessingOptions {
-    daysLimit: number;
-    projectsLimit: number;
-    searchTerm: string;
-    selectedProjects: Set<string>;
-    plugin: Plugin;
-    deadlines: { [path: string]: string };
-}
+import {
+    ChartDataset,
+    ChartData,
+    DailyActions,
+    ProjectStatEntry,
+    ProcessedChartData,
+    StatsProcessingOptions,
+    MilestoneInfo,
+    TemporalBonusResult
+} from './types';
 
 // ─── Pure Utility Functions ───────────────────────────────────────────────
 
@@ -107,30 +89,310 @@ export function formatTimeSpent(minutes: number): string {
 }
 
 /**
+ * Map of day names (French and English, standard and abbreviations) to JavaScript day index (0 = Sunday, 1 = Monday, ...).
+ */
+export const DAY_NAME_TO_INDEX: { [key: string]: number } = {
+    // French (0 = Dimanche, 1 = Lundi, ...)
+    'dimanche': 0, 'dimanches': 0, 'dim': 0,
+    'lundi': 1, 'lundis': 1, 'lun': 1,
+    'mardi': 2, 'mardis': 2, 'mar': 2,
+    'mercredi': 3, 'mercredis': 3, 'mer': 3,
+    'jeudi': 4, 'jeudis': 4, 'jeu': 4,
+    'vendredi': 5, 'vendredis': 5, 'ven': 5,
+    'samedi': 6, 'samedis': 6, 'sam': 6,
+
+    // English (0 = Sunday, 1 = Monday, ...)
+    'sunday': 0, 'sundays': 0, 'sun': 0,
+    'monday': 1, 'mondays': 1, 'mon': 1,
+    'tuesday': 2, 'tuesdays': 2, 'tue': 2,
+    'wednesday': 3, 'wednesdays': 3, 'wed': 3,
+    'thursday': 4, 'thursdays': 4, 'thu': 4,
+    'friday': 5, 'fridays': 5, 'fri': 5,
+    'saturday': 6, 'saturdays': 6, 'sat': 6,
+};
+
+/**
+ * Helper to parse a date string into a local midnight Date object (00:00:00).
+ */
+export function parseDateOnly(dateStr?: string): Date | null {
+    if (!dateStr || typeof dateStr !== 'string') return null;
+    const match = dateStr.trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (match) {
+        const year = parseInt(match[1], 10);
+        const month = parseInt(match[2], 10) - 1;
+        const day = parseInt(match[3], 10);
+        const d = new Date(year, month, day);
+        return isNaN(d.getTime()) ? null : d;
+    }
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return null;
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+const DAY_DISPLAY_NAMES: { [key: number]: string } = {
+    0: 'Dimanche',
+    1: 'Lundi',
+    2: 'Mardi',
+    3: 'Mercredi',
+    4: 'Jeudi',
+    5: 'Vendredi',
+    6: 'Samedi'
+};
+
+const MONTH_NAMES_FR: string[] = [
+    'janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin',
+    'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'
+];
+
+/**
+ * Parse a milestone expression into a concrete MilestoneInfo object.
+ *
+ * Supported formats:
+ * - Fixed ISO dates: YYYY-MM-DD, YYYY-MM-DDTHH:mm (e.g. '2026-08-28', '2026-08-28T10:00')
+ * - Simple recurring days (FR & EN): 'mercredi', 'wednesday', 'vendredi', 'tous les mercredis', 'every wednesday'
+ * - Recurring days with N-week intervals: 'mercredi@N' (e.g. 'mercredi@3' = every 3 Wednesdays), 'wednesday@N'
+ *
+ * If `lastSatisfiedDate` indicates that the current milestone occurrence is already validated,
+ * the target shifts to the subsequent occurrence (T_current + N*7 days).
+ */
+export function parseMilestoneTarget(
+    rawMilestone: string,
+    lastSatisfiedDate?: string,
+    nowDate: Date = new Date()
+): MilestoneInfo | null {
+    if (!rawMilestone || typeof rawMilestone !== 'string') return null;
+    const trimmed = rawMilestone.trim();
+    if (!trimmed) return null;
+
+    const today = new Date(nowDate.getFullYear(), nowDate.getMonth(), nowDate.getDate());
+
+    // 1. Check for fixed ISO date: YYYY-MM-DD or YYYY-MM-DDTHH:mm(:ss)
+    const isoMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{2}):(\d{2})(?::(\d{2}))?)?$/);
+    if (isoMatch) {
+        const year = parseInt(isoMatch[1], 10);
+        const month = parseInt(isoMatch[2], 10) - 1;
+        const day = parseInt(isoMatch[3], 10);
+        const hour = isoMatch[4] !== undefined ? parseInt(isoMatch[4], 10) : 23;
+        const minute = isoMatch[5] !== undefined ? parseInt(isoMatch[5], 10) : 59;
+        const second = isoMatch[6] !== undefined ? parseInt(isoMatch[6], 10) : 59;
+
+        const targetDate = new Date(year, month, day, hour, minute, second);
+        if (
+            isNaN(targetDate.getTime()) ||
+            targetDate.getFullYear() !== year ||
+            targetDate.getMonth() !== month ||
+            targetDate.getDate() !== day
+        ) {
+            return null;
+        }
+
+        const targetDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
+        const diffTime = targetDay.getTime() - today.getTime();
+        const daysRemaining = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        const targetDateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+
+        let isCycleSatisfied = false;
+        if (lastSatisfiedDate) {
+            const satisfied = parseDateOnly(lastSatisfiedDate);
+            if (satisfied && satisfied.getTime() >= targetDay.getTime()) {
+                isCycleSatisfied = true;
+            }
+        }
+
+        const isOverdue = daysRemaining < 0;
+        let urgencyFactor = 0.0;
+        if (isCycleSatisfied) {
+            urgencyFactor = 0.0;
+        } else if (isOverdue || daysRemaining <= 0) {
+            urgencyFactor = 1.0;
+        } else {
+            urgencyFactor = Math.exp(-0.3 * daysRemaining);
+        }
+
+        const monthName = MONTH_NAMES_FR[month] || String(month + 1);
+        let displayText = '';
+        if (isCycleSatisfied) {
+            displayText = `🚩 Étape ${day} ${monthName} (validée)`;
+        } else if (isOverdue) {
+            displayText = `🚩 Étape en retard (J+${Math.abs(daysRemaining)})`;
+        } else if (daysRemaining === 0) {
+            displayText = `🚩 Étape ${day} ${monthName} (Aujourd'hui)`;
+        } else {
+            displayText = `🚩 Étape ${day} ${monthName} (J-${daysRemaining})`;
+        }
+
+        return {
+            targetDate,
+            targetDateStr,
+            isRecurring: false,
+            daysRemaining,
+            raw: trimmed,
+            displayText,
+            isOverdue,
+            isCycleSatisfied,
+            urgencyFactor: Math.round(urgencyFactor * 10000) / 10000
+        };
+    }
+
+    // 2. Check for recurring day syntax
+    let cleanStr = trimmed.toLowerCase();
+
+    // Check for @N week interval (e.g. 'mercredi@3', 'every wednesday @ 2')
+    let intervalWeeks = 1;
+    const atMatch = cleanStr.match(/^(.*?)\s*@\s*(\d+)\s*$/);
+    if (atMatch) {
+        cleanStr = atMatch[1].trim();
+        const parsedN = parseInt(atMatch[2], 10);
+        if (!isNaN(parsedN) && parsedN >= 1) {
+            intervalWeeks = parsedN;
+        } else {
+            return null;
+        }
+    }
+
+    // Strip recurring prefixes (FR: 'tous les', 'tout les', 'toutes les', 'chaque'; EN: 'every', 'each')
+    cleanStr = cleanStr.replace(/^(tous\s+les\s+|tout\s+les\s+|toutes\s+les\s+|chaque\s+|every\s+|each\s+)/i, '').trim();
+
+    const targetDayOfWeek = DAY_NAME_TO_INDEX[cleanStr];
+    if (targetDayOfWeek === undefined) {
+        return null;
+    }
+
+    const currentDayOfWeek = today.getDay();
+    const dayDiff = (targetDayOfWeek - currentDayOfWeek + 7) % 7;
+    let targetDate = new Date(today.getFullYear(), today.getMonth(), today.getDate() + dayDiff, 23, 59, 59);
+
+    // If lastSatisfiedDate indicates current cycle occurrence is already validated, shift to next occurrence
+    let isCycleSatisfied = false;
+    if (lastSatisfiedDate) {
+        const satisfied = parseDateOnly(lastSatisfiedDate);
+        if (satisfied) {
+            let tPrev = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate() - intervalWeeks * 7);
+            while (satisfied.getTime() > tPrev.getTime()) {
+                isCycleSatisfied = true;
+                targetDate = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate() + intervalWeeks * 7, 23, 59, 59);
+                tPrev = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate() - intervalWeeks * 7);
+            }
+        }
+    }
+
+    const targetDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
+    const diffTime = targetDay.getTime() - today.getTime();
+    const daysRemaining = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    const targetDateStr = `${targetDate.getFullYear()}-${String(targetDate.getMonth() + 1).padStart(2, '0')}-${String(targetDate.getDate()).padStart(2, '0')}`;
+
+    let urgencyFactor = 0.0;
+    if (isCycleSatisfied) {
+        urgencyFactor = Math.exp(-0.3 * daysRemaining);
+    } else if (daysRemaining <= 0) {
+        urgencyFactor = 1.0;
+    } else {
+        urgencyFactor = Math.exp(-0.3 * daysRemaining);
+    }
+
+    const dayName = DAY_DISPLAY_NAMES[targetDayOfWeek] || cleanStr;
+    let displayText = '';
+    if (isCycleSatisfied) {
+        displayText = `🚩 ${dayName} (validé)`;
+    } else if (daysRemaining === 0) {
+        displayText = `🚩 ${dayName} (Aujourd'hui)`;
+    } else {
+        displayText = `🚩 ${dayName} (J-${daysRemaining})`;
+    }
+
+    return {
+        targetDate,
+        targetDateStr,
+        isRecurring: true,
+        intervalWeeks,
+        daysRemaining,
+        raw: trimmed,
+        displayText,
+        isOverdue: false,
+        isCycleSatisfied,
+        urgencyFactor: Math.round(urgencyFactor * 10000) / 10000
+    };
+}
+
+/**
+ * Calculate combined non-cumulative temporal pressure bonus from deadline and/or milestone.
+ *
+ * P_deadline = exp(-0.1 * dt_deadline) (if dt > 0, 1.0 if dt <= 0)
+ * P_milestone = exp(-0.3 * dt_milestone) (if dt > 0, 1.0 if dt <= 0)
+ * P_eff = max(P_deadline, P_milestone)
+ * temporalBonus = max(0, 100 - (baseScore + rotationBonus)) * P_eff
+ */
+export function calculateTemporalBonus(
+    baseScore: number,
+    rotationBonus: number,
+    deadlineStr?: string,
+    milestoneRaw?: string,
+    lastSatisfiedDate?: string,
+    currentDate: Date = new Date()
+): TemporalBonusResult {
+    let pDeadline = 0;
+    let dtDeadline: number | undefined = undefined;
+
+    if (deadlineStr && typeof deadlineStr === 'string' && deadlineStr.trim()) {
+        const deadlineDate = parseDateOnly(deadlineStr);
+        if (deadlineDate && !isNaN(deadlineDate.getTime())) {
+            const today = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate());
+            const diffTime = deadlineDate.getTime() - today.getTime();
+            dtDeadline = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+            if (dtDeadline <= 0) {
+                pDeadline = 1.0;
+            } else {
+                pDeadline = Math.exp(-0.1 * dtDeadline);
+            }
+        }
+    }
+
+    let pMilestone = 0;
+    let dtMilestone: number | undefined = undefined;
+    let milestoneInfo: MilestoneInfo | null = null;
+
+    if (milestoneRaw && typeof milestoneRaw === 'string' && milestoneRaw.trim()) {
+        milestoneInfo = parseMilestoneTarget(milestoneRaw, lastSatisfiedDate, currentDate);
+        if (milestoneInfo) {
+            dtMilestone = milestoneInfo.daysRemaining;
+            pMilestone = milestoneInfo.urgencyFactor !== undefined ? milestoneInfo.urgencyFactor : (dtMilestone <= 0 ? 1.0 : Math.exp(-0.3 * dtMilestone));
+        }
+    }
+
+    const effectiveFactor = Math.max(pDeadline, pMilestone);
+
+    let daysRemaining: number | undefined = undefined;
+    if (pMilestone > 0 || pDeadline > 0) {
+        if (pMilestone >= pDeadline && dtMilestone !== undefined) {
+            daysRemaining = dtMilestone;
+        } else if (dtDeadline !== undefined) {
+            daysRemaining = dtDeadline;
+        } else {
+            daysRemaining = dtMilestone;
+        }
+    }
+
+    const scoreGap = Math.max(0, 100 - (baseScore + rotationBonus));
+    const temporalBonus = scoreGap * effectiveFactor;
+    const effectiveScore = Math.min(100, baseScore + rotationBonus + temporalBonus);
+
+    return {
+        temporalBonus,
+        effectiveFactor,
+        effectiveScore,
+        daysRemaining,
+        milestoneInfo
+    };
+}
+
+/**
  * Calculate the deadline urgency bonus for a project.
+ * (Preserved for backward compatibility, delegates to calculateTemporalBonus logic)
  */
 export function calculateDeadlineBonus(baseScore: number, currentDate: Date, deadlineStr?: string): number {
     if (!deadlineStr) return 0;
-
-    const deadlineDate = new Date(deadlineStr);
-    if (isNaN(deadlineDate.getTime())) return 0;
-
-    const today = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate());
-    const deadlineDay = new Date(deadlineDate.getFullYear(), deadlineDate.getMonth(), deadlineDate.getDate());
-
-    const diffTime = deadlineDay.getTime() - today.getTime();
-    const daysRemaining = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-    let factor = 1.0;
-    if (daysRemaining > 0) {
-        factor = Math.exp(-0.1 * daysRemaining);
-    }
-
-    const gap = 100 - baseScore;
-    if (gap > 0) {
-        return gap * factor;
-    }
-    return 0;
+    const result = calculateTemporalBonus(baseScore, 0, deadlineStr, undefined, undefined, currentDate);
+    return result.temporalBonus;
 }
 
 /**

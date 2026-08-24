@@ -1,4 +1,6 @@
-import { App, Modal, Setting, Notice, Plugin, MarkdownRenderer, getAllTags, Component } from 'obsidian';
+import { App, Modal, Setting, Notice, Plugin, MarkdownRenderer, getAllTags, Component, TFile } from 'obsidian';
+import { MilestoneInfo, ProjectStats, ProjectsMemorySettings, StatsData } from './types';
+import { calculateTemporalBonus, parseMilestoneTarget } from './statsUtils';
 
 export default class ReviewModal extends Modal {
 	plugin: Plugin;
@@ -81,75 +83,67 @@ export default class ReviewModal extends Modal {
 		}
 	}
 
-	// Calculate the effective score for display/selection purposes.
-	private async calculateEffectiveScore(baseScore: number, filePath: string, deadline?: string): Promise<number> {
-		let effectiveScore = baseScore;
-		let projectStats: any = null;
+	// Calculate the effective score and milestone info for display/selection purposes.
+	private async calculateEffectiveScore(
+		baseScore: number,
+		filePath: string,
+		deadline?: string,
+		milestone?: string
+	): Promise<{ effectiveScore: number; milestoneInfo: MilestoneInfo | null }> {
+		let rotationBonus = 0;
+		let lastSatisfiedMilestoneDate: string | undefined;
 
-		// Add rotation bonus from stats
+		// Add rotation bonus and lastSatisfiedMilestoneDate from stats
 		try {
 			const pluginAny = this.plugin as any;
-			projectStats = await pluginAny.getProjectStats(filePath);
-			if (projectStats && projectStats.rotationBonus) {
-				effectiveScore += projectStats.rotationBonus;
+			const projectStats = await pluginAny.getProjectStats(filePath);
+			if (projectStats) {
+				rotationBonus = projectStats.rotationBonus || 0;
+				lastSatisfiedMilestoneDate = projectStats.lastSatisfiedMilestoneDate;
 			}
 		} catch (e) {
-			// If plugin doesn't expose expected fields, ignore and proceed with base effectiveScore
+			// If plugin doesn't expose expected fields, ignore
 		}
 
-		// Apply deadline bonus (gap-based)
-		// Bonus = (100 - baseScore) * exp(-0.1 * daysRemaining)
-		if (deadline) {
-			const deadlineDate = new Date(deadline);
-			if (!isNaN(deadlineDate.getTime())) {
-				const now = new Date();
-				// Reset time part to ensure clean day calculation
-				const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-				const deadlineDay = new Date(deadlineDate.getFullYear(), deadlineDate.getMonth(), deadlineDate.getDate());
+		const temporalRes = calculateTemporalBonus(
+			baseScore,
+			rotationBonus,
+			deadline,
+			milestone,
+			lastSatisfiedMilestoneDate,
+			new Date()
+		);
 
-				const diffTime = deadlineDay.getTime() - today.getTime();
-				const daysRemaining = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+		let effectiveScore = temporalRes.effectiveScore;
 
-				let factor = 1.0;
-				if (daysRemaining > 0) {
-					factor = Math.exp(-0.1 * daysRemaining);
-				}
-				// If deadline is today or past, factor stays 1.0 (max urgency)
-
-				const gap = 100 - effectiveScore;
-				if (gap > 0) {
-					effectiveScore += gap * factor;
-				}
-			}
-		}
-
-		// Apply cumulative temporal recency penalty over 6h sliding window
+		// Apply temporary per-session recency penalty if configured
 		try {
 			const pluginAny = this.plugin as any;
 			const weight = Number(pluginAny.settings?.recencyPenaltyWeight ?? 0.5);
-			const rf = Number(pluginAny.settings?.rapprochementFactor ?? pluginAny.settings?.rapprochmentFactor ?? 0.2);
-			if (isFinite(weight) && weight > 0 && isFinite(rf) && projectStats && projectStats.recentWorkDates && Array.isArray(projectStats.recentWorkDates) && projectStats.recentWorkDates.length > 0) {
-				const nowMs = Date.now();
-				const sixHoursMs = 6 * 60 * 60 * 1000;
-				let K = 0;
-				for (const dateStr of projectStats.recentWorkDates) {
-					const d = new Date(dateStr);
-					const t = d.getTime();
-					if (isNaN(t)) continue;
-					const deltaMs = nowMs - t;
-					if (deltaMs >= 0 && deltaMs < sixHoursMs) {
-						const deltaHours = deltaMs / (1000 * 60 * 60);
-						const ki = 1.0 - (deltaHours / 6.0);
-						K += ki;
+			if (isFinite(weight) && weight > 0 && pluginAny.sessionReviewCounts instanceof Map) {
+				const count = pluginAny.sessionReviewCounts.get(filePath) ?? 0;
+				if (count > 0) {
+					// Allow fractional multipliers by splitting into integer and fractional parts
+					const totalMultiplier = count * weight;
+					const integerPart = Math.floor(totalMultiplier);
+					const fractionalPart = totalMultiplier - integerPart;
+					const rapprochment = Number(pluginAny.settings?.rapprochementFactor ?? 0.2);
+					for (let i = 0; i < integerPart; i++) {
+						// apply same reduction as 'Moins souvent' action: reduce by rapprochment * (s - 1)
+						const perte = rapprochment * (effectiveScore - 1);
+						effectiveScore = effectiveScore - perte;
+					}
+					if (fractionalPart > 0) {
+						// apply fractional part on the already-reduced score to respect compounded effect
+						const finalPerte = rapprochment * (effectiveScore - 1);
+						effectiveScore -= finalPerte * fractionalPart;
 					}
 				}
-				const malus = K * rf * weight * Math.max(0, baseScore - 1.0);
-				effectiveScore = Math.max(1, effectiveScore - malus);
 			}
 		} catch (e) {
 			// If plugin doesn't expose expected fields, ignore and proceed with base effectiveScore
 		}
-		return effectiveScore;
+		return { effectiveScore, milestoneInfo: temporalRes.milestoneInfo ?? null };
 	}
 
 	async onOpen() {
@@ -170,7 +164,14 @@ export default class ReviewModal extends Modal {
 		const mdFiles = this.app.vault.getMarkdownFiles();
 
 		// Collect candidate project files
-		const candidates: { file: import('obsidian').TFile; effectiveScore: number; baseScore: number, deadline?: string }[] = [];
+		const candidates: {
+			file: TFile;
+			effectiveScore: number;
+			baseScore: number;
+			deadline?: string;
+			milestone?: string;
+			milestoneInfo: MilestoneInfo | null;
+		}[] = [];
 		for (const file of mdFiles) {
 			// Skip files temporarily ignored for this session
 			try {
@@ -201,22 +202,36 @@ export default class ReviewModal extends Modal {
 				baseScore = null;
 			}
 
-			// Get deadline from frontmatter (if any)
+			// Get deadline and milestone from frontmatter (if any)
 			let deadline: string | undefined;
+			let milestone: string | undefined;
 			try {
 				const pluginAny = this.plugin as any;
 				const deadlineProp = pluginAny.settings.deadlineProperty || 'deadline';
+				const milestoneProp = pluginAny.settings.milestoneProperty || 'milestone';
 				const fm = (cache as any).frontmatter;
-				if (fm && fm[deadlineProp]) {
-					deadline = String(fm[deadlineProp]);
+				if (fm) {
+					if (fm[deadlineProp]) {
+						deadline = String(fm[deadlineProp]);
+					}
+					if (fm[milestoneProp]) {
+						milestone = String(fm[milestoneProp]);
+					}
 				}
 			} catch (e) {
-				// ignore invalid deadline
+				// ignore invalid metadata
 			}
 
-			// calculate effective score using extracted helper to keep logic consistent
-			const effectiveScore = baseScore !== null ? await this.calculateEffectiveScore(baseScore, file.path, deadline) : 0;
-			candidates.push({ file, effectiveScore, baseScore: baseScore ?? 0, deadline });
+			// calculate effective score and milestone info using extracted helper
+			const calcRes = baseScore !== null ? await this.calculateEffectiveScore(baseScore, file.path, deadline, milestone) : { effectiveScore: 0, milestoneInfo: null };
+			candidates.push({
+				file,
+				effectiveScore: calcRes.effectiveScore,
+				baseScore: baseScore ?? 0,
+				deadline,
+				milestone,
+				milestoneInfo: calcRes.milestoneInfo
+			});
 		}
 
 		if (candidates.length === 0) {
@@ -248,7 +263,14 @@ export default class ReviewModal extends Modal {
 
 		// Determine chosen file: prioritize new projects, sorted alphabetically
 		// If no new projects, pick from existing projects by highest effectiveScore
-		let chosen: { file: import('obsidian').TFile; effectiveScore: number; baseScore: number, deadline?: string };
+		let chosen: {
+			file: TFile;
+			effectiveScore: number;
+			baseScore: number;
+			deadline?: string;
+			milestone?: string;
+			milestoneInfo: MilestoneInfo | null;
+		};
 		if (newProjects.length > 0) {
 			// Sort new projects alphabetically by file basename
 			newProjects.sort((a, b) => a.file.basename.localeCompare(b.file.basename));
@@ -321,7 +343,18 @@ export default class ReviewModal extends Modal {
 			cls: 'pm-stat-badge pm-badge-session'
 		});
 
-		// Badge 3: Temps total (calculé dynamiquement)
+		// Badge 3: Badge d'étape (🚩) si un jalon est actif
+		if (chosen.milestoneInfo && chosen.milestoneInfo.displayText) {
+			const milestoneBadge = badgesContainer.createEl('span', {
+				text: chosen.milestoneInfo.displayText,
+				cls: 'pm-stat-badge pm-badge-milestone'
+			});
+			if (chosen.milestoneInfo.isCycleSatisfied) {
+				milestoneBadge.addClass('pm-badge-milestone-satisfied');
+			}
+		}
+
+		// Badge 4: Temps total (calculé dynamiquement)
 		const pomodoroDuration = (this.plugin as any).settings.pomodoroDuration || 25;
 		const totalReviewsCount = projectStats ? projectStats.totalReviews : 0;
 		const totalMinutes = totalReviewsCount * pomodoroDuration;
@@ -433,7 +466,9 @@ export default class ReviewModal extends Modal {
 				}
 
 				chosen.baseScore = validatedScore;
-				chosen.effectiveScore = await this.calculateEffectiveScore(validatedScore, chosen.file.path, chosen.deadline);
+				const calcRes = await this.calculateEffectiveScore(validatedScore, chosen.file.path, chosen.deadline, chosen.milestone);
+				chosen.effectiveScore = calcRes.effectiveScore;
+				chosen.milestoneInfo = calcRes.milestoneInfo;
 
 				urgencyBadge.setText(`${Math.round(validatedScore)}`);
 				urgencyBadge.setAttr('style', `background-color: ${this.getUrgencyColor(validatedScore)};`);
@@ -573,12 +608,13 @@ export default class ReviewModal extends Modal {
 				return;
 			}
 
-			// If the user worked on it → full stat recording (totalReviews++, rotation bonus reset)
+			// If the user worked on it → full stat recording (totalReviews++, rotation bonus reset, milestone satisfaction)
 			if (workedOnIt) {
 				try {
 					const pluginAny = this.plugin as any;
 					await pluginAny.incrementRotationBonus(chosen.file.path);
-					await pluginAny.recordReviewAction(chosen.file.path, action, newScore);
+					const milestoneTargetDate = chosen.milestoneInfo?.targetDateStr;
+					await pluginAny.recordReviewAction(chosen.file.path, action, newScore, true, milestoneTargetDate);
 					await updateTimeBadge();
 				} catch (e) {
 					console.error('Failed to update stats:', e);
@@ -669,9 +705,17 @@ export default class ReviewModal extends Modal {
 		btn1.innerHTML = sunSVG;
 		btn1.addEventListener('click', async () => {
 			const s = await getCurrentScore();
-			const pluginAny = this.plugin as any;
-			const rapprochment = Number(pluginAny.settings?.rapprochementFactor ?? pluginAny.settings?.rapprochmentFactor ?? 0.2);
+			const rapprochment = Number((this.plugin as any).settings.rapprochementFactor ?? 0.2);
 			const perte = rapprochment * (s - 1);
+			// Update session review count
+			try {
+				const pluginAny = this.plugin as any;
+				if (!(pluginAny.sessionReviewCounts instanceof Map)) pluginAny.sessionReviewCounts = new Map<string, number>();
+				const prev = pluginAny.sessionReviewCounts.get(chosen.file.path) ?? 0;
+				pluginAny.sessionReviewCounts.set(chosen.file.path, prev + 1);
+			} catch (e) {
+				console.error('Failed to update session review counts', e);
+			}
 			showWorkConfirm(s - perte, 'less-often');
 		});
 
@@ -679,6 +723,14 @@ export default class ReviewModal extends Modal {
 		btn2.innerHTML = balanceSVG;
 		btn2.addEventListener('click', async () => {
 			const s = await getCurrentScore();
+			try {
+				const pluginAny = this.plugin as any;
+				if (!(pluginAny.sessionReviewCounts instanceof Map)) pluginAny.sessionReviewCounts = new Map<string, number>();
+				const prev = pluginAny.sessionReviewCounts.get(chosen.file.path) ?? 0;
+				pluginAny.sessionReviewCounts.set(chosen.file.path, prev + 1);
+			} catch (e) {
+				console.error('Failed to update session review counts', e);
+			}
 			showWorkConfirm(s, 'ok');
 		});
 
@@ -686,15 +738,31 @@ export default class ReviewModal extends Modal {
 		btn3.innerHTML = flameSVG;
 		btn3.addEventListener('click', async () => {
 			const s = await getCurrentScore();
-			const pluginAny = this.plugin as any;
-			const rapprochment = Number(pluginAny.settings?.rapprochementFactor ?? pluginAny.settings?.rapprochmentFactor ?? 0.2);
+			const rapprochment = Number((this.plugin as any).settings.rapprochementFactor ?? 0.2);
 			const gain = rapprochment * (100 - s);
+			try {
+				const pluginAny = this.plugin as any;
+				if (!(pluginAny.sessionReviewCounts instanceof Map)) pluginAny.sessionReviewCounts = new Map<string, number>();
+				const prev = pluginAny.sessionReviewCounts.get(chosen.file.path) ?? 0;
+				pluginAny.sessionReviewCounts.set(chosen.file.path, prev + 1);
+			} catch (e) {
+				console.error('Failed to update session review counts', e);
+			}
 			showWorkConfirm(s + gain, 'more-often');
 		});
 
 		const btn5 = buttonsRow.createEl('button', { cls: 'pm-feeling-btn pm-feeling-done', attr: { 'aria-label': 'Fini', 'title': 'Fini' } });
 		btn5.innerHTML = checkSVG;
 		btn5.addEventListener('click', async () => {
+			// Update session review count
+			try {
+				const pluginAny = this.plugin as any;
+				if (!(pluginAny.sessionReviewCounts instanceof Map)) pluginAny.sessionReviewCounts = new Map<string, number>();
+				const prev = pluginAny.sessionReviewCounts.get(chosen.file.path) ?? 0;
+				pluginAny.sessionReviewCounts.set(chosen.file.path, prev + 1);
+			} catch (e) {
+				console.error('Failed to update session review counts', e);
+			}
 
 			// Check if this is the first review
 			let isFirstReview = false;
@@ -724,7 +792,8 @@ export default class ReviewModal extends Modal {
 				try {
 					const pluginAny = this.plugin as any;
 					await pluginAny.incrementRotationBonus(chosen.file.path);
-					await pluginAny.recordReviewAction(chosen.file.path, 'finished', 0);
+					const milestoneTargetDate = chosen.milestoneInfo?.targetDateStr;
+					await pluginAny.recordReviewAction(chosen.file.path, 'finished', 0, true, milestoneTargetDate);
 				} catch (e) {
 					console.error('Failed to update stats:', e);
 				}

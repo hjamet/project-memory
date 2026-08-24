@@ -2,48 +2,14 @@ import { App, Plugin, PluginSettingTab, Setting, AbstractInputSuggest, TFile, ge
 import ReviewModal from './src/ReviewModal';
 import StatsModal from './src/StatsModal';
 import StatsView, { VIEW_TYPE_STATS } from './src/StatsView';
+import {
+	ProjectsMemorySettings,
+	ProjectStats,
+	StatsData,
+	PersistedPayload
+} from './src/types';
 
 // Projects Memory plugin: settings and UI for comma-separated project tags
-
-interface ProjectsMemorySettings {
-	projectTags: string;
-	archiveTag: string;
-	rotationBonus: number; // bonus points added to other projects when one is worked on
-	rapprochmentFactor: number; // fraction between 0 and 1
-	recencyPenaltyWeight: number; // multiplier for temporary per-session recency penalty
-	scoresMigratedToStats: boolean; // migration flag for statistics payload migration
-	pomodoroDuration: number; // duration in minutes for Pomodoro
-	statsStoredInData: boolean; // migration flag indicating stats are persisted via saveData
-	deadlineProperty: string; // frontmatter property key for deadline (default: 'deadline')
-}
-
-export interface ProjectStats {
-	currentScore: number; // current pertinence score stored in the persistent stats payload
-	rotationBonus: number;
-	totalReviews: number;
-	lastReviewDate: string;
-	recentWorkDates?: string[]; // ISO UTC timestamps of work sessions in the last 6 hours
-	reviewHistory: Array<{
-		date: string;
-		action: string; // "less-often" | "ok" | "more-often" | "finished"
-		scoreAfter: number;
-	}>;
-}
-
-interface GlobalStats {
-	totalReviews: number;
-	totalPomodoroTime: number; // in minutes
-}
-
-interface StatsData {
-	projects: { [filePath: string]: ProjectStats };
-	globalStats: GlobalStats;
-}
-
-interface PersistedPayload {
-	settings?: ProjectsMemorySettings;
-	stats?: StatsData;
-}
 
 function createEmptyStatsData(): StatsData {
 	return {
@@ -55,55 +21,14 @@ function createEmptyStatsData(): StatsData {
 const DEFAULT_SETTINGS: ProjectsMemorySettings = {
 	projectTags: 'projet',
 	archiveTag: 'projet-fini',
-	rotationBonus: 0.3,
+	rotationBonus: 0.1,
 	rapprochmentFactor: 0.2,
 	recencyPenaltyWeight: 0.5,
 	scoresMigratedToStats: false,
 	pomodoroDuration: 25,
 	statsStoredInData: false,
-	deadlineProperty: 'deadline'
-}
-
-/**
- * Calcule le malus temporel cumulatif multi-sessions sur une fenetre glissante de 6 heures
- * et purge les dates de plus de 6 heures.
- *
- * Formule :
- * Pour chaque t_i dans recentWorkDates tel que delta_t_i = (now - t_i) < 6.0 h :
- *   k_i = 1.0 - (delta_t_i / 6.0)
- *   K = sum(k_i)
- * Malus = K * rf * weight * max(0, baseScore - 1.0)
- */
-export function calculateRecencyPenalty(
-	recentWorkDates: string[] | undefined,
-	baseScore: number,
-	rapprochementFactor: number,
-	recencyPenaltyWeight: number,
-	now: Date = new Date()
-): { penalty: number; cleanedDates: string[] } {
-	if (!recentWorkDates || recentWorkDates.length === 0 || recencyPenaltyWeight <= 0 || rapprochementFactor <= 0) {
-		return { penalty: 0, cleanedDates: [] };
-	}
-	const sixHoursMs = 6 * 60 * 60 * 1000;
-	const nowMs = now.getTime();
-	const cleanedDates: string[] = [];
-	let K = 0;
-
-	for (const dateStr of recentWorkDates) {
-		const d = new Date(dateStr);
-		const tMs = d.getTime();
-		if (isNaN(tMs)) continue;
-		const deltaMs = nowMs - tMs;
-		if (deltaMs >= 0 && deltaMs < sixHoursMs) {
-			cleanedDates.push(dateStr);
-			const deltaHours = deltaMs / (1000 * 60 * 60);
-			const ki = 1.0 - (deltaHours / 6.0);
-			K += ki;
-		}
-	}
-
-	const malus = K * rapprochementFactor * recencyPenaltyWeight * Math.max(0, baseScore - 1.0);
-	return { penalty: malus, cleanedDates };
+	deadlineProperty: 'deadline',
+	milestoneProperty: 'milestone'
 }
 
 export default class ProjectsMemoryPlugin extends Plugin {
@@ -111,6 +36,8 @@ export default class ProjectsMemoryPlugin extends Plugin {
 	public lastChosenFile: TFile | null = null;
 	// Session-scoped set of ignored project file paths. Resets when plugin reloads.
 	public sessionIgnoredProjects: Set<string> = new Set<string>();
+	// Session-scoped map of review counts per file path. In-memory only; reset on plugin load.
+	public sessionReviewCounts: Map<string, number> = new Map<string, number>();
 
 	public statusBarItemEl: HTMLElement | null = null;
 	private lastUrgentProjectName: string = '';
@@ -131,6 +58,8 @@ export default class ProjectsMemoryPlugin extends Plugin {
 
 	async onload() {
 		await this.loadSettings();
+		// Ensure per-session review counts are cleared on each plugin load (do not persist to disk)
+		this.sessionReviewCounts.clear();
 		await this.migrateStatsToSaveData();
 		// Run one-time migration to move scores from frontmatter into the statistics payload
 		await this.migrateScoresToStats();
@@ -319,7 +248,6 @@ export default class ProjectsMemoryPlugin extends Plugin {
 				rotationBonus: 0,
 				totalReviews: 0,
 				lastReviewDate: '',
-				recentWorkDates: [],
 				reviewHistory: []
 			};
 			stats.projects[filePath] = projectStats;
@@ -330,18 +258,6 @@ export default class ProjectsMemoryPlugin extends Plugin {
 			projectStats.totalReviews++;
 			projectStats.lastReviewDate = new Date().toISOString();
 			stats.globalStats.totalReviews++;
-
-			// Enregistrement de la session dans recentWorkDates et purge > 6h
-			if (!projectStats.recentWorkDates) {
-				projectStats.recentWorkDates = [];
-			}
-			projectStats.recentWorkDates.push(new Date().toISOString());
-			const nowMs = Date.now();
-			const sixHoursMs = 6 * 60 * 60 * 1000;
-			projectStats.recentWorkDates = projectStats.recentWorkDates.filter((dateStr: string) => {
-				const t = new Date(dateStr).getTime();
-				return !isNaN(t) && (nowMs - t) >= 0 && (nowMs - t) < sixHoursMs;
-			});
 		}
 
 		projectStats.reviewHistory.push({
@@ -440,18 +356,25 @@ export default class ProjectsMemoryPlugin extends Plugin {
 				}
 			}
 
-			// Calcul du malus temporel cumulatif multi-sessions sur 6h
 			const weight = Number(this.settings.recencyPenaltyWeight ?? 0.5);
-			const rf = Number(this.settings.rapprochmentFactor ?? (this.settings as any).rapprochementFactor ?? 0.2);
-			if (isFinite(weight) && weight > 0 && isFinite(rf) && projectStats && projectStats.recentWorkDates && projectStats.recentWorkDates.length > 0) {
-				const { penalty, cleanedDates } = calculateRecencyPenalty(
-					projectStats.recentWorkDates,
-					baseScore,
-					rf,
-					weight
-				);
-				projectStats.recentWorkDates = cleanedDates;
-				effectiveScore = Math.max(1, effectiveScore - penalty);
+			if (isFinite(weight) && weight > 0 && this.sessionReviewCounts) {
+				const count = this.sessionReviewCounts.get(file.path) ?? 0;
+				if (count > 0) {
+					const totalMultiplier = count * weight;
+					const integerPart = Math.floor(totalMultiplier);
+					const fractionalPart = totalMultiplier - integerPart;
+					const rapprochment = Number(this.settings.rapprochmentFactor ?? 0.2);
+					let currentEffective = effectiveScore;
+					for (let i = 0; i < integerPart; i++) {
+						const perte = rapprochment * (currentEffective - 1);
+						currentEffective -= perte;
+					}
+					if (fractionalPart > 0) {
+						const finalPerte = rapprochment * (currentEffective - 1);
+						currentEffective -= finalPerte * fractionalPart;
+					}
+					effectiveScore = currentEffective;
+				}
 			}
 
 			if (projectStats && projectStats.totalReviews === 0) {
@@ -703,14 +626,14 @@ class ProjectsMemorySettingTab extends PluginSettingTab {
 		// New configurable factors for scoring
 		new Setting(containerEl)
 			.setName('Rotation Bonus')
-			.setDesc('Points de bonus ajoutés aux autres projets à chaque session travaillée (défaut: 0.3).')
+			.setDesc('Points de bonus ajoutés aux autres projets à chaque review (défaut: 0.1).')
 			.addText(text => {
 				text
-					.setPlaceholder('0.3')
+					.setPlaceholder('0.1')
 					.setValue(String(this.plugin.settings.rotationBonus))
 					.onChange(async (value) => {
 						const n = Number(value);
-						this.plugin.settings.rotationBonus = isFinite(n) ? n : 0.3;
+						this.plugin.settings.rotationBonus = isFinite(n) ? n : 0.1;
 						await this.plugin.saveSettings();
 					});
 			});
@@ -747,8 +670,8 @@ class ProjectsMemorySettingTab extends PluginSettingTab {
 
 		// Recency penalty weight: multiplier for per-session recency penalty
 		new Setting(containerEl)
-			.setName('Recency penalty weight (Malus temporel 6h)')
-			.setDesc('Poids du malus temporel cumulatif décroissant sur 6h pour les projets récemment travaillés (défaut: 0.5). Mettre à 0 pour désactiver.')
+			.setName('Recency penalty weight')
+			.setDesc("Multiplicator for the recency penalty applied during the session. 1.0 is equivalent to a click on 'Less often'. Set to 0 to disable.")
 			.addText(text => {
 				text
 					.setPlaceholder('0.5')
@@ -771,6 +694,20 @@ class ProjectsMemorySettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.deadlineProperty)
 					.onChange(async (value) => {
 						this.plugin.settings.deadlineProperty = value || 'deadline';
+						await this.plugin.saveSettings();
+					});
+			});
+
+		// Milestone property configuration
+		new Setting(containerEl)
+			.setName('Milestone property')
+			.setDesc('Frontmatter property used to determine the project milestone (default: milestone).')
+			.addText(text => {
+				text
+					.setPlaceholder('milestone')
+					.setValue(this.plugin.settings.milestoneProperty || 'milestone')
+					.onChange(async (value) => {
+						this.plugin.settings.milestoneProperty = value || 'milestone';
 						await this.plugin.saveSettings();
 					});
 			});

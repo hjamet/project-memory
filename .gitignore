@@ -10,7 +10,7 @@ diff
 
 # Plugin
 data.json
-data.json.bak
+*.bak*
 stats.json
 # Python & Cache
 __pycache__/

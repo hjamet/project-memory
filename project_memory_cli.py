@@ -5,6 +5,7 @@ Project Memory CLI
 High-performance CLI interface for Obsidian project-memory plugin.
 Calculates project scores, lists urgent tasks, logs session feedback,
 extracts roadmap checkboxes, completes tasks, cleans orphan entries,
+supports multi-scale agile milestone tracking (universal milestone parser),
 and manages Pomodoro sessions with dynamic temporal recency malus.
 Uses data.json and a persistent incremental mtime cache for sub-millisecond to
 low-millisecond execution even on large Obsidian vaults.
@@ -18,7 +19,9 @@ import re
 import time
 import shutil
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, date, time as dt_time, timedelta, timezone
+from dataclasses import dataclass
+from typing import Optional, Union, List, Any, Dict
 
 if sys.platform == "win32":
     try:
@@ -64,8 +67,536 @@ DEFAULT_SETTINGS = {
     "rapprochmentFactor": 0.2,
     "recencyPenaltyWeight": 0.5,
     "pomodoroDuration": 25,
-    "deadlineProperty": "deadline"
+    "deadlineProperty": "deadline",
+    "milestoneProperty": "milestone"
 }
+
+DAY_NAMES_MAP = {
+    # French
+    "lundi": 0, "lun": 0, "lu": 0,
+    "mardi": 1, "mar": 1, "ma": 1,
+    "mercredi": 2, "mer": 2, "me": 2,
+    "jeudi": 3, "jeu": 3, "je": 3,
+    "vendredi": 4, "ven": 4, "ve": 4,
+    "samedi": 5, "sam": 5, "sa": 5,
+    "dimanche": 6, "dim": 6, "di": 6,
+    # English
+    "monday": 0, "mon": 0, "mo": 0,
+    "tuesday": 1, "tue": 1, "tu": 1,
+    "wednesday": 2, "wed": 2, "we": 2,
+    "thursday": 3, "thu": 3, "th": 3,
+    "friday": 4, "fri": 4, "fr": 4,
+    "saturday": 5, "sat": 5, "sa": 5,
+    "sunday": 6, "sun": 6, "su": 6,
+}
+
+CRON_SHORTCUTS = {
+    "@hourly": "0 * * * *",
+    "@daily": "0 0 * * *",
+    "@midnight": "0 0 * * *",
+    "@weekly": "0 0 * * 0",
+    "@monthly": "0 0 1 * *",
+    "@yearly": "0 0 1 1 *",
+    "@annually": "0 0 1 1 *",
+    "@workdays": "0 9 * * 1-5",
+    "@weekdays": "0 9 * * 1-5",
+}
+
+
+@dataclass
+class MilestoneResolution:
+    raw_expression: str
+    target_datetime: Optional[datetime]
+    days_remaining: float
+    urgency_factor: float
+    recurrence_type: str  # 'fixed_date' | 'day_recurrence' | 'cron' | 'iso_interval' | 'multi' | 'invalid'
+    is_overdue: bool
+    is_cycle_satisfied: bool
+    cycle_id: str
+    human_readable: str
+    error: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "raw_expression": self.raw_expression,
+            "target_datetime": self.target_datetime.isoformat() if self.target_datetime else None,
+            "days_remaining": self.days_remaining,
+            "urgency_factor": self.urgency_factor,
+            "recurrence_type": self.recurrence_type,
+            "is_overdue": self.is_overdue,
+            "is_cycle_satisfied": self.is_cycle_satisfied,
+            "cycle_id": self.cycle_id,
+            "human_readable": self.human_readable,
+            "error": self.error,
+        }
+
+
+class UniversalMilestoneParser:
+    """
+    Universal Milestone Parser supporting:
+    - Fixed ISO dates/datetimes ('2026-08-28', '2026-08-28T10:00', '2026-08-28 14:30:00+02:00')
+    - Day recurrence in FR & EN ('mercredi', 'wednesday', 'every wednesday', 'tous les vendredis')
+    - Periodicity & Time ('mercredi@3', 'mercredi@14', 'mercredi@14:00', 'vendredi à 10h30')
+    - Cron recurrence syntax & shortcuts ('0 10 * * 3', '* * * * WED', '@weekly', '@daily')
+    - ISO 8601 repeating intervals ('R/2026-08-26/P7D', 'R5/2026-08-26T10:00:00/P1W', 'R/PT12H')
+    - Multi-value milestone declarations (['mardi', 'jeudi'] or '2026-08-28, 2026-09-04')
+    - Cycle clearance handling via last_satisfied_date
+    """
+
+    def __init__(self, default_lambda: float = 0.3):
+        self.default_lambda = default_lambda
+
+    def parse(
+        self,
+        milestone_input: Union[str, List[Any], Dict[str, Any]],
+        now: Optional[datetime] = None,
+        last_satisfied_date: Optional[Union[str, datetime]] = None,
+        lambda_factor: Optional[float] = None
+    ) -> MilestoneResolution:
+        if now is None:
+            now = datetime.now()
+
+        lam = lambda_factor if lambda_factor is not None else self.default_lambda
+
+        # Parse last satisfied date
+        last_sat_dt: Optional[datetime] = None
+        if last_satisfied_date:
+            if isinstance(last_satisfied_date, datetime):
+                last_sat_dt = last_satisfied_date
+            elif isinstance(last_satisfied_date, str) and last_satisfied_date.strip():
+                try:
+                    last_sat_dt = datetime.fromisoformat(last_satisfied_date.replace("Z", "+00:00"))
+                    if last_sat_dt.tzinfo is not None and now.tzinfo is None:
+                        last_sat_dt = last_sat_dt.replace(tzinfo=None)
+                except Exception:
+                    pass
+
+        # Handle list or comma-separated milestones
+        if isinstance(milestone_input, list):
+            resolutions = [
+                self.parse(item, now=now, last_satisfied_date=last_sat_dt, lambda_factor=lam)
+                for item in milestone_input if item
+            ]
+            valid_res = [r for r in resolutions if r.target_datetime is not None]
+            if not valid_res:
+                return MilestoneResolution(
+                    raw_expression=str(milestone_input),
+                    target_datetime=None,
+                    days_remaining=float('inf'),
+                    urgency_factor=0.0,
+                    recurrence_type='multi',
+                    is_overdue=False,
+                    is_cycle_satisfied=False,
+                    cycle_id='',
+                    human_readable='No valid milestones in list',
+                    error='All elements failed parsing'
+                )
+            best_res = max(valid_res, key=lambda r: r.urgency_factor)
+            return MilestoneResolution(
+                raw_expression=str(milestone_input),
+                target_datetime=best_res.target_datetime,
+                days_remaining=best_res.days_remaining,
+                urgency_factor=best_res.urgency_factor,
+                recurrence_type='multi',
+                is_overdue=best_res.is_overdue,
+                is_cycle_satisfied=best_res.is_cycle_satisfied,
+                cycle_id=best_res.cycle_id,
+                human_readable=f"Multi: {best_res.human_readable} (selected from {len(valid_res)} milestones)"
+            )
+
+        expr = str(milestone_input).strip()
+        if not expr:
+            return MilestoneResolution(
+                raw_expression="",
+                target_datetime=None,
+                days_remaining=float('inf'),
+                urgency_factor=0.0,
+                recurrence_type='invalid',
+                is_overdue=False,
+                is_cycle_satisfied=False,
+                cycle_id='',
+                human_readable='Empty milestone expression'
+            )
+
+        # If comma-separated multi string (e.g. "mercredi, 2026-08-28") and not cron
+        if "," in expr and not self._is_cron_pattern(expr):
+            sub_items = [p.strip() for p in expr.split(",") if p.strip()]
+            if len(sub_items) > 1:
+                return self.parse(sub_items, now=now, last_satisfied_date=last_sat_dt, lambda_factor=lam)
+
+        # 1. Check Cron Shortcut or Syntax
+        cron_expr = CRON_SHORTCUTS.get(expr.lower()) or (expr if self._is_cron_pattern(expr) else None)
+        if cron_expr:
+            return self._parse_cron(expr, cron_expr, now, last_sat_dt, lam)
+
+        # 2. Check ISO 8601 Repeating Interval: R[n]/start/duration
+        if expr.upper().startswith("R"):
+            iso_res = self._parse_iso_interval(expr, now, last_sat_dt, lam)
+            if iso_res:
+                return iso_res
+
+        # 3. Check Fixed ISO Date / Datetime
+        iso_fixed_dt = self._try_parse_iso_date(expr)
+        if iso_fixed_dt:
+            return self._resolve_fixed_date(expr, iso_fixed_dt, now, last_sat_dt, lam)
+
+        # 4. Check Day Recurrence (FR & EN)
+        day_res = self._try_parse_day_recurrence(expr, now, last_sat_dt, lam)
+        if day_res:
+            return day_res
+
+        # 5. Fallback / Unrecognized
+        return MilestoneResolution(
+            raw_expression=expr,
+            target_datetime=None,
+            days_remaining=float('inf'),
+            urgency_factor=0.0,
+            recurrence_type='invalid',
+            is_overdue=False,
+            is_cycle_satisfied=False,
+            cycle_id='',
+            human_readable=f"Invalid milestone format: '{expr}'",
+            error=f"Cannot parse milestone expression: '{expr}'"
+        )
+
+    def _is_cron_pattern(self, expr: str) -> bool:
+        parts = expr.strip().split()
+        if len(parts) != 5:
+            return False
+        cron_pattern = r'^[0-9\*\/,\-\?a-zA-Z]+$'
+        return all(re.match(cron_pattern, p) for p in parts)
+
+    def _parse_cron(
+        self,
+        raw_expr: str,
+        cron_pattern: str,
+        now: datetime,
+        last_sat_dt: Optional[datetime],
+        lam: float
+    ) -> MilestoneResolution:
+        parts = cron_pattern.split()
+        min_spec, hour_spec, dom_spec, mon_spec, dow_spec = parts
+
+        found_target: Optional[datetime] = None
+        cycle_satisfied = False
+
+        for day_offset in range(366):
+            check_date = (now + timedelta(days=day_offset)).date()
+            if not self._match_cron_field(mon_spec, check_date.month, 1, 12):
+                continue
+            if not self._match_cron_field(dom_spec, check_date.day, 1, 31):
+                continue
+
+            dow_cron = (check_date.weekday() + 1) % 7
+            if not self._match_cron_dow(dow_spec, dow_cron):
+                continue
+
+            target_hours = self._expand_cron_field(hour_spec, 0, 23)
+            target_mins = self._expand_cron_field(min_spec, 0, 59)
+
+            for h in sorted(target_hours):
+                for m in sorted(target_mins):
+                    cand_dt = datetime.combine(check_date, dt_time(h, m))
+                    if cand_dt < now:
+                        if cand_dt.date() == now.date():
+                            if last_sat_dt and last_sat_dt.date() >= check_date:
+                                cycle_satisfied = True
+                                continue
+                            else:
+                                found_target = cand_dt
+                                break
+                        continue
+
+                    if last_sat_dt and last_sat_dt >= cand_dt:
+                        cycle_satisfied = True
+                        continue
+
+                    found_target = cand_dt
+                    break
+                if found_target:
+                    break
+            if found_target:
+                break
+
+        if not found_target:
+            return MilestoneResolution(
+                raw_expression=raw_expr,
+                target_datetime=None,
+                days_remaining=float('inf'),
+                urgency_factor=0.0,
+                recurrence_type='cron',
+                is_overdue=False,
+                is_cycle_satisfied=False,
+                cycle_id='',
+                human_readable=f"Cron {raw_expr}: No future occurrence within 1 year"
+            )
+
+        diff = (found_target - now).total_seconds() / 86400.0
+        days_rem = max(0.0, diff)
+        urgency = math.exp(-lam * days_rem)
+        cycle_id = f"cron_{found_target.strftime('%Y-%m-%d_%H%M')}"
+
+        return MilestoneResolution(
+            raw_expression=raw_expr,
+            target_datetime=found_target,
+            days_remaining=round(days_rem, 3),
+            urgency_factor=round(urgency, 4),
+            recurrence_type='cron',
+            is_overdue=False,
+            is_cycle_satisfied=cycle_satisfied,
+            cycle_id=cycle_id,
+            human_readable=f"Next cron trigger: {found_target.strftime('%A %Y-%m-%d at %H:%M')}"
+        )
+
+    def _match_cron_field(self, spec: str, val: int, min_val: int, max_val: int) -> bool:
+        if spec in ("*", "?"):
+            return True
+        allowed = self._expand_cron_field(spec, min_val, max_val)
+        return val in allowed
+
+    def _match_cron_dow(self, spec: str, dow_val: int) -> bool:
+        if spec in ("*", "?"):
+            return True
+        word_map = {"sun": 0, "mon": 1, "tue": 2, "wed": 3, "thu": 4, "fri": 5, "sat": 6}
+        spec_clean = spec.lower()
+        for w, v in word_map.items():
+            spec_clean = spec_clean.replace(w, str(v))
+        allowed = self._expand_cron_field(spec_clean, 0, 7)
+        if 7 in allowed:
+            allowed.add(0)
+        return dow_val in allowed
+
+    def _expand_cron_field(self, spec: str, min_val: int, max_val: int) -> set:
+        res = set()
+        for part in spec.split(","):
+            if part in ("*", "?"):
+                return set(range(min_val, max_val + 1))
+            if "/" in part:
+                subparts = part.split("/")
+                step = int(subparts[1])
+                start_range = range(min_val, max_val + 1) if subparts[0] in ("*", "") else range(int(subparts[0]), max_val + 1)
+                for val in start_range:
+                    if (val - (min_val if subparts[0] in ("*", "") else int(subparts[0]))) % step == 0:
+                        res.add(val)
+            elif "-" in part:
+                start, end = map(int, part.split("-"))
+                res.update(range(start, end + 1))
+            else:
+                try:
+                    res.add(int(part))
+                except ValueError:
+                    pass
+        return res
+
+    def _try_parse_iso_date(self, expr: str) -> Optional[datetime]:
+        pattern = r'^(\d{4}-\d{2}-\d{2})(?:[T\s](\d{2}:\d{2}(?::\d{2})?))?(?:\s*([+-]\d{2}:?\d{2}|Z))?$'
+        m = re.match(pattern, expr.strip())
+        if not m:
+            return None
+
+        date_part, time_part, _ = m.groups()
+        try:
+            d = date.fromisoformat(date_part)
+            if time_part:
+                t_elements = [int(p) for p in time_part.split(":")]
+                if len(t_elements) == 2:
+                    t = dt_time(t_elements[0], t_elements[1], 0)
+                else:
+                    t = dt_time(t_elements[0], t_elements[1], t_elements[2])
+            else:
+                t = dt_time(23, 59, 59)
+            return datetime.combine(d, t)
+        except Exception:
+            return None
+
+    def _resolve_fixed_date(
+        self,
+        raw_expr: str,
+        target_dt: datetime,
+        now: datetime,
+        last_sat_dt: Optional[datetime],
+        lam: float
+    ) -> MilestoneResolution:
+        diff_sec = (target_dt - now).total_seconds()
+        days_rem = diff_sec / 86400.0
+        is_overdue = days_rem < 0.0
+
+        is_satisfied = False
+        if last_sat_dt and last_sat_dt >= target_dt:
+            is_satisfied = True
+
+        if is_satisfied:
+            urgency = 0.0
+        elif is_overdue:
+            urgency = 1.0
+        else:
+            urgency = math.exp(-lam * days_rem)
+
+        cycle_id = f"fixed_{target_dt.strftime('%Y-%m-%d')}"
+        return MilestoneResolution(
+            raw_expression=raw_expr,
+            target_datetime=target_dt,
+            days_remaining=round(days_rem, 3),
+            urgency_factor=round(urgency, 4),
+            recurrence_type='fixed_date',
+            is_overdue=is_overdue,
+            is_cycle_satisfied=is_satisfied,
+            cycle_id=cycle_id,
+            human_readable=f"Fixed Milestone: {target_dt.strftime('%Y-%m-%d %H:%M')}"
+        )
+
+    def _try_parse_day_recurrence(
+        self,
+        expr: str,
+        now: datetime,
+        last_sat_dt: Optional[datetime],
+        lam: float
+    ) -> Optional[MilestoneResolution]:
+        clean = expr.strip().lower()
+        clean = re.sub(r'^(every|tous\s+les|chaque|each)\s+', '', clean)
+        clean = re.sub(r's$', '', clean)
+
+        # Match time / periodicity specifiers like @14, @3, @14:00, at 14:00, à 10h30, 14h00, 14h
+        m_time = re.search(r'(?:at|@|\s+à|\s+a)?\s*(\d{1,2})(?:[h:](\d{2})(?::(\d{2}))?|h)?$', clean)
+        target_time = dt_time(23, 59, 59)
+        if m_time:
+            h = int(m_time.group(1))
+            m = int(m_time.group(2) or 0)
+            s = int(m_time.group(3) or 0)
+            if 0 <= h <= 23 and 0 <= m <= 59 and 0 <= s <= 59:
+                target_time = dt_time(h, m, s)
+                clean = clean[:m_time.start()].strip()
+
+        if clean not in DAY_NAMES_MAP:
+            return None
+
+        target_weekday = DAY_NAMES_MAP[clean]
+        current_weekday = now.weekday()
+
+        days_ahead = (target_weekday - current_weekday) % 7
+        target_dt = datetime.combine(now.date() + timedelta(days=days_ahead), target_time)
+
+        cycle_satisfied = False
+        if last_sat_dt:
+            cycle_start = target_dt - timedelta(days=6, hours=23, minutes=59)
+            if last_sat_dt >= cycle_start:
+                cycle_satisfied = True
+
+        if cycle_satisfied or (days_ahead == 0 and target_dt < now and (last_sat_dt and last_sat_dt.date() == now.date())):
+            target_dt = target_dt + timedelta(days=7)
+            cycle_satisfied = True
+
+        diff_sec = (target_dt - now).total_seconds()
+        days_rem = max(0.0, diff_sec / 86400.0)
+        urgency = math.exp(-lam * days_rem)
+        cycle_id = f"weekly_W{target_dt.strftime('%V')}_{clean.upper()}"
+
+        return MilestoneResolution(
+            raw_expression=expr,
+            target_datetime=target_dt,
+            days_remaining=round(days_rem, 3),
+            urgency_factor=round(urgency, 4),
+            recurrence_type='day_recurrence',
+            is_overdue=False,
+            is_cycle_satisfied=cycle_satisfied,
+            cycle_id=cycle_id,
+            human_readable=f"Recurring {clean.capitalize()}: next {target_dt.strftime('%A %Y-%m-%d at %H:%M')}"
+        )
+
+    def _parse_iso_interval(
+        self,
+        expr: str,
+        now: datetime,
+        last_sat_dt: Optional[datetime],
+        lam: float
+    ) -> Optional[MilestoneResolution]:
+        pattern = r'^R(\d*)\/(?:([^/]+)\/)?(P(?:[0-9YMWD]+)?(?:T[0-9HMS]+)?)$'
+        m = re.match(pattern, expr.strip(), re.IGNORECASE)
+        if not m:
+            return None
+
+        max_reps_str, start_str, duration_str = m.groups()
+        max_reps = int(max_reps_str) if max_reps_str else None
+
+        duration_delta = self._parse_iso_duration(duration_str)
+        if not duration_delta or duration_delta.total_seconds() <= 0:
+            return None
+
+        start_dt = self._try_parse_iso_date(start_str) if start_str else now
+        if not start_dt:
+            start_dt = now
+
+        curr_dt = start_dt
+        rep_count = 0
+        found_target = None
+        cycle_satisfied = False
+
+        while True:
+            if max_reps is not None and rep_count >= max_reps:
+                break
+            if curr_dt >= now:
+                if last_sat_dt and last_sat_dt >= curr_dt:
+                    cycle_satisfied = True
+                else:
+                    found_target = curr_dt
+                    break
+            curr_dt += duration_delta
+            rep_count += 1
+            if rep_count > 1000:
+                break
+
+        if not found_target:
+            return MilestoneResolution(
+                raw_expression=expr,
+                target_datetime=None,
+                days_remaining=float('inf'),
+                urgency_factor=0.0,
+                recurrence_type='iso_interval',
+                is_overdue=False,
+                is_cycle_satisfied=cycle_satisfied,
+                cycle_id='',
+                human_readable=f"ISO interval {expr} completed all {max_reps} repetitions"
+            )
+
+        diff_sec = (found_target - now).total_seconds()
+        days_rem = max(0.0, diff_sec / 86400.0)
+        urgency = math.exp(-lam * days_rem)
+        cycle_id = f"interval_{found_target.strftime('%Y%m%d_%H%M')}"
+
+        return MilestoneResolution(
+            raw_expression=expr,
+            target_datetime=found_target,
+            days_remaining=round(days_rem, 3),
+            urgency_factor=round(urgency, 4),
+            recurrence_type='iso_interval',
+            is_overdue=False,
+            is_cycle_satisfied=cycle_satisfied,
+            cycle_id=cycle_id,
+            human_readable=f"Next ISO interval target: {found_target.strftime('%Y-%m-%d %H:%M')}"
+        )
+
+    def _parse_iso_duration(self, dur_str: str) -> Optional[timedelta]:
+        m = re.match(
+            r'^P(?:(?P<weeks>\d+)W)?(?:(?P<days>\d+)D)?(?:T(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+)S)?)?$',
+            dur_str.upper()
+        )
+        if not m:
+            return None
+        parts = m.groupdict()
+        weeks = int(parts.get('weeks') or 0)
+        days = int(parts.get('days') or 0) + weeks * 7
+        hours = int(parts.get('hours') or 0)
+        minutes = int(parts.get('minutes') or 0)
+        seconds = int(parts.get('seconds') or 0)
+        return timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
+
+
+def parse_milestone_target(raw_milestone, last_satisfied_str=None, now_dt=None) -> MilestoneResolution:
+    """
+    Top-level helper parsing any raw milestone expression into a MilestoneResolution.
+    """
+    parser = UniversalMilestoneParser(default_lambda=0.3)
+    return parser.parse(raw_milestone, now=now_dt, last_satisfied_date=last_satisfied_str)
 
 
 def load_data(data_path=DATA_JSON_PATH):
@@ -202,7 +733,8 @@ def parse_markdown_file(file_path, content=None, parse_checkboxes=True):
         if len(parts) >= 3:
             fm_raw = parts[1]
             body_lines = parts[2].splitlines()
-            in_tags = False
+            current_list_key = None
+
             for line in fm_raw.splitlines():
                 stripped = line.strip()
                 if not stripped or stripped.startswith("#"):
@@ -212,28 +744,39 @@ def parse_markdown_file(file_path, content=None, parse_checkboxes=True):
                     k_str = k.strip().lower()
                     v_str = v.strip().strip("\"'")
                     frontmatter[k_str] = v_str
+                    current_list_key = k_str
+
                     if k_str in ("tags", "tag"):
-                        in_tags = True
                         if v_str.startswith("[") and v_str.endswith("]"):
                             items = v_str[1:-1].split(",")
                             for item in items:
                                 t = item.strip().strip("\"'").lstrip("#")
                                 if t:
                                     tags.add(t.lower())
-                            in_tags = False
+                            current_list_key = None
                         elif v_str:
                             items = v_str.split(",")
                             for item in items:
                                 t = item.strip().strip("\"'").lstrip("#")
                                 if t:
                                     tags.add(t.lower())
-                            in_tags = False
-                elif in_tags and stripped.startswith("-"):
-                    t = stripped[1:].strip().strip("\"'").lstrip("#")
-                    if t:
-                        tags.add(t.lower())
+                            current_list_key = None
+                elif current_list_key and stripped.startswith("-"):
+                    item_val = stripped[1:].strip().strip("\"'")
+                    if current_list_key in ("tags", "tag"):
+                        t = item_val.lstrip("#")
+                        if t:
+                            tags.add(t.lower())
+                    else:
+                        existing = frontmatter.get(current_list_key)
+                        if isinstance(existing, list):
+                            existing.append(item_val)
+                        elif existing:
+                            frontmatter[current_list_key] = [existing, item_val]
+                        else:
+                            frontmatter[current_list_key] = [item_val]
                 elif not stripped.startswith("-"):
-                    in_tags = False
+                    current_list_key = None
 
     # Inline tags `#tag`
     if "#" in content:
@@ -284,13 +827,16 @@ def sync_vault_cache(vault_dir=VAULT_DIR, cache_path=CACHE_PATH, fast_mode=False
                     continue
 
                 cached = cache.get(rel_p)
-                if not cached or cached.get("mtime") != mt:
+                if not cached or cached.get("mtime") != mt or "milestone" not in cached:
                     fm, tags, _, _ = parse_markdown_file(abs_p, parse_checkboxes=False)
                     deadline = str(fm.get("deadline") or fm.get("due") or "")
+                    m_val = fm.get("milestone") or fm.get("milestones") or fm.get("jalon") or ""
+                    milestone = ", ".join(m_val) if isinstance(m_val, list) else str(m_val)
                     cache[rel_p] = {
                         "mtime": mt,
                         "tags": list(tags),
-                        "deadline": deadline
+                        "deadline": deadline,
+                        "milestone": str(milestone)
                     }
                     cache_dirty = True
 
@@ -310,7 +856,6 @@ def sync_vault_cache(vault_dir=VAULT_DIR, cache_path=CACHE_PATH, fast_mode=False
 def find_project_file(vault_dir, project_path_or_name, data=None):
     """
     Resolves relative path or project title to absolute path in vault.
-    First checks data.json project keys and cache for instant resolution, falling back to filesystem checks.
     """
     clean_target = project_path_or_name.strip().replace("\\", "/").lower()
     if clean_target.endswith(".md"):
@@ -376,17 +921,15 @@ def find_project_file(vault_dir, project_path_or_name, data=None):
 def scan_projects(vault_dir, data, cache=None, fast_mode=False, now_dt=None):
     """
     Reads active projects from data.json and unindexed project notes via fast cache.
-    Matches Obsidian plugin rules:
-    1. Must contain at least one tag in `settings.projectTags` (e.g. #todo).
-    2. Must NOT contain `settings.archiveTag` or #done.
-    All projects are treated as fully autonomous candidates (no graph-based absorption).
-    Calculates dynamic temporal recency penalty (malus) based on recentWorkDates.
+    Calculates multi-scale temporal urgency (Deadline + Agile Milestone) and recency malus.
     """
     if cache is None:
         cache = sync_vault_cache(vault_dir, fast_mode=fast_mode)
 
     if now_dt is None:
         now_dt = datetime.now(timezone.utc)
+    elif now_dt.tzinfo is None:
+        now_dt = now_dt.replace(tzinfo=timezone.utc)
 
     stats_projects = data.get("stats", {}).get("projects", {})
     settings = data.get("settings", {})
@@ -397,6 +940,7 @@ def scan_projects(vault_dir, data, cache=None, fast_mode=False, now_dt=None):
     archive_tag = settings.get("archiveTag", "done").strip().lstrip("#").lower()
     done_tags = {"done", "projet-fini", archive_tag}
     deadline_prop = settings.get("deadlineProperty", "deadline").lower()
+    milestone_prop = settings.get("milestoneProperty", "milestone").lower()
 
     rf = float(settings.get("rapprochementFactor") or settings.get("rapprochmentFactor") or 0.2)
     recency_weight = float(settings.get("recencyPenaltyWeight", 0.5))
@@ -410,15 +954,18 @@ def scan_projects(vault_dir, data, cache=None, fast_mode=False, now_dt=None):
         norm_rel = rel_path.replace("\\", "/")
 
         cached = cache.get(norm_rel)
-        if cached:
+        if cached and "milestone" in cached:
             tags = set(cached.get("tags", []))
             deadline_str = cached.get("deadline", "")
+            milestone_str = cached.get("milestone", "")
         else:
             if not os.path.exists(abs_path):
                 continue
             fm, tags_set, _, _ = parse_markdown_file(abs_path, parse_checkboxes=False)
             tags = tags_set
             deadline_str = str(fm.get(deadline_prop) or fm.get("deadline") or fm.get("due") or "")
+            m_val = fm.get(milestone_prop) or fm.get("milestone") or fm.get("milestones") or fm.get("jalon") or ""
+            milestone_str = ", ".join(m_val) if isinstance(m_val, list) else str(m_val)
 
         has_project_tag = any(pt in tags or any(t.startswith(pt + "/") for t in tags) for pt in project_tags)
         has_archive_tag = any(at in tags or any(t.startswith(at + "/") for t in tags) for at in done_tags)
@@ -444,30 +991,58 @@ def scan_projects(vault_dir, data, cache=None, fast_mode=False, now_dt=None):
         last_review_date = proj_stat.get("lastReviewDate", "")
         title = os.path.splitext(os.path.basename(rel_path))[0]
 
-        deadline_urgency = 0.0
+        # 1. Strategic Deadline Pressure: P_deadline = exp(-0.1 * dt)
         if not deadline_str:
             deadline_str = proj_stat.get("deadline", "")
 
+        p_deadline = 0.0
+        deadline_urgency = 0.0
         if deadline_str and current_score is not None:
             try:
-                d_date = datetime.strptime(deadline_str[:10], "%Y-%m-%d").date()
-                today = datetime.now().date()
+                d_date = datetime.strptime(str(deadline_str)[:10], "%Y-%m-%d").date()
+                today = now_dt.date() if isinstance(now_dt, datetime) else datetime.now().date()
                 days_left = (d_date - today).days
-                p_factor = math.exp(-0.1 * days_left) if days_left > 0 else 1.0
-                rem = 100.0 - (current_score + rotation_bonus)
-                if rem > 0:
-                    deadline_urgency = rem * p_factor
+                p_deadline = math.exp(-0.1 * days_left) if days_left > 0 else 1.0
             except Exception:
                 pass
 
-        pre_score = (current_score + rotation_bonus + deadline_urgency) if current_score is not None else None
+        # 2. Agile Milestone Pressure: P_milestone = exp(-0.3 * dt)
+        if not milestone_str:
+            milestone_str = proj_stat.get("milestone", "")
+
+        last_sat_milestone = proj_stat.get("lastSatisfiedMilestoneDate") or proj_stat.get("last_satisfied_milestone_date")
+
+        p_milestone = 0.0
+        milestone_res = None
+        if milestone_str and current_score is not None:
+            milestone_res = parse_milestone_target(
+                milestone_str,
+                last_satisfied_str=last_sat_milestone,
+                now_dt=now_dt.replace(tzinfo=None) if now_dt and now_dt.tzinfo else now_dt
+            )
+            if milestone_res and milestone_res.target_datetime:
+                p_milestone = milestone_res.urgency_factor
+
+        # 3. Non-Cumulative Temporal Pressure Envelope: P_eff = max(P_deadline, P_milestone)
+        p_eff = max(p_deadline, p_milestone)
+
+        # 4. Affine Convex Combination Priority Mapping: gap = 100 - (base + rot)
+        rem = 0.0
+        milestone_urgency = 0.0
+        if current_score is not None:
+            rem = max(0.0, 100.0 - (current_score + rotation_bonus))
+            deadline_urgency = rem * p_deadline
+            milestone_urgency = rem * p_milestone
+
+        temporal_urgency = rem * p_eff
+        pre_score = (current_score + rotation_bonus + temporal_urgency) if current_score is not None else None
 
         recent_work_dates = proj_stat.get("recentWorkDates", [])
         temporal_malus, k_factor, valid_dates = compute_temporal_recency_malus(
             recent_work_dates, pre_score, rf, recency_weight, now_dt=now_dt
         )
 
-        effective_score = max(1.0, pre_score - temporal_malus) if pre_score is not None else None
+        effective_score = max(1.0, min(100.0, pre_score - temporal_malus)) if pre_score is not None else None
 
         known_paths.add(norm_rel)
         projects.append({
@@ -476,13 +1051,22 @@ def scan_projects(vault_dir, data, cache=None, fast_mode=False, now_dt=None):
             "base_score": current_score,
             "rotation_bonus": rotation_bonus,
             "deadline_urgency": deadline_urgency,
+            "milestone_urgency": milestone_urgency,
+            "p_deadline": round(p_deadline, 4),
+            "p_milestone": round(p_milestone, 4),
+            "p_eff": round(p_eff, 4),
+            "temporal_urgency": temporal_urgency,
             "pre_score": pre_score,
             "temporal_malus": temporal_malus,
             "k_factor": k_factor,
             "active_sessions_count": len(valid_dates),
             "recent_work_dates": valid_dates,
             "effective_score": effective_score,
-            "deadline": deadline_str,
+            "deadline": str(deadline_str) if deadline_str else "",
+            "milestone": str(milestone_str) if milestone_str else "",
+            "milestone_resolution": milestone_res.to_dict() if milestone_res else None,
+            "milestone_target": milestone_res.target_datetime.isoformat() if (milestone_res and milestone_res.target_datetime) else None,
+            "last_satisfied_milestone_date": last_sat_milestone or "",
             "total_reviews": total_reviews,
             "last_review_date": last_review_date,
             "review_history": review_history,
@@ -501,6 +1085,7 @@ def scan_projects(vault_dir, data, cache=None, fast_mode=False, now_dt=None):
             abs_p = os.path.join(vault_dir, rel_p.replace("/", os.sep))
             title = os.path.splitext(os.path.basename(rel_p))[0]
             deadline_str = cached.get("deadline", "")
+            milestone_str = cached.get("milestone", "")
             known_paths.add(rel_p)
             projects.append({
                 "rel_path": rel_p,
@@ -508,13 +1093,22 @@ def scan_projects(vault_dir, data, cache=None, fast_mode=False, now_dt=None):
                 "base_score": None,
                 "rotation_bonus": 0.0,
                 "deadline_urgency": 0.0,
+                "milestone_urgency": 0.0,
+                "p_deadline": 0.0,
+                "p_milestone": 0.0,
+                "p_eff": 0.0,
+                "temporal_urgency": 0.0,
                 "pre_score": None,
                 "temporal_malus": 0.0,
                 "k_factor": 0.0,
                 "active_sessions_count": 0,
                 "recent_work_dates": [],
                 "effective_score": None,
-                "deadline": deadline_str,
+                "deadline": str(deadline_str) if deadline_str else "",
+                "milestone": str(milestone_str) if milestone_str else "",
+                "milestone_resolution": None,
+                "milestone_target": None,
+                "last_satisfied_milestone_date": "",
                 "total_reviews": 0,
                 "last_review_date": "",
                 "review_history": [],
@@ -534,25 +1128,34 @@ def scan_projects(vault_dir, data, cache=None, fast_mode=False, now_dt=None):
 
 def format_project_table(projects):
     lines = []
-    header = f"{'Rank':<5} {'Title':<40} {'Eff.Score':<10} {'Base':<7} {'Rot.Bonus':<10} {'Deadline Urg.':<14} {'Malus(K)':<12} {'Deadline':<12} {'Reviews':<8}"
+    header = f"{'Rank':<5} {'Title':<32} {'Eff.Score':<10} {'Base':<6} {'Rot.':<6} {'Dead.Urg':<9} {'Milest.Urg':<10} {'Malus(K)':<11} {'Deadline':<11} {'Milestone':<14} {'Reviews':<7}"
     lines.append(header)
     lines.append("-" * len(header))
     for idx, p in enumerate(projects, 1):
         title = p["title"]
-        if len(title) > 37:
-            title = title[:34] + "..."
+        if len(title) > 30:
+            title = title[:27] + "..."
         rev_str = "NEW" if p["total_reviews"] == 0 else str(p["total_reviews"])
         eff_str = f"{p['effective_score']:.2f}" if p['effective_score'] is not None else "N/A"
         base_str = f"{p['base_score']:.1f}" if p['base_score'] is not None else "N/A"
         rot_str = f"{p['rotation_bonus']:.1f}" if p['rotation_bonus'] is not None else "0.0"
-        urg_str = f"{p['deadline_urgency']:.2f}" if p['deadline_urgency'] is not None else "0.00"
+        dead_urg_str = f"{p['deadline_urgency']:.2f}" if p.get('deadline_urgency') is not None else "0.00"
+        mile_urg_str = f"{p['milestone_urgency']:.2f}" if p.get('milestone_urgency') is not None else "0.00"
 
         if p.get("temporal_malus") is not None and p.get("temporal_malus", 0.0) > 0:
             malus_str = f"-{p['temporal_malus']:.1f}({p.get('k_factor', 0.0):.1f})"
         else:
             malus_str = "0.0(0.0)"
 
-        line = f"{idx:<5} {title:<40} {eff_str:<10} {base_str:<7} {rot_str:<10} {urg_str:<14} {malus_str:<12} {p['deadline'] or 'N/A':<12} {rev_str:<8}"
+        deadline_disp = p.get("deadline") or "N/A"
+        if len(deadline_disp) > 10:
+            deadline_disp = deadline_disp[:10]
+
+        milestone_disp = p.get("milestone") or "N/A"
+        if len(milestone_disp) > 13:
+            milestone_disp = milestone_disp[:11] + ".."
+
+        line = f"{idx:<5} {title:<32} {eff_str:<10} {base_str:<6} {rot_str:<6} {dead_urg_str:<9} {mile_urg_str:<10} {malus_str:<11} {deadline_disp:<11} {milestone_disp:<14} {rev_str:<7}"
         lines.append(line)
     return "\n".join(lines)
 
@@ -560,10 +1163,6 @@ def format_project_table(projects):
 def clean_orphans(vault_dir=VAULT_DIR, data_path=DATA_JSON_PATH, cache_path=CACHE_PATH, dry_run=False):
     """
     Scans stats.projects in data.json and removes orphaned entries whose files no longer exist on disk.
-    If dry_run is True, only returns the list of orphaned paths without modifying data.json or cache.
-    If dry_run is False and orphans exist: creates a safety backup (data.json.bak_clean_orphans),
-    removes keys from data.json and cache, and saves.
-    Returns: list of orphaned rel_paths
     """
     data = load_data(data_path)
     stats_projects = data.get("stats", {}).get("projects", {})
@@ -706,7 +1305,8 @@ def cmd_get(args, data):
     fm, tags, checkboxes, content = parse_markdown_file(abs_path)
     stats = data.get("stats", {}).get("projects", {}).get(rel_path, {})
     settings = data.get("settings", {})
-    deadline_prop = settings.get("deadlineProperty", "deadline")
+    deadline_prop = settings.get("deadlineProperty", "deadline").lower()
+    milestone_prop = settings.get("milestoneProperty", "milestone").lower()
 
     total_reviews = int(stats.get("totalReviews", 0))
     raw_score = stats.get("currentScore")
@@ -716,24 +1316,46 @@ def cmd_get(args, data):
         base_score = float(raw_score)
 
     rotation_bonus = float(stats.get("rotationBonus", 0.0))
-    deadline_val = fm.get(deadline_prop.lower()) or fm.get("deadline") or fm.get("due") or ""
+    deadline_val = fm.get(deadline_prop) or fm.get("deadline") or fm.get("due") or ""
     if not deadline_val:
         deadline_val = stats.get("deadline", "")
 
+    p_deadline = 0.0
     deadline_urgency = 0.0
     if deadline_val and base_score is not None:
         try:
             d_date = datetime.strptime(str(deadline_val)[:10], "%Y-%m-%d").date()
             today = datetime.now().date()
             days_left = (d_date - today).days
-            p_factor = math.exp(-0.1 * days_left) if days_left > 0 else 1.0
-            rem = 100.0 - (base_score + rotation_bonus)
-            if rem > 0:
-                deadline_urgency = rem * p_factor
+            p_deadline = math.exp(-0.1 * days_left) if days_left > 0 else 1.0
         except Exception:
             pass
 
-    pre_score = (base_score + rotation_bonus + deadline_urgency) if base_score is not None else None
+    m_val = fm.get(milestone_prop) or fm.get("milestone") or fm.get("milestones") or fm.get("jalon") or ""
+    milestone_val = ", ".join(m_val) if isinstance(m_val, list) else str(m_val)
+    if not milestone_val:
+        milestone_val = stats.get("milestone", "")
+
+    last_sat_milestone = stats.get("lastSatisfiedMilestoneDate") or stats.get("last_satisfied_milestone_date")
+
+    p_milestone = 0.0
+    milestone_res = None
+    if milestone_val and base_score is not None:
+        milestone_res = parse_milestone_target(milestone_val, last_satisfied_str=last_sat_milestone)
+        if milestone_res and milestone_res.target_datetime:
+            p_milestone = milestone_res.urgency_factor
+
+    p_eff = max(p_deadline, p_milestone)
+
+    rem = 0.0
+    milestone_urgency = 0.0
+    if base_score is not None:
+        rem = max(0.0, 100.0 - (base_score + rotation_bonus))
+        deadline_urgency = rem * p_deadline
+        milestone_urgency = rem * p_milestone
+
+    temporal_urgency = rem * p_eff
+    pre_score = (base_score + rotation_bonus + temporal_urgency) if base_score is not None else None
 
     recent_work_dates = stats.get("recentWorkDates", [])
     rf = float(settings.get("rapprochementFactor") or settings.get("rapprochmentFactor") or 0.2)
@@ -742,7 +1364,7 @@ def cmd_get(args, data):
     temporal_malus, k_factor, valid_dates = compute_temporal_recency_malus(
         recent_work_dates, pre_score, rf, recency_weight
     )
-    effective_score = max(1.0, pre_score - temporal_malus) if pre_score is not None else None
+    effective_score = max(1.0, min(100.0, pre_score - temporal_malus)) if pre_score is not None else None
 
     proj_info = {
         "rel_path": rel_path,
@@ -750,6 +1372,11 @@ def cmd_get(args, data):
         "base_score": base_score,
         "rotation_bonus": rotation_bonus,
         "deadline_urgency": deadline_urgency,
+        "milestone_urgency": milestone_urgency,
+        "p_deadline": round(p_deadline, 4),
+        "p_milestone": round(p_milestone, 4),
+        "p_eff": round(p_eff, 4),
+        "temporal_urgency": temporal_urgency,
         "pre_score": pre_score,
         "temporal_malus": temporal_malus,
         "k_factor": k_factor,
@@ -757,6 +1384,9 @@ def cmd_get(args, data):
         "recent_work_dates": valid_dates,
         "effective_score": effective_score,
         "deadline": str(deadline_val),
+        "milestone": str(milestone_val),
+        "milestone_resolution": milestone_res.to_dict() if milestone_res else None,
+        "last_satisfied_milestone_date": last_sat_milestone or "",
         "total_reviews": total_reviews,
         "last_review_date": stats.get("lastReviewDate", ""),
         "review_history": stats.get("reviewHistory", []),
@@ -771,22 +1401,32 @@ def cmd_get(args, data):
         print(json.dumps(clean_p, indent=2, ensure_ascii=False))
     else:
         print(f"=== Project Details: {proj_info['title']} ===")
-        print(f"Path:                   {proj_info['rel_path']}")
+        print(f"Path:                     {proj_info['rel_path']}")
         eff_str = f"{proj_info['effective_score']:.2f}" if proj_info['effective_score'] is not None else "N/A"
         base_str = f"{proj_info['base_score']:.1f}" if proj_info['base_score'] is not None else "N/A"
         pre_str = f"{proj_info['pre_score']:.2f}" if proj_info['pre_score'] is not None else "N/A"
-        print(f"Effective Score:        {eff_str}")
-        print(f"Base Score:             {base_str}")
-        print(f"Rotation Bonus:         {proj_info['rotation_bonus']:.1f}")
-        print(f"Deadline Urgency:       {proj_info['deadline_urgency']:.2f}")
-        print(f"Pre-Score (avant malus): {pre_str}")
+        print(f"Effective Score:          {eff_str}")
+        print(f"Base Score:               {base_str}")
+        print(f"Rotation Bonus:           {proj_info['rotation_bonus']:.1f}")
+        print(f"Deadline Urgency:         {proj_info['deadline_urgency']:.2f} (P_dead={proj_info.get('p_deadline', 0.0):.3f})")
+        print(f"Milestone Urgency:        {proj_info['milestone_urgency']:.2f} (P_mile={proj_info.get('p_milestone', 0.0):.3f})")
+        print(f"Temporal Pressure P_eff:  {proj_info.get('p_eff', 0.0):.3f} (max(P_dead, P_mile))")
+        print(f"Pre-Score (avant malus):  {pre_str}")
         malus_str = f"-{proj_info['temporal_malus']:.2f} (K={proj_info['k_factor']:.2f}, {proj_info['active_sessions_count']} session(s) < 6h)"
-        print(f"Temporal Recency Malus: {malus_str}")
-        print(f"Deadline:               {proj_info['deadline'] or 'N/A'}")
-        print(f"Total Reviews:          {proj_info['total_reviews']}")
-        print(f"Last Review Date:       {proj_info['last_review_date'] or 'N/A'}")
+        print(f"Temporal Recency Malus:   {malus_str}")
+        print(f"Deadline:                 {proj_info['deadline'] or 'N/A'}")
+
+        mile_disp = proj_info.get('milestone') or 'N/A'
+        if milestone_res and milestone_res.target_datetime:
+            sat_str = " [Cycle Satisfied]" if milestone_res.is_cycle_satisfied else ""
+            mile_disp = f"{mile_disp} (next: {milestone_res.target_datetime.strftime('%Y-%m-%d %H:%M')}, {milestone_res.days_remaining:.1f}d remaining, P={milestone_res.urgency_factor:.3f}{sat_str})"
+        print(f"Milestone:                {mile_disp}")
+        print(f"Total Reviews:            {proj_info['total_reviews']}")
+        print(f"Last Review Date:         {proj_info['last_review_date'] or 'N/A'}")
+        if last_sat_milestone:
+            print(f"Last Satisfied Milestone: {last_sat_milestone}")
         if proj_info['recent_work_dates']:
-            print(f"Recent Sessions (<6h):  {', '.join(proj_info['recent_work_dates'])}")
+            print(f"Recent Sessions (<6h):    {', '.join(proj_info['recent_work_dates'])}")
 
         print("\n--- Review History ---")
         history = proj_info.get("review_history", [])
@@ -953,8 +1593,64 @@ def strip_project_tags(abs_path, settings):
     print(f"Updated note frontmatter for '{abs_path}' (stripped project tags, marked as non-projet).")
 
 
+def normalize_action(action_str):
+    """
+    Cleans and normalizes action string:
+    - Strips whitespace and parenthesized/bracketed suffixes like '(Recommandé)', '[Recommandé]', '(recommended)'
+    - Handles case-insensitivity and accents
+    - Maps French and English aliases to canonical action names:
+      'less-often', 'ok', 'more-often', 'emergency', 'finished', 'non-projet'
+    """
+    if not action_str:
+        return ""
+    # Strip parenthetical/bracketed annotations e.g. (Recommandé), [Recommandé], (Recommended)
+    cleaned = re.sub(r'[\(\[\{].*?[\)\]\}]', '', str(action_str)).strip()
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    cleaned_lower = cleaned.lower()
+
+    aliases = {
+        "ok": "ok",
+        "a l'aise": "less-often",
+        "à l'aise": "less-often",
+        "al'aise": "less-often",
+        "a l aise": "less-often",
+        "aise": "less-often",
+        "à l'aise (recommandé)": "less-often",
+        "less-often": "less-often",
+        "less often": "less-often",
+        "less_often": "less-often",
+        "moins souvent": "less-often",
+        "moins-souvent": "less-often",
+        "moins_souvent": "less-often",
+        "stresse": "more-often",
+        "stressé": "more-often",
+        "stressee": "more-often",
+        "more-often": "more-often",
+        "more often": "more-often",
+        "more_often": "more-often",
+        "plus souvent": "more-often",
+        "plus-souvent": "more-often",
+        "plus_souvent": "more-often",
+        "emergency": "emergency",
+        "urgence": "emergency",
+        "urgent": "emergency",
+        "finished": "finished",
+        "termine": "finished",
+        "terminé": "finished",
+        "done": "finished",
+        "fini": "finished",
+        "non-projet": "non-projet",
+        "non projet": "non-projet",
+        "non_projet": "non-projet",
+        "non-project": "non-projet",
+        "not-a-project": "non-projet",
+        "pas un projet": "non-projet",
+    }
+    return aliases.get(cleaned_lower, cleaned_lower)
+
+
 def compute_feedback_score(current_score, action, rf):
-    act = action.lower()
+    act = normalize_action(action)
     try:
         new_score = float(act)
     except ValueError:
@@ -1008,7 +1704,7 @@ def apply_feedback(project_path, action, worked, data):
     current_score = float(raw_score) if (total_reviews > 0 and raw_score is not None) else None
 
     rf = float(settings.get("rapprochementFactor") or settings.get("rapprochmentFactor") or 0.2)
-    act = action.lower()
+    act = normalize_action(action)
 
     new_score = compute_feedback_score(current_score, action, rf)
     now_dt = datetime.now(timezone.utc)
@@ -1038,6 +1734,9 @@ def apply_feedback(project_path, action, worked, data):
                     valid_dates.append(d_str)
         valid_dates.append(now_iso)
         proj["recentWorkDates"] = valid_dates
+
+        # Set lastSatisfiedMilestoneDate to mark milestone cycle as satisfied
+        proj["lastSatisfiedMilestoneDate"] = now_iso
 
         # Reset rotationBonus for current project, increment all other projects
         proj["rotationBonus"] = 0.0
@@ -1105,7 +1804,6 @@ def cmd_feedback(args, data):
         print("Options: ok, less-often, more-often, finished, emergency, non-projet, or numeric score (1-100)")
         sys.exit(1)
 
-    # By default, giving feedback implies a work session (worked=True) unless explicitly specified with --no-work / --review-only
     is_not_worked = getattr(args, "no_work", False) or getattr(args, "review_only", False) or getattr(args, "not_worked", False)
     worked = not is_not_worked
     apply_feedback(args.project_path, action, worked, data)
@@ -1195,23 +1893,28 @@ def cmd_work(args, data):
     print(f"🎉 POMODORO TERMINÉ pour '{title}' ({duration_min} min)", flush=True)
     print("============================================================", flush=True)
     print(flush=True)
-    print("CONSIGNES ANTIGRAVITY POST-POMODORO :", flush=True)
-    print(f"1. Mentionner à Henri que le travail sur '{title}' est terminé et l'encourager à faire une pause de 5 minutes.", flush=True)
-    print("2. Évaluation autonome de l'urgence par Antigravity (Strict Anti-Biais d'optimisme & Marge de sécurité) :", flush=True)
-    print("   - Mesurer si le rythme actuel garantit de respecter l'échéance avec une marge de sécurité.", flush=True)
-    print("   - Appliquer le feedback approprié via CLI :", flush=True)
-    print("     - 'ok' (Rythme sous contrôle / adapté)", flush=True)
-    print("     - 'more-often' / 'emergency' (Sous-priorisé / Pression élevée / Risque de retard)", flush=True)
-    print("     - 'less-often' (Rythme excessif / Priorité basse)", flush=True)
-    print("   - Communiquer la décision et sa justification à Henri et lui permettre de contester.", flush=True)
-    print("3. Proposer à Henri d'enchaîner sur l'un des 3 projets les plus urgents suivants :", flush=True)
+    print("🤖 CONSIGNES ANTIGRAVITY POST-POMODORO (Handover Agent) :", flush=True)
+    print(f"1. ☕ Pause & Récupération : Informer Henri que la session sur '{title}' est terminée et l'encourager explicitement à prendre une vraie pause de 5 minutes (s'étirer, s'hydrater, quitter l'écran).", flush=True)
+    print("2. 📊 Évaluation Objective & Réaliste (Anti-biais d'optimisme & Anti-nihilisme optimiste) :", flush=True)
+    print(f"   - Évaluer objectivement le travail accompli et la trajectoire restante pour '{title}'.", flush=True)
+    print("   - Mesurer si le rythme actuel garantit de respecter l'échéance/jalon avec une marge de sécurité (sans optimisme béat ni fatalisme).", flush=True)
+    print("   - Déterminer la recommandation de score/rythme la plus juste parmi : [\"À l'aise\", \"OK\", \"Stressé\", \"Terminé\"].", flush=True)
+    print("3. 💬 Évaluation Interactive via ask_question (Stress & Confort) :", flush=True)
+    print("   - Déclencher l'outil interactif ask_question pour sonder le ressenti d'Henri (niveau de confort, charge mentale, blocages éventuels).", flush=True)
+    print("   - Présenter les 4 options dans l'ordre canonique : [\"À l'aise\", \"OK\", \"Stressé\", \"Terminé\"], en apposant le suffixe '(Recommandé)' à l'option préconisée (ex: 'OK (Recommandé)').", flush=True)
+    print("   - Enregistrer ensuite le choix final en exécutant : `python antigravity/scripts/project_memory_cli.py feedback <projet> --action <action>`.", flush=True)
+    print("4. 🎯 Suggestion des 3 Prochains Projets :", flush=True)
+    print("   - Présenter à Henri les 3 projets suivants recommandés selon l'algorithme d'urgence dynamique :", flush=True)
     if not top3:
-        print("   (Aucun autre projet actif)", flush=True)
+        print("     (Aucun autre projet actif détecté dans le vault)", flush=True)
     else:
         for idx, p in enumerate(top3, 1):
-            deadline_info = f" - Deadline: {p['deadline']}" if p.get("deadline") else ""
+            deadline_info = f" | 📅 Deadline: {p['deadline']}" if p.get("deadline") else ""
+            milestone_info = f" | 🚩 Milestone: {p['milestone']}" if p.get("milestone") else ""
             eff_info = f"{p['effective_score']:.2f}" if p.get("effective_score") is not None else "N/A"
-            print(f"   {idx}. {p['title']} (Score effectif: {eff_info}{deadline_info})", flush=True)
+            malus_info = f" (Malus -{p['temporal_malus']:.1f})" if p.get("temporal_malus", 0) > 0 else ""
+            print(f"     {idx}. {p['title']} [Score: {eff_info}{malus_info}{deadline_info}{milestone_info}]", flush=True)
+    print("   - Proposer d'enchaîner directement sur l'un d'eux après sa pause.", flush=True)
 
 
 def main():

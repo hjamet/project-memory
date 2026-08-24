@@ -84,6 +84,15 @@
     background: linear-gradient(135deg, #f59e0b, #d97706);
 }
 
+.projects-memory-review-modal .pm-badge-milestone {
+    background: linear-gradient(135deg, #ef4444, #dc2626);
+}
+
+.projects-memory-review-modal .pm-badge-milestone.pm-badge-milestone-satisfied {
+    background: linear-gradient(135deg, #10b981, #059669);
+    opacity: 0.85;
+}
+
 /* ===== Preview ===== */
 .projects-memory-review-modal .review-preview {
     flex: 1 1 auto;
