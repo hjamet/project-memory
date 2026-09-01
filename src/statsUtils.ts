@@ -804,14 +804,20 @@ export function calculateProjectStats(statsData: any, plugin: Plugin): ProjectSt
         // Malus temporel cumulatif 6h
         if (isFinite(weight) && weight > 0 && isFinite(rf) && project.recentWorkDates && Array.isArray(project.recentWorkDates) && project.recentWorkDates.length > 0) {
             let K = 0;
-            for (const dateStr of project.recentWorkDates) {
+            for (const item of project.recentWorkDates) {
+                const dateStr = typeof item === 'string' ? item : (item && typeof item === 'object' && 'date' in item ? String(item.date) : '');
+                let ratio = 1.0;
+                if (typeof item === 'object' && item !== null) {
+                    if ('ratio' in item && typeof item.ratio === 'number') ratio = item.ratio;
+                    else if ('weight' in item && typeof item.weight === 'number') ratio = item.weight;
+                }
                 const d = new Date(dateStr);
                 const t = d.getTime();
                 if (isNaN(t)) continue;
                 const deltaMs = nowMs - t;
-                if (deltaMs >= 0 && deltaMs < sixHoursMs) {
-                    const deltaHours = deltaMs / (1000 * 60 * 60);
-                    const ki = 1.0 - (deltaHours / 6.0);
+                if (deltaMs >= -180000 && deltaMs < sixHoursMs) {
+                    const deltaHours = Math.max(0, deltaMs / (1000 * 60 * 60));
+                    const ki = (isFinite(ratio) ? ratio : 1.0) * (1.0 - (deltaHours / 6.0));
                     K += ki;
                 }
             }

@@ -10,6 +10,14 @@ export interface ReviewHistoryEntry {
 	scoreAfter: number;
 }
 
+export interface WorkSessionEntry {
+	date: string;
+	ratio?: number;
+	duration_minutes?: number;
+	target_minutes?: number;
+	interrupted?: boolean;
+}
+
 export interface ProjectStats {
 	currentScore: number; // current pertinence score stored in the persistent stats payload
 	rotationBonus: number;
@@ -17,6 +25,7 @@ export interface ProjectStats {
 	lastReviewDate: string;
 	lastSatisfiedMilestoneDate?: string;
 	reviewHistory: ReviewHistoryEntry[];
+	recentWorkDates?: (string | WorkSessionEntry)[];
 }
 
 export interface GlobalStats {

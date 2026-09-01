@@ -49,6 +49,7 @@ def find_vault_dir(start_dir):
 VAULT_DIR = find_vault_dir(SCRIPT_DIR)
 DATA_JSON_PATH = os.path.join(VAULT_DIR, ".obsidian", "plugins", "project-memory", "data.json")
 CACHE_PATH = os.path.join(VAULT_DIR, ".obsidian", "plugins", "project-memory", ".project_cache.json")
+ACTIVE_POMODORO_PATH = os.path.join(VAULT_DIR, ".obsidian", "plugins", "project-memory", ".active_pomodoro.json")
 
 EXCLUDED_DIRS = {
     ".obsidian", ".git", ".trash", ".claude", ".cursor",
@@ -801,10 +802,170 @@ def save_cache(cache, cache_path=CACHE_PATH):
         pass
 
 
-def parse_iso_datetime(dt_str):
+def load_active_pomodoro(active_path=ACTIVE_POMODORO_PATH):
+    if os.path.exists(active_path):
+        try:
+            with open(active_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
+    return None
+
+
+def save_active_pomodoro(pomodoro_info, active_path=ACTIVE_POMODORO_PATH):
+    try:
+        os.makedirs(os.path.dirname(active_path), exist_ok=True)
+        tmp = active_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(pomodoro_info, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, active_path)
+    except Exception:
+        pass
+
+
+def clear_active_pomodoro(active_path=ACTIVE_POMODORO_PATH):
+    try:
+        if os.path.exists(active_path):
+            os.remove(active_path)
+    except Exception:
+        pass
+
+
+def is_pid_alive(pid):
+    if not pid or pid <= 0:
+        return False
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+            if not handle:
+                return False
+            exit_code = ctypes.c_ulong()
+            kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+            kernel32.CloseHandle(handle)
+            return exit_code.value == STILL_ACTIVE
+        except Exception:
+            return True
+    else:
+        try:
+            os.kill(int(pid), 0)
+            return True
+        except (OSError, ProcessLookupError):
+            return False
+
+
+def record_work_session(
+    data,
+    rel_path,
+    elapsed_minutes,
+    target_minutes=None,
+    is_interrupted=False,
+    data_path=DATA_JSON_PATH
+):
     """
-    Robust ISO datetime parser supporting UTC strings with 'Z', '+00:00', and microseconds.
+    Enregistre une session de travail (complète ou interrompue proportionnellement) dans data.json :
+    - Calcule le ratio r = T_elapsed / T_target
+    - Enregistre la session dans recentWorkDates avec son ratio et sa durée
+    - Incrémente les statistiques globales (globalStats.totalPomodoroTime += T_elapsed)
+    - Applique la rotation des bonus (+0.3 * r aux autres projets, réinitialisation proportionnelle)
+    - Valide le jalon synchrone si r >= 0.5 ou session complète
     """
+    stats = data.setdefault("stats", {}).setdefault("projects", {})
+    global_stats = data.setdefault("stats", {}).setdefault("globalStats", {"totalReviews": 0, "totalPomodoroTime": 0})
+    settings = data.setdefault("settings", {})
+    rot_inc = float(settings.get("rotationBonus", 0.3))
+
+    if target_minutes is None:
+        target_minutes = float(settings.get("pomodoroDuration", 25))
+
+    ratio = min(1.0, max(0.0, elapsed_minutes / target_minutes)) if target_minutes > 0 else 1.0
+
+    now_dt = datetime.now(timezone.utc)
+    now_iso = now_dt.isoformat()
+
+    matched_key = None
+    for k in stats.keys():
+        if k == rel_path or os.path.basename(k) == os.path.basename(rel_path) or k.endswith(rel_path):
+            matched_key = k
+            break
+    if not matched_key:
+        matched_key = rel_path
+
+    if matched_key not in stats:
+        proj = {
+            "rotationBonus": 0.0,
+            "totalReviews": 0,
+            "lastReviewDate": "",
+            "reviewHistory": [],
+            "recentWorkDates": []
+        }
+        stats[matched_key] = proj
+    else:
+        proj = stats[matched_key]
+
+    # Purge des sessions de plus de 6 heures
+    existing_work = proj.get("recentWorkDates", [])
+    valid_dates = []
+    for item in existing_work:
+        d_str = item.get("date") if isinstance(item, dict) else str(item)
+        d_dt = parse_iso_datetime(d_str)
+        if d_dt:
+            delta_h = (now_dt - d_dt).total_seconds() / 3600.0
+            if -0.05 <= delta_h < 6.0:
+                valid_dates.append(item)
+
+    # N'ajoute la session que si la durée est significative (> 2 secondes)
+    if elapsed_minutes > 0.03:
+        if is_interrupted or ratio < 0.99:
+            session_entry = {
+                "date": now_iso,
+                "ratio": round(ratio, 4),
+                "duration_minutes": round(elapsed_minutes, 2),
+                "target_minutes": round(target_minutes, 2),
+                "interrupted": is_interrupted
+            }
+        else:
+            session_entry = now_iso
+        valid_dates.append(session_entry)
+
+    proj["recentWorkDates"] = valid_dates
+
+    # Validation du jalon si au moins 50% du pomodoro a été accompli ou si complet
+    if ratio >= 0.5 or not is_interrupted:
+        proj["lastSatisfiedMilestoneDate"] = now_iso
+
+    # Gestion proportionnelle du bonus de rotation
+    if ratio >= 0.8:
+        proj["rotationBonus"] = 0.0
+    else:
+        current_bonus = float(proj.get("rotationBonus", 0.0))
+        proj["rotationBonus"] = round(max(0.0, current_bonus * (1.0 - ratio)), 3)
+
+    for p_key, p_val in stats.items():
+        if p_key != matched_key:
+            p_val["rotationBonus"] = round(float(p_val.get("rotationBonus", 0.0)) + rot_inc * ratio, 3)
+
+    # Accumulation du temps dans les stats globales
+    prev_pomodoro_time = float(global_stats.get("totalPomodoroTime", 0))
+    global_stats["totalPomodoroTime"] = round(prev_pomodoro_time + elapsed_minutes, 2)
+
+    save_data(data, data_path)
+    return matched_key, ratio
+
+
+def parse_iso_datetime(dt_str_or_obj):
+    """
+    Robust ISO datetime parser supporting UTC strings with 'Z', '+00:00', dict entries with 'date', and microseconds.
+    """
+    if not dt_str_or_obj:
+        return None
+    if isinstance(dt_str_or_obj, dict):
+        dt_str = dt_str_or_obj.get("date")
+    else:
+        dt_str = dt_str_or_obj
     if not dt_str:
         return None
     try:
@@ -822,8 +983,9 @@ def parse_iso_datetime(dt_str):
 def compute_temporal_recency_malus(recent_work_dates, pre_score, rf, weight, now_dt=None):
     """
     Calculates the temporal recency malus based on active work sessions in the last 6 hours.
+    Supports proportional work session entries (ratio r in [0, 1]).
     For each session i within 6h:
-      k_i = 1.0 - (delta_t_i / 6.0)
+      k_i = r_i * (1.0 - (delta_t_i / 6.0))
       K = sum(k_i)
     Malus = K * rf * weight * max(0.0, pre_score - 1.0)
     Returns: (malus, K, valid_dates_within_6h)
@@ -839,16 +1001,27 @@ def compute_temporal_recency_malus(recent_work_dates, pre_score, rf, weight, now
     k_sum = 0.0
     valid_dates = []
 
-    for d_str in recent_work_dates:
+    for item in recent_work_dates:
+        ratio = 1.0
+        if isinstance(item, dict):
+            d_str = item.get("date", "")
+            raw_ratio = item.get("ratio", item.get("weight", 1.0))
+            try:
+                ratio = float(raw_ratio)
+            except (ValueError, TypeError):
+                ratio = 1.0
+        else:
+            d_str = str(item)
+
         d_dt = parse_iso_datetime(d_str)
         if not d_dt:
             continue
         delta_hours = (now_dt - d_dt).total_seconds() / 3600.0
         if -0.05 <= delta_hours < 6.0:
             delta_h = max(0.0, delta_hours)
-            k_i = 1.0 - (delta_h / 6.0)
+            k_i = ratio * (1.0 - (delta_h / 6.0))
             k_sum += k_i
-            valid_dates.append(d_str)
+            valid_dates.append(item)
 
     if pre_score is None or pre_score <= 1.0 or k_sum <= 0.0:
         return 0.0, round(k_sum, 4), valid_dates
@@ -1574,7 +1747,16 @@ def cmd_get(args, data):
         if last_sat_milestone:
             print(f"Last Satisfied Milestone: {last_sat_milestone}")
         if proj_info['recent_work_dates']:
-            print(f"Recent Sessions (<6h):    {', '.join(proj_info['recent_work_dates'])}")
+            disp_dates = []
+            for d in proj_info['recent_work_dates']:
+                if isinstance(d, dict):
+                    ratio = float(d.get('ratio', d.get('weight', 1.0)))
+                    dur = float(d.get('duration_minutes', 0.0))
+                    intr = " (interrompu)" if d.get('interrupted') else ""
+                    disp_dates.append(f"{d.get('date', 'N/A')} [r={ratio:.2f}, {dur:.1f}m{intr}]")
+                else:
+                    disp_dates.append(str(d))
+            print(f"Recent Sessions (<6h):    {', '.join(disp_dates)}")
 
         print("\n--- Review History ---")
         history = proj_info.get("review_history", [])
@@ -2016,80 +2198,157 @@ def cmd_work(args, data):
         print(f"Error: Project note file not found for '{args.project_path}'.", flush=True)
         sys.exit(1)
 
-    duration_min = args.duration if args.duration is not None else data.get("settings", {}).get("pomodoroDuration", 25)
-    total_seconds = duration_min * 60
+    # Vérifie si un Pomodoro est déjà actif
+    active = load_active_pomodoro()
+    if active and active.get("status") == "running":
+        active_pid = active.get("pid")
+        if is_pid_alive(active_pid) and active_pid != os.getpid():
+            active_title = active.get("title", active.get("rel_path", "Inconnu"))
+            print(f"⚠️ Une session Pomodoro est déjà en cours d'exécution pour '{active_title}' (PID {active_pid}).", flush=True)
+            print("💡 Vous pouvez l'interrompre proprement via : `python antigravity/scripts/project_memory_cli.py stop-work`", flush=True)
+            sys.exit(1)
+        else:
+            # Nettoyage d'un lock orphelin
+            clear_active_pomodoro()
+
+    duration_min = float(args.duration) if args.duration is not None else float(data.get("settings", {}).get("pomodoroDuration", 25))
+    total_seconds = int(duration_min * 60)
     title = os.path.splitext(os.path.basename(rel_path))[0]
-
-    print(f"⏱️ Session Pomodoro démarrée pour '{title}' ({duration_min} min)...", flush=True)
-    step_sec = 30
-    for elapsed_sec in range(0, total_seconds + 1, step_sec):
-        remaining_sec = max(0, total_seconds - elapsed_sec)
-        remaining_min = math.ceil(remaining_sec / 60)
-        pct = int((elapsed_sec / total_seconds) * 100) if total_seconds > 0 else 100
-        bar_len = 15
-        filled = int(bar_len * elapsed_sec / total_seconds) if total_seconds > 0 else bar_len
-        bar = "█" * filled + "░" * (bar_len - filled)
-        m_rem = remaining_sec // 60
-        s_rem = remaining_sec % 60
-        print(f"⏳ [{bar}] {pct:3d}% | Temps restant : {m_rem:02d}:{s_rem:02d} ({remaining_min} min)", flush=True)
-        if remaining_sec > 0:
-            time.sleep(min(step_sec, remaining_sec))
-
-    # Record work session directly in data.json
     now_dt = datetime.now(timezone.utc)
-    now_iso = now_dt.isoformat()
+    start_time = time.time()
 
-    stats = data.setdefault("stats", {}).setdefault("projects", {})
-    global_stats = data.setdefault("stats", {}).setdefault("globalStats", {"totalReviews": 0, "totalPomodoroTime": 0})
-    settings = data.setdefault("settings", {})
-    rot_inc = float(settings.get("rotationBonus", 0.3))
+    pomodoro_state = {
+        "pid": os.getpid(),
+        "rel_path": rel_path,
+        "title": title,
+        "start_iso": now_dt.isoformat(),
+        "start_timestamp": start_time,
+        "target_duration_minutes": duration_min,
+        "target_duration_seconds": total_seconds,
+        "status": "running"
+    }
+    save_active_pomodoro(pomodoro_state)
 
-    matched_key = None
-    for k in stats.keys():
-        if k == rel_path or os.path.basename(k) == os.path.basename(rel_path) or k.endswith(rel_path):
-            matched_key = k
-            break
-    if not matched_key:
-        matched_key = rel_path
+    interrupted = False
+    stop_reason = "normal"
 
-    if matched_key not in stats:
-        proj = {
-            "rotationBonus": 0.0,
-            "totalReviews": 0,
-            "lastReviewDate": "",
-            "reviewHistory": [],
-            "recentWorkDates": []
-        }
-        stats[matched_key] = proj
-    else:
-        proj = stats[matched_key]
+    def signal_handler(signum, frame):
+        nonlocal interrupted, stop_reason
+        interrupted = True
+        stop_reason = "signal"
 
-    # Update recentWorkDates: purge older than 6h and push current session
-    existing_work = proj.get("recentWorkDates", [])
-    valid_dates = []
-    for d_str in existing_work:
-        d_dt = parse_iso_datetime(d_str)
-        if d_dt:
-            delta_h = (now_dt - d_dt).total_seconds() / 3600.0
-            if -0.05 <= delta_h < 6.0:
-                valid_dates.append(d_str)
-    valid_dates.append(now_iso)
-    proj["recentWorkDates"] = valid_dates
+    original_sigint = None
+    original_sigterm = None
+    try:
+        import signal
+        original_sigint = signal.signal(signal.SIGINT, signal_handler)
+        if hasattr(signal, "SIGTERM"):
+            original_sigterm = signal.signal(signal.SIGTERM, signal_handler)
+    except Exception:
+        pass
 
-    # Set lastSatisfiedMilestoneDate to mark milestone cycle as satisfied
-    proj["lastSatisfiedMilestoneDate"] = now_iso
+    print(f"⏱️ Session Pomodoro démarrée pour '{title}' ({duration_min:.0f} min)...", flush=True)
+    step_sec = 30
 
-    # Reset rotationBonus for current project, increment all other projects
-    proj["rotationBonus"] = 0.0
-    for p_key, p_val in stats.items():
-        if p_key != matched_key:
-            p_val["rotationBonus"] = round(float(p_val.get("rotationBonus", 0.0)) + rot_inc, 3)
+    try:
+        for elapsed_sec in range(0, total_seconds + 1, step_sec):
+            if interrupted:
+                break
 
-    # Accumulate pomodoro duration
-    global_stats["totalPomodoroTime"] = global_stats.get("totalPomodoroTime", 0) + duration_min
+            # Vérifie si le fichier actif a été modifié par stop-work
+            active_cur = load_active_pomodoro()
+            if not active_cur or active_cur.get("status") != "running":
+                interrupted = True
+                stop_reason = "external_command"
+                break
 
-    data_path = os.path.join(VAULT_DIR, ".obsidian", "plugins", "project-memory", "data.json")
-    save_data(data, data_path)
+            remaining_sec = max(0, total_seconds - elapsed_sec)
+            remaining_min = math.ceil(remaining_sec / 60)
+            pct = int((elapsed_sec / total_seconds) * 100) if total_seconds > 0 else 100
+            bar_len = 15
+            filled = int(bar_len * elapsed_sec / total_seconds) if total_seconds > 0 else bar_len
+            bar = "█" * filled + "░" * (bar_len - filled)
+            m_rem = remaining_sec // 60
+            s_rem = remaining_sec % 60
+            print(f"⏳ [{bar}] {pct:3d}% | Temps restant : {m_rem:02d}:{s_rem:02d} ({remaining_min} min)", flush=True)
+
+            if remaining_sec > 0:
+                sleep_target = min(step_sec, remaining_sec)
+                sleep_end = time.time() + sleep_target
+                while time.time() < sleep_end and not interrupted:
+                    active_cur = load_active_pomodoro()
+                    if not active_cur or active_cur.get("status") != "running":
+                        interrupted = True
+                        stop_reason = "external_command"
+                        break
+                    time.sleep(min(0.5, max(0.05, sleep_end - time.time())))
+
+    except (KeyboardInterrupt, SystemExit):
+        interrupted = True
+        stop_reason = "keyboard_interrupt"
+    finally:
+        # Restauration des signaux
+        try:
+            import signal
+            if original_sigint is not None:
+                signal.signal(signal.SIGINT, original_sigint)
+            if original_sigterm is not None and hasattr(signal, "SIGTERM"):
+                signal.signal(signal.SIGTERM, original_sigterm)
+        except Exception:
+            pass
+
+    actual_elapsed_sec = max(0.0, time.time() - start_time)
+    actual_elapsed_min = actual_elapsed_sec / 60.0
+
+    clear_active_pomodoro()
+    data = load_data(DATA_JSON_PATH)
+
+    if interrupted:
+        effective_elapsed_min = min(float(duration_min), actual_elapsed_min)
+        ratio = min(1.0, max(0.0, effective_elapsed_min / duration_min)) if duration_min > 0 else 0.0
+
+        matched_key, _ = record_work_session(
+            data,
+            rel_path,
+            elapsed_minutes=effective_elapsed_min,
+            target_minutes=duration_min,
+            is_interrupted=True,
+            data_path=DATA_JSON_PATH
+        )
+
+        m_el = int(effective_elapsed_min)
+        s_el = int((effective_elapsed_min - m_el) * 60)
+
+        updated_projects = scan_projects(VAULT_DIR, data)
+        target_p = next((p for p in updated_projects if p["rel_path"] == rel_path or p["title"] == title), None)
+
+        print(flush=True)
+        print("============================================================", flush=True)
+        print(f"🛑 POMODORO INTERROMPU pour '{title}'", flush=True)
+        print("============================================================", flush=True)
+        print(f"⏱️ Temps réellement écoulé : {m_el:02d}:{s_el:02d} ({effective_elapsed_min:.2f} min / {duration_min:.0f} min)", flush=True)
+        print(f"📊 Ratio d'accomplissement (r) : {ratio * 100:.1f}%", flush=True)
+        print(f"📈 Total Pomodoro global : {data.get('stats', {}).get('globalStats', {}).get('totalPomodoroTime', 0):.2f} min (+{effective_elapsed_min:.2f} min)", flush=True)
+        if target_p:
+            eff_disp = f"{target_p['effective_score']:.2f}" if target_p['effective_score'] is not None else "N/A"
+            malus_disp = f"-{target_p['temporal_malus']:.2f} (K={target_p['k_factor']:.2f})" if target_p.get('temporal_malus') else "0.00"
+            print(f"🎯 Score effectif mis à jour : {eff_disp} [Malus temporel proportionnel : {malus_disp}]", flush=True)
+        print("============================================================", flush=True)
+        print(flush=True)
+        print("🤖 CONSIGNES ANTIGRAVITY POST-INTERRUPTION :", flush=True)
+        print(f"1. 📝 Bilan intermédiaire : Faire le point sur ce qui a été accompli durant ces {effective_elapsed_min:.1f} minutes de travail sur '{title}'.", flush=True)
+        print(f"2. 💬 Feedback optionnel : Si la session était significative, sonder Henri via `ask_question` pour ajuster le score via `feedback`.", flush=True)
+        return
+
+    # Fin normale
+    matched_key, _ = record_work_session(
+        data,
+        rel_path,
+        elapsed_minutes=float(duration_min),
+        target_minutes=duration_min,
+        is_interrupted=False,
+        data_path=DATA_JSON_PATH
+    )
 
     all_projects = scan_projects(VAULT_DIR, data)
     other_projects = [
@@ -2100,7 +2359,7 @@ def cmd_work(args, data):
     top3 = other_projects[:3]
 
     print("============================================================", flush=True)
-    print(f"🎉 POMODORO TERMINÉ pour '{title}' ({duration_min} min)", flush=True)
+    print(f"🎉 POMODORO TERMINÉ pour '{title}' ({duration_min:.0f} min)", flush=True)
     print("============================================================", flush=True)
     print(flush=True)
     print("🤖 CONSIGNES ANTIGRAVITY POST-POMODORO (Handover Agent) :", flush=True)
@@ -2125,6 +2384,191 @@ def cmd_work(args, data):
             malus_info = f" (Malus -{p['temporal_malus']:.1f})" if p.get("temporal_malus", 0) > 0 else ""
             print(f"     {idx}. {p['title']} [Score: {eff_info}{malus_info}{deadline_info}{milestone_info}]", flush=True)
     print("   - Proposer d'enchaîner directement sur l'un d'eux après sa pause.", flush=True)
+
+
+def cmd_stop_work(args, data):
+    active = load_active_pomodoro()
+    as_json = getattr(args, "json", False)
+    target_project = getattr(args, "project_path", None)
+    manual_elapsed = getattr(args, "elapsed", None)
+
+    if not active or active.get("status") != "running":
+        if target_project and manual_elapsed is not None:
+            # Enregistrement manuel d'une session sans daemon actif
+            rel_path, abs_path = find_project_file(VAULT_DIR, target_project, data)
+            title = os.path.splitext(os.path.basename(rel_path))[0]
+            target_min = float(args.target_duration) if getattr(args, "target_duration", None) else float(data.get("settings", {}).get("pomodoroDuration", 25))
+            elapsed_min = float(manual_elapsed)
+            ratio = min(1.0, max(0.0, elapsed_min / target_min)) if target_min > 0 else 0.0
+
+            matched_key, _ = record_work_session(
+                data,
+                rel_path,
+                elapsed_minutes=elapsed_min,
+                target_minutes=target_min,
+                is_interrupted=True,
+                data_path=DATA_JSON_PATH
+            )
+            if as_json:
+                print(json.dumps({
+                    "status": "stopped",
+                    "manual": True,
+                    "project": title,
+                    "rel_path": rel_path,
+                    "elapsed_minutes": elapsed_min,
+                    "target_minutes": target_min,
+                    "ratio": ratio
+                }, indent=2, ensure_ascii=False))
+            else:
+                print(f"🛑 Session de travail manuelle enregistrée pour '{title}' ({elapsed_min:.2f} min / {target_min:.0f} min, ratio r={ratio:.2%}).")
+            return
+
+        if as_json:
+            print(json.dumps({"status": "no_active_pomodoro", "message": "Aucune session Pomodoro active en cours."}, indent=2, ensure_ascii=False))
+        else:
+            print("ℹ️ Aucune session Pomodoro active n'est actuellement en cours d'exécution.")
+        return
+
+    # Session active détectée
+    rel_path = active.get("rel_path")
+    title = active.get("title", os.path.splitext(os.path.basename(rel_path))[0])
+    start_ts = float(active.get("start_timestamp", time.time()))
+    target_min = float(active.get("target_duration_minutes", 25))
+    pid = active.get("pid")
+
+    now_t = time.time()
+    elapsed_sec = max(0.0, now_t - start_ts)
+    elapsed_min = float(manual_elapsed) if manual_elapsed is not None else (elapsed_sec / 60.0)
+    effective_elapsed_min = min(target_min, elapsed_min)
+    ratio = min(1.0, max(0.0, effective_elapsed_min / target_min)) if target_min > 0 else 0.0
+
+    # Marque la session comme stopped pour que la boucle work se termine
+    active["status"] = "stopped"
+    save_active_pomodoro(active)
+
+    # Notifie / termine le processus daemon si distinct
+    if pid and is_pid_alive(pid) and pid != os.getpid():
+        try:
+            import signal
+            if sys.platform == "win32":
+                os.kill(int(pid), signal.SIGTERM)
+            else:
+                os.kill(int(pid), signal.SIGINT)
+        except Exception:
+            pass
+
+    # Enregistrement direct de la session
+    matched_key, _ = record_work_session(
+        data,
+        rel_path,
+        elapsed_minutes=effective_elapsed_min,
+        target_minutes=target_min,
+        is_interrupted=True,
+        data_path=DATA_JSON_PATH
+    )
+
+    clear_active_pomodoro()
+
+    updated_projects = scan_projects(VAULT_DIR, data)
+    target_p = next((p for p in updated_projects if p["rel_path"] == rel_path or p["title"] == title), None)
+
+    m_el = int(effective_elapsed_min)
+    s_el = int((effective_elapsed_min - m_el) * 60)
+
+    if as_json:
+        out = {
+            "status": "stopped",
+            "project": title,
+            "rel_path": rel_path,
+            "elapsed_minutes": round(effective_elapsed_min, 2),
+            "target_minutes": round(target_min, 2),
+            "ratio": round(ratio, 4),
+            "effective_score": target_p.get("effective_score") if target_p else None,
+            "temporal_malus": target_p.get("temporal_malus") if target_p else 0.0,
+            "k_factor": target_p.get("k_factor") if target_p else 0.0,
+            "global_pomodoro_time": data.get("stats", {}).get("globalStats", {}).get("totalPomodoroTime", 0)
+        }
+        print(json.dumps(out, indent=2, ensure_ascii=False))
+    else:
+        print("============================================================", flush=True)
+        print(f"🛑 Session Pomodoro interrompue avec succès pour '{title}' !", flush=True)
+        print("============================================================", flush=True)
+        print(f"⏱️ Durée cible : {target_min:.0f} min", flush=True)
+        print(f"⏳ Temps réellement écoulé : {m_el:02d}:{s_el:02d} ({effective_elapsed_min:.2f} min)", flush=True)
+        print(f"📊 Ratio d'accomplissement (r) : {ratio * 100:.1f}%", flush=True)
+        print(f"📈 Total Pomodoro global : {data.get('stats', {}).get('globalStats', {}).get('totalPomodoroTime', 0):.2f} min (+{effective_elapsed_min:.2f} min)", flush=True)
+        if target_p:
+            eff_disp = f"{target_p['effective_score']:.2f}" if target_p['effective_score'] is not None else "N/A"
+            malus_disp = f"-{target_p['temporal_malus']:.2f} (K={target_p['k_factor']:.2f})" if target_p.get('temporal_malus') else "0.00"
+            print(f"🎯 Score effectif mis à jour : {eff_disp} [Malus temporel proportionnel : {malus_disp}]", flush=True)
+        print("============================================================", flush=True)
+
+
+def cmd_status_work(args, data):
+    active = load_active_pomodoro()
+    as_json = getattr(args, "json", False)
+
+    if not active or active.get("status") != "running":
+        if as_json:
+            print(json.dumps({"status": "idle", "active": False}, indent=2, ensure_ascii=False))
+        else:
+            print("💤 Aucune session Pomodoro en cours (idle).")
+        return
+
+    pid = active.get("pid")
+    if pid and not is_pid_alive(pid):
+        clear_active_pomodoro()
+        if as_json:
+            print(json.dumps({"status": "idle", "active": False, "stale_cleaned": True}, indent=2, ensure_ascii=False))
+        else:
+            print("💤 Aucune session Pomodoro en cours (le processus précédent s'est terminé).")
+        return
+
+    rel_path = active.get("rel_path")
+    title = active.get("title", os.path.splitext(os.path.basename(rel_path))[0])
+    start_ts = float(active.get("start_timestamp", time.time()))
+    target_min = float(active.get("target_duration_minutes", 25))
+
+    now_t = time.time()
+    elapsed_sec = max(0.0, now_t - start_ts)
+    elapsed_min = elapsed_sec / 60.0
+    remaining_sec = max(0.0, (target_min * 60.0) - elapsed_sec)
+    remaining_min = remaining_sec / 60.0
+    pct = int(min(100.0, (elapsed_sec / (target_min * 60.0)) * 100)) if target_min > 0 else 100
+
+    bar_len = 15
+    filled = int(bar_len * (pct / 100.0))
+    bar = "█" * filled + "░" * (bar_len - filled)
+
+    m_el = int(elapsed_min)
+    s_el = int(elapsed_sec % 60)
+    m_rem = int(remaining_min)
+    s_rem = int(remaining_sec % 60)
+
+    if as_json:
+        out = {
+            "status": "running",
+            "active": True,
+            "pid": pid,
+            "project": title,
+            "rel_path": rel_path,
+            "start_iso": active.get("start_iso"),
+            "elapsed_minutes": round(elapsed_min, 2),
+            "remaining_minutes": round(remaining_min, 2),
+            "target_minutes": round(target_min, 2),
+            "progress_percent": pct
+        }
+        print(json.dumps(out, indent=2, ensure_ascii=False))
+    else:
+        print("============================================================", flush=True)
+        print(f"⏱️ Session Pomodoro Active : '{title}'", flush=True)
+        print("============================================================", flush=True)
+        print(f"⏳ Progression : [{bar}] {pct}%", flush=True)
+        print(f"⏱️ Écoulé : {m_el:02d}:{s_el:02d} ({elapsed_min:.1f} min) / {target_min:.0f} min", flush=True)
+        print(f"⌛ Restant : {m_rem:02d}:{s_rem:02d} ({remaining_min:.1f} min)", flush=True)
+        print(f"⚙️ PID : {pid}", flush=True)
+        print("💡 Pour interrompre proprement : `python antigravity/scripts/project_memory_cli.py stop-work`", flush=True)
+        print("============================================================", flush=True)
 
 
 def main():
@@ -2174,6 +2618,17 @@ def main():
     work_parser.add_argument("project_path", help="Chemin relatif ou nom du projet")
     work_parser.add_argument("--duration", "-d", type=int, help="Durée en minutes (défaut : pomodoroDuration de data.json)")
 
+    # stop-work / cancel-work / stop
+    stop_parser = subparsers.add_parser("stop-work", aliases=["cancel-work", "stop"], help="Interrompt proprement la session Pomodoro en cours et enregistre le temps proportionnel")
+    stop_parser.add_argument("project_path", nargs="?", help="Chemin ou nom du projet (optionnel si une session active est détectée)")
+    stop_parser.add_argument("--elapsed", "-e", type=float, help="Temps réellement écoulé en minutes (outrepasse le calcul chronométré automatique)")
+    stop_parser.add_argument("--target-duration", "-d", type=float, help="Durée cible en minutes (si enregistrement manuel)")
+    stop_parser.add_argument("--json", action="store_true", help="Sortie au format JSON")
+
+    # status-work / active-pomodoro / status
+    status_parser = subparsers.add_parser("status-work", aliases=["active-pomodoro", "status"], help="Affiche l'état de la session Pomodoro en cours")
+    status_parser.add_argument("--json", action="store_true", help="Sortie au format JSON")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -2196,6 +2651,10 @@ def main():
         cmd_complete_task(args, data)
     elif args.command == "work":
         cmd_work(args, data)
+    elif args.command in ("stop-work", "cancel-work", "stop"):
+        cmd_stop_work(args, data)
+    elif args.command in ("status-work", "active-pomodoro", "status"):
+        cmd_status_work(args, data)
 
 
 if __name__ == "__main__":
