@@ -228,7 +228,7 @@ export function parseMilestoneTarget(
             daysRemaining,
             raw: trimmed,
             displayText,
-            isOverdue,
+            isOverdue: isOverdue && !isCycleSatisfied,
             isCycleSatisfied,
             urgencyFactor: Math.round(urgencyFactor * 10000) / 10000
         };
@@ -260,19 +260,43 @@ export function parseMilestoneTarget(
 
     const currentDayOfWeek = today.getDay();
     const dayDiff = (targetDayOfWeek - currentDayOfWeek + 7) % 7;
-    let targetDate = new Date(today.getFullYear(), today.getMonth(), today.getDate() + dayDiff, 23, 59, 59);
+    const satisfied = lastSatisfiedDate ? parseDateOnly(lastSatisfiedDate) : null;
 
-    // If lastSatisfiedDate indicates current cycle occurrence is already validated, shift to next occurrence
+    let targetDate: Date;
+    let isOverdue = false;
     let isCycleSatisfied = false;
-    if (lastSatisfiedDate) {
-        const satisfied = parseDateOnly(lastSatisfiedDate);
-        if (satisfied) {
-            let tPrev = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate() - intervalWeeks * 7);
-            while (satisfied.getTime() > tPrev.getTime()) {
+
+    if (dayDiff === 0) {
+        // Today is the milestone day
+        const todayTarget = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59);
+        if (satisfied && satisfied.getTime() >= today.getTime()) {
+            // Already worked today or later -> advance to next occurrence
+            isCycleSatisfied = true;
+            targetDate = new Date(today.getFullYear(), today.getMonth(), today.getDate() + intervalWeeks * 7, 23, 59, 59);
+        } else {
+            // Due today!
+            targetDate = todayTarget;
+            isCycleSatisfied = false;
+            isOverdue = false;
+        }
+    } else {
+        // dayDiff > 0: target day is in the future this week, but check if the PREVIOUS occurrence was satisfied
+        const tPrev = new Date(today.getFullYear(), today.getMonth(), today.getDate() - (7 - dayDiff), 23, 59, 59);
+        const tPrevDay = new Date(tPrev.getFullYear(), tPrev.getMonth(), tPrev.getDate());
+
+        if (!satisfied || satisfied.getTime() < tPrevDay.getTime()) {
+            // Previous milestone was NOT satisfied! OVERDUE!
+            targetDate = tPrev;
+            isOverdue = true;
+            isCycleSatisfied = false;
+        } else {
+            // Previous milestone was satisfied -> advance to next upcoming occurrence
+            let tCurr = new Date(today.getFullYear(), today.getMonth(), today.getDate() + dayDiff, 23, 59, 59);
+            while (satisfied && satisfied.getTime() >= new Date(tCurr.getFullYear(), tCurr.getMonth(), tCurr.getDate()).getTime()) {
                 isCycleSatisfied = true;
-                targetDate = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate() + intervalWeeks * 7, 23, 59, 59);
-                tPrev = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate() - intervalWeeks * 7);
+                tCurr = new Date(tCurr.getFullYear(), tCurr.getMonth(), tCurr.getDate() + intervalWeeks * 7, 23, 59, 59);
             }
+            targetDate = tCurr;
         }
     }
 
@@ -283,8 +307,8 @@ export function parseMilestoneTarget(
 
     let urgencyFactor = 0.0;
     if (isCycleSatisfied) {
-        urgencyFactor = Math.exp(-0.3 * daysRemaining);
-    } else if (daysRemaining <= 0) {
+        urgencyFactor = 0.0;
+    } else if (isOverdue || daysRemaining <= 0) {
         urgencyFactor = 1.0;
     } else {
         urgencyFactor = Math.exp(-0.3 * daysRemaining);
@@ -294,6 +318,8 @@ export function parseMilestoneTarget(
     let displayText = '';
     if (isCycleSatisfied) {
         displayText = `🚩 ${dayName} (validé)`;
+    } else if (isOverdue) {
+        displayText = `🚩 ${dayName} en retard (J+${Math.abs(daysRemaining)})`;
     } else if (daysRemaining === 0) {
         displayText = `🚩 ${dayName} (Aujourd'hui)`;
     } else {
@@ -308,7 +334,7 @@ export function parseMilestoneTarget(
         daysRemaining,
         raw: trimmed,
         displayText,
-        isOverdue: false,
+        isOverdue,
         isCycleSatisfied,
         urgencyFactor: Math.round(urgencyFactor * 10000) / 10000
     };

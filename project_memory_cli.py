@@ -277,6 +277,53 @@ class UniversalMilestoneParser:
         parts = cron_pattern.split()
         min_spec, hour_spec, dom_spec, mon_spec, dow_spec = parts
 
+        # 1. Find most recent past occurrence (within last 366 days)
+        past_target: Optional[datetime] = None
+        for day_offset in range(0, -366, -1):
+            check_date = (now + timedelta(days=day_offset)).date()
+            if not self._match_cron_field(mon_spec, check_date.month, 1, 12):
+                continue
+            if not self._match_cron_field(dom_spec, check_date.day, 1, 31):
+                continue
+            dow_cron = (check_date.weekday() + 1) % 7
+            if not self._match_cron_dow(dow_spec, dow_cron):
+                continue
+
+            target_hours = self._expand_cron_field(hour_spec, 0, 23)
+            target_mins = self._expand_cron_field(min_spec, 0, 59)
+
+            for h in sorted(target_hours, reverse=True):
+                for m in sorted(target_mins, reverse=True):
+                    cand_dt = datetime.combine(check_date, dt_time(h, m))
+                    if cand_dt <= now:
+                        past_target = cand_dt
+                        break
+                if past_target:
+                    break
+            if past_target:
+                break
+
+        # Check if past occurrence was satisfied
+        if past_target:
+            past_sat = False
+            if last_sat_dt and (last_sat_dt >= past_target or last_sat_dt.date() >= past_target.date()):
+                past_sat = True
+            if not past_sat:
+                diff_sec = (past_target - now).total_seconds()
+                days_rem = diff_sec / 86400.0
+                return MilestoneResolution(
+                    raw_expression=raw_expr,
+                    target_datetime=past_target,
+                    days_remaining=round(days_rem, 3),
+                    urgency_factor=1.0,
+                    recurrence_type='cron',
+                    is_overdue=True,
+                    is_cycle_satisfied=False,
+                    cycle_id=f"cron_{past_target.strftime('%Y-%m-%d_%H%M')}",
+                    human_readable=f"Cron {raw_expr} (OVERDUE by {abs(days_rem):.1f}d): target was {past_target.strftime('%A %Y-%m-%d at %H:%M')}"
+                )
+
+        # 2. Find next future occurrence
         found_target: Optional[datetime] = None
         cycle_satisfied = False
 
@@ -297,17 +344,10 @@ class UniversalMilestoneParser:
             for h in sorted(target_hours):
                 for m in sorted(target_mins):
                     cand_dt = datetime.combine(check_date, dt_time(h, m))
-                    if cand_dt < now:
-                        if cand_dt.date() == now.date():
-                            if last_sat_dt and last_sat_dt.date() >= check_date:
-                                cycle_satisfied = True
-                                continue
-                            else:
-                                found_target = cand_dt
-                                break
+                    if cand_dt <= now:
                         continue
 
-                    if last_sat_dt and last_sat_dt >= cand_dt:
+                    if last_sat_dt and (last_sat_dt >= cand_dt or last_sat_dt.date() >= cand_dt.date()):
                         cycle_satisfied = True
                         continue
 
@@ -326,15 +366,16 @@ class UniversalMilestoneParser:
                 urgency_factor=0.0,
                 recurrence_type='cron',
                 is_overdue=False,
-                is_cycle_satisfied=False,
+                is_cycle_satisfied=cycle_satisfied,
                 cycle_id='',
                 human_readable=f"Cron {raw_expr}: No future occurrence within 1 year"
             )
 
         diff = (found_target - now).total_seconds() / 86400.0
         days_rem = max(0.0, diff)
-        urgency = math.exp(-lam * days_rem)
+        urgency = 0.0 if cycle_satisfied else math.exp(-lam * days_rem)
         cycle_id = f"cron_{found_target.strftime('%Y-%m-%d_%H%M')}"
+        status_str = " (validé)" if cycle_satisfied else ""
 
         return MilestoneResolution(
             raw_expression=raw_expr,
@@ -345,7 +386,7 @@ class UniversalMilestoneParser:
             is_overdue=False,
             is_cycle_satisfied=cycle_satisfied,
             cycle_id=cycle_id,
-            human_readable=f"Next cron trigger: {found_target.strftime('%A %Y-%m-%d at %H:%M')}"
+            human_readable=f"Next cron trigger{status_str}: {found_target.strftime('%A %Y-%m-%d at %H:%M')}"
         )
 
     def _match_cron_field(self, spec: str, val: int, min_val: int, max_val: int) -> bool:
@@ -422,7 +463,7 @@ class UniversalMilestoneParser:
         is_overdue = days_rem < 0.0
 
         is_satisfied = False
-        if last_sat_dt and last_sat_dt >= target_dt:
+        if last_sat_dt and (last_sat_dt >= target_dt or last_sat_dt.date() >= target_dt.date()):
             is_satisfied = True
 
         if is_satisfied:
@@ -433,16 +474,17 @@ class UniversalMilestoneParser:
             urgency = math.exp(-lam * days_rem)
 
         cycle_id = f"fixed_{target_dt.strftime('%Y-%m-%d')}"
+        status_str = " (validée)" if is_satisfied else (" (en retard)" if is_overdue else "")
         return MilestoneResolution(
             raw_expression=raw_expr,
             target_datetime=target_dt,
             days_remaining=round(days_rem, 3),
             urgency_factor=round(urgency, 4),
             recurrence_type='fixed_date',
-            is_overdue=is_overdue,
+            is_overdue=is_overdue and not is_satisfied,
             is_cycle_satisfied=is_satisfied,
             cycle_id=cycle_id,
-            human_readable=f"Fixed Milestone: {target_dt.strftime('%Y-%m-%d %H:%M')}"
+            human_readable=f"Fixed Milestone: {target_dt.strftime('%Y-%m-%d %H:%M')}{status_str}"
         )
 
     def _try_parse_day_recurrence(
@@ -455,6 +497,14 @@ class UniversalMilestoneParser:
         clean = expr.strip().lower()
         clean = re.sub(r'^(every|tous\s+les|chaque|each)\s+', '', clean)
         clean = re.sub(r's$', '', clean)
+
+        interval_weeks = 1
+        m_interval = re.search(r'@(\d+)$', clean)
+        if m_interval:
+            parsed_n = int(m_interval.group(1))
+            if parsed_n >= 1:
+                interval_weeks = parsed_n
+                clean = clean[:m_interval.start()].strip()
 
         # Match time / periodicity specifiers like @14, @3, @14:00, at 14:00, à 10h30, 14h00, 14h
         m_time = re.search(r'(?:at|@|\s+à|\s+a)?\s*(\d{1,2})(?:[h:](\d{2})(?::(\d{2}))?|h)?$', clean)
@@ -474,34 +524,108 @@ class UniversalMilestoneParser:
         current_weekday = now.weekday()
 
         days_ahead = (target_weekday - current_weekday) % 7
-        target_dt = datetime.combine(now.date() + timedelta(days=days_ahead), target_time)
+        today = now.date()
 
-        cycle_satisfied = False
-        if last_sat_dt:
-            cycle_start = target_dt - timedelta(days=6, hours=23, minutes=59)
-            if last_sat_dt >= cycle_start:
-                cycle_satisfied = True
+        if days_ahead == 0:
+            target_dt_today = datetime.combine(today, target_time)
+            is_sat = False
+            if last_sat_dt and (last_sat_dt >= target_dt_today or last_sat_dt.date() >= today):
+                is_sat = True
 
-        if cycle_satisfied or (days_ahead == 0 and target_dt < now and (last_sat_dt and last_sat_dt.date() == now.date())):
-            target_dt = target_dt + timedelta(days=7)
-            cycle_satisfied = True
+            if is_sat:
+                target_dt = target_dt_today + timedelta(days=interval_weeks * 7)
+                diff_sec = (target_dt - now).total_seconds()
+                days_rem = max(0.0, diff_sec / 86400.0)
+                urgency = 0.0
+                return MilestoneResolution(
+                    raw_expression=expr,
+                    target_datetime=target_dt,
+                    days_remaining=round(days_rem, 3),
+                    urgency_factor=round(urgency, 4),
+                    recurrence_type='day_recurrence',
+                    is_overdue=False,
+                    is_cycle_satisfied=True,
+                    cycle_id=f"weekly_W{target_dt.strftime('%V')}_{clean.upper()}",
+                    human_readable=f"Recurring {clean.capitalize()} (validé): next {target_dt.strftime('%A %Y-%m-%d at %H:%M')}"
+                )
+            elif now > target_dt_today:
+                # Target was earlier today without satisfaction -> overdue!
+                diff_sec = (target_dt_today - now).total_seconds()
+                days_rem = diff_sec / 86400.0
+                return MilestoneResolution(
+                    raw_expression=expr,
+                    target_datetime=target_dt_today,
+                    days_remaining=round(days_rem, 3),
+                    urgency_factor=1.0,
+                    recurrence_type='day_recurrence',
+                    is_overdue=True,
+                    is_cycle_satisfied=False,
+                    cycle_id=f"weekly_W{target_dt_today.strftime('%V')}_{clean.upper()}",
+                    human_readable=f"Recurring {clean.capitalize()} (OVERDUE today): target was {target_dt_today.strftime('%H:%M')}"
+                )
+            else:
+                # Target is later today
+                diff_sec = (target_dt_today - now).total_seconds()
+                days_rem = max(0.0, diff_sec / 86400.0)
+                urgency = 1.0
+                return MilestoneResolution(
+                    raw_expression=expr,
+                    target_datetime=target_dt_today,
+                    days_remaining=round(days_rem, 3),
+                    urgency_factor=round(urgency, 4),
+                    recurrence_type='day_recurrence',
+                    is_overdue=False,
+                    is_cycle_satisfied=False,
+                    cycle_id=f"weekly_W{target_dt_today.strftime('%V')}_{clean.upper()}",
+                    human_readable=f"Recurring {clean.capitalize()}: today at {target_dt_today.strftime('%H:%M')}"
+                )
+        else:
+            # days_ahead > 0: check if previous occurrence was satisfied
+            t_prev = datetime.combine(today - timedelta(days=7 - days_ahead), target_time)
+            t_next = datetime.combine(today + timedelta(days=days_ahead), target_time)
 
-        diff_sec = (target_dt - now).total_seconds()
-        days_rem = max(0.0, diff_sec / 86400.0)
-        urgency = math.exp(-lam * days_rem)
-        cycle_id = f"weekly_W{target_dt.strftime('%V')}_{clean.upper()}"
+            is_prev_sat = False
+            if last_sat_dt and (last_sat_dt >= t_prev or last_sat_dt.date() >= t_prev.date()):
+                is_prev_sat = True
 
-        return MilestoneResolution(
-            raw_expression=expr,
-            target_datetime=target_dt,
-            days_remaining=round(days_rem, 3),
-            urgency_factor=round(urgency, 4),
-            recurrence_type='day_recurrence',
-            is_overdue=False,
-            is_cycle_satisfied=cycle_satisfied,
-            cycle_id=cycle_id,
-            human_readable=f"Recurring {clean.capitalize()}: next {target_dt.strftime('%A %Y-%m-%d at %H:%M')}"
-        )
+            if not is_prev_sat:
+                # Previous milestone was NOT satisfied -> OVERDUE!
+                diff_sec = (t_prev - now).total_seconds()
+                days_rem = diff_sec / 86400.0
+                return MilestoneResolution(
+                    raw_expression=expr,
+                    target_datetime=t_prev,
+                    days_remaining=round(days_rem, 3),
+                    urgency_factor=1.0,
+                    recurrence_type='day_recurrence',
+                    is_overdue=True,
+                    is_cycle_satisfied=False,
+                    cycle_id=f"weekly_W{t_prev.strftime('%V')}_{clean.upper()}",
+                    human_readable=f"Recurring {clean.capitalize()} (OVERDUE by {abs(days_rem):.1f}d): target was {t_prev.strftime('%A %Y-%m-%d at %H:%M')}"
+                )
+            else:
+                # Previous milestone satisfied -> advance to next upcoming occurrence
+                curr_target = t_next
+                is_cycle_sat = False
+                while last_sat_dt and (last_sat_dt >= curr_target or last_sat_dt.date() >= curr_target.date()):
+                    is_cycle_sat = True
+                    curr_target = curr_target + timedelta(days=interval_weeks * 7)
+
+                diff_sec = (curr_target - now).total_seconds()
+                days_rem = max(0.0, diff_sec / 86400.0)
+                urgency = 0.0 if is_cycle_sat else math.exp(-lam * days_rem)
+                status_str = " (validé)" if is_cycle_sat else ""
+                return MilestoneResolution(
+                    raw_expression=expr,
+                    target_datetime=curr_target,
+                    days_remaining=round(days_rem, 3),
+                    urgency_factor=round(urgency, 4),
+                    recurrence_type='day_recurrence',
+                    is_overdue=False,
+                    is_cycle_satisfied=is_cycle_sat,
+                    cycle_id=f"weekly_W{curr_target.strftime('%V')}_{clean.upper()}",
+                    human_readable=f"Recurring {clean.capitalize()}{status_str}: next {curr_target.strftime('%A %Y-%m-%d at %H:%M')}"
+                )
 
     def _parse_iso_interval(
         self,
@@ -528,14 +652,17 @@ class UniversalMilestoneParser:
 
         curr_dt = start_dt
         rep_count = 0
+        past_target = None
         found_target = None
         cycle_satisfied = False
 
         while True:
             if max_reps is not None and rep_count >= max_reps:
                 break
-            if curr_dt >= now:
-                if last_sat_dt and last_sat_dt >= curr_dt:
+            if curr_dt <= now:
+                past_target = curr_dt
+            else:
+                if last_sat_dt and (last_sat_dt >= curr_dt or last_sat_dt.date() >= curr_dt.date()):
                     cycle_satisfied = True
                 else:
                     found_target = curr_dt
@@ -544,6 +671,26 @@ class UniversalMilestoneParser:
             rep_count += 1
             if rep_count > 1000:
                 break
+
+        # Check if past target was satisfied
+        if past_target:
+            past_sat = False
+            if last_sat_dt and (last_sat_dt >= past_target or last_sat_dt.date() >= past_target.date()):
+                past_sat = True
+            if not past_sat:
+                diff_sec = (past_target - now).total_seconds()
+                days_rem = diff_sec / 86400.0
+                return MilestoneResolution(
+                    raw_expression=expr,
+                    target_datetime=past_target,
+                    days_remaining=round(days_rem, 3),
+                    urgency_factor=1.0,
+                    recurrence_type='iso_interval',
+                    is_overdue=True,
+                    is_cycle_satisfied=False,
+                    cycle_id=f"interval_{past_target.strftime('%Y%m%d_%H%M')}",
+                    human_readable=f"ISO interval {expr} (OVERDUE by {abs(days_rem):.1f}d): target was {past_target.strftime('%Y-%m-%d %H:%M')}"
+                )
 
         if not found_target:
             return MilestoneResolution(
@@ -560,8 +707,9 @@ class UniversalMilestoneParser:
 
         diff_sec = (found_target - now).total_seconds()
         days_rem = max(0.0, diff_sec / 86400.0)
-        urgency = math.exp(-lam * days_rem)
+        urgency = 0.0 if cycle_satisfied else math.exp(-lam * days_rem)
         cycle_id = f"interval_{found_target.strftime('%Y%m%d_%H%M')}"
+        status_str = " (validé)" if cycle_satisfied else ""
 
         return MilestoneResolution(
             raw_expression=expr,
@@ -572,7 +720,7 @@ class UniversalMilestoneParser:
             is_overdue=False,
             is_cycle_satisfied=cycle_satisfied,
             cycle_id=cycle_id,
-            human_readable=f"Next ISO interval target: {found_target.strftime('%Y-%m-%d %H:%M')}"
+            human_readable=f"Next ISO interval target{status_str}: {found_target.strftime('%Y-%m-%d %H:%M')}"
         )
 
     def _parse_iso_duration(self, dur_str: str) -> Optional[timedelta]:

@@ -351,6 +351,8 @@ export default class ReviewModal extends Modal {
 			});
 			if (chosen.milestoneInfo.isCycleSatisfied) {
 				milestoneBadge.addClass('pm-badge-milestone-satisfied');
+			} else if (chosen.milestoneInfo.isOverdue) {
+				milestoneBadge.addClass('pm-badge-milestone-overdue');
 			}
 		}
 
