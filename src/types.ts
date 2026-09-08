@@ -106,6 +106,7 @@ export interface ProjectStatEntry {
 	path: string;
 	timeSpent: number;
 	effectiveScore: number;
+	baseScore?: number;
 	totalReviews: number;
 	color: string;
 }

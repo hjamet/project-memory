@@ -1439,9 +1439,11 @@ def scan_projects(vault_dir, data, cache=None, fast_mode=False, now_dt=None):
     # Sort matching Obsidian plugin review modal priority:
     # 1. Unreviewed projects (totalReviews == 0) first (alphabetical by title)
     # 2. Reviewed projects (totalReviews > 0) by effective score descending
+    # Secondary tie-breaker: base_score descending, then title alphabetical
     projects.sort(key=lambda p: (
         0 if p["total_reviews"] == 0 else 1,
-        -p["effective_score"] if (p["total_reviews"] > 0 and p["effective_score"] is not None) else 0,
+        -p["effective_score"] if (p["total_reviews"] > 0 and p["effective_score"] is not None) else 0.0,
+        -p["base_score"] if (p["total_reviews"] > 0 and p.get("base_score") is not None) else 0.0,
         p["title"].lower()
     ))
     return projects
@@ -2355,7 +2357,11 @@ def cmd_work(args, data):
         p for p in all_projects
         if p["rel_path"] != rel_path and p["full_path"] != abs_path and p["title"] != title
     ]
-    other_projects.sort(key=lambda p: -p["effective_score"] if p.get("effective_score") is not None else 0)
+    other_projects.sort(key=lambda p: (
+        -p["effective_score"] if p.get("effective_score") is not None else 0.0,
+        -p["base_score"] if (p.get("base_score") is not None) else 0.0,
+        p["title"].lower()
+    ))
     top3 = other_projects[:3]
 
     print("============================================================", flush=True)

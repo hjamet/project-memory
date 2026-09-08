@@ -326,7 +326,7 @@ export default class ProjectsMemoryPlugin extends Plugin {
 		const milestoneProp = this.settings.milestoneProperty || 'milestone';
 
 		const newProjects: { file: TFile }[] = [];
-		const existingProjects: { file: TFile; effectiveScore: number }[] = [];
+		const existingProjects: { file: TFile; effectiveScore: number; baseScore: number }[] = [];
 
 		for (const file of mdFiles) {
 			if (this.sessionIgnoredProjects && this.sessionIgnoredProjects.has(file.path)) continue;
@@ -395,7 +395,7 @@ export default class ProjectsMemoryPlugin extends Plugin {
 				}
 			}
 
-			existingProjects.push({ file, effectiveScore });
+			existingProjects.push({ file, effectiveScore, baseScore: baseScore ?? 0 });
 		}
 
 		if (newProjects.length > 0) {
@@ -404,7 +404,7 @@ export default class ProjectsMemoryPlugin extends Plugin {
 		}
 
 		if (existingProjects.length > 0) {
-			existingProjects.sort((a, b) => b.effectiveScore - a.effectiveScore);
+			existingProjects.sort((a, b) => (b.effectiveScore - a.effectiveScore) || ((b.baseScore ?? 0) - (a.baseScore ?? 0)) || a.file.basename.localeCompare(b.file.basename));
 			return existingProjects[0].file.basename;
 		}
 

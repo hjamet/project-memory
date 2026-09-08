@@ -276,8 +276,8 @@ export default class ReviewModal extends Modal {
 			newProjects.sort((a, b) => a.file.basename.localeCompare(b.file.basename));
 			chosen = newProjects[0];
 		} else {
-			// Sort existing projects by effectiveScore descending
-			existingProjects.sort((a, b) => b.effectiveScore - a.effectiveScore);
+			// Sort existing projects by effectiveScore descending, then baseScore descending, then title
+			existingProjects.sort((a, b) => (b.effectiveScore - a.effectiveScore) || ((b.baseScore ?? 0) - (a.baseScore ?? 0)) || a.file.basename.localeCompare(b.file.basename));
 			chosen = existingProjects[0];
 		}
 		// Open the chosen file in the currently active editor pane (do not create a new leaf)

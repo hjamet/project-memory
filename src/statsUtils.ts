@@ -830,6 +830,7 @@ export function calculateProjectStats(statsData: any, plugin: Plugin): ProjectSt
             name: projectName,
             timeSpent,
             effectiveScore,
+            baseScore: currentScore,
             totalReviews: project.totalReviews,
             color
         };

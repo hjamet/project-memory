@@ -320,10 +320,10 @@ export default class StatsModal extends Modal {
                 const tierA = Math.floor(a.similarity * 10);
                 const tierB = Math.floor(b.similarity * 10);
                 if (tierA !== tierB) return tierB - tierA;
-                return b.effectiveScore - a.effectiveScore;
+                return (b.effectiveScore - a.effectiveScore) || ((b.baseScore ?? 0) - (a.baseScore ?? 0)) || a.name.localeCompare(b.name);
             });
         } else {
-            mappedProjectStats.sort((a, b) => b.effectiveScore - a.effectiveScore);
+            mappedProjectStats.sort((a, b) => (b.effectiveScore - a.effectiveScore) || ((b.baseScore ?? 0) - (a.baseScore ?? 0)) || a.name.localeCompare(b.name));
         }
 
         // Apply limits
