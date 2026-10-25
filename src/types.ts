@@ -8,6 +8,7 @@ export interface ReviewHistoryEntry {
 	date: string;
 	action: string; // "less-often" | "ok" | "more-often" | "finished" | "emergency"
 	scoreAfter: number;
+	duration_minutes?: number;
 }
 
 export interface WorkSessionEntry {
@@ -18,6 +19,19 @@ export interface WorkSessionEntry {
 	interrupted?: boolean;
 }
 
+export interface AgentStats {
+	effectiveScore?: number;
+	baseScore?: number;
+	totalReviews: number;
+	currentScore: number;
+	rotationBonus?: number;
+	lastReviewDate?: string;
+	sessionsSinceHuman?: number;
+	lastSatisfiedMilestoneDate?: string;
+	reviewHistory: ReviewHistoryEntry[];
+	recentWorkDates?: (string | WorkSessionEntry)[];
+}
+
 export interface ProjectStats {
 	currentScore: number; // current pertinence score stored in the persistent stats payload
 	rotationBonus: number;
@@ -26,6 +40,7 @@ export interface ProjectStats {
 	lastSatisfiedMilestoneDate?: string;
 	reviewHistory: ReviewHistoryEntry[];
 	recentWorkDates?: (string | WorkSessionEntry)[];
+	agent?: AgentStats;
 }
 
 export interface GlobalStats {
@@ -84,8 +99,8 @@ export interface TemporalBonusResult {
 export interface ChartDataset {
 	label: string;
 	data: number[];
-	borderColor: string;
-	backgroundColor: string;
+	borderColor: string | string[];
+	backgroundColor: string | string[];
 	fill?: boolean;
 	tension?: number;
 }
@@ -114,7 +129,12 @@ export interface ProjectStatEntry {
 export interface ProcessedChartData {
 	realScoreData: ChartData;
 	effectiveScoreData: ChartData;
-	dailyActionsData: ChartData;
+	dailyActionsData: ChartData; // conservé pour rétro-compatibilité éventuelle
+	dailyTimeData: ChartData;    // Temps passé par jour (minutes) empilé par projet
+	projectTimePieData: ChartData; // Camembert du temps passé par projet sur la période
+	projectTimeBarData: ChartData; // Bar plot du temps passé par projet sur la période
+	periodTotalMinutes: number;
+	periodTotalSessions: number;
 }
 
 export interface StatsProcessingOptions {
@@ -124,4 +144,5 @@ export interface StatsProcessingOptions {
 	selectedProjects: Set<string>;
 	plugin: Plugin;
 	deadlines: { [path: string]: string };
+	mode?: 'human' | 'agent';
 }

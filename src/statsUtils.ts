@@ -575,10 +575,34 @@ export function computeSearchSimilarity(projectName: string, searchTerm: string)
 }
 
 /**
+ * Helper to extract project statistics source depending on active mode ('human' | 'agent').
+ * Excludes projects that do not belong to the requested mode.
+ */
+export function getProjectStatSource(projectEntry: any, mode: 'human' | 'agent' = 'human'): any {
+    if (!projectEntry) return null;
+    if (mode === 'agent') {
+        const agent = projectEntry.agent;
+        if (agent && ((agent.totalReviews && agent.totalReviews > 0) || (agent.reviewHistory && agent.reviewHistory.length > 0))) {
+            return agent;
+        }
+        return null;
+    }
+    // mode === 'human'
+    const isPureAgentOnly = (projectEntry.totalReviews || 0) === 0 &&
+        (!projectEntry.reviewHistory || projectEntry.reviewHistory.length === 0) &&
+        (projectEntry.agent?.totalReviews && projectEntry.agent.totalReviews > 0);
+    if (isPureAgentOnly) {
+        return null;
+    }
+    return projectEntry;
+}
+
+/**
  * Process stats data into chart-ready datasets using the replay mechanism.
  */
 export function processStatsData(statsData: any, options: StatsProcessingOptions): ProcessedChartData {
     const { daysLimit, projectsLimit, searchTerm, selectedProjects, plugin, deadlines } = options;
+    const mode = options.mode || 'human';
 
     // Generate date labels
     let dateLabels: string[] = [];
@@ -593,17 +617,36 @@ export function processStatsData(statsData: any, options: StatsProcessingOptions
     }
 
     // Filter archived projects
-    const allProjectNames = filterArchivedProjects(Object.keys(statsData.projects), plugin);
+    const allProjectPaths = filterArchivedProjects(Object.keys(statsData.projects), plugin);
 
-    if (allProjectNames.length === 0) {
-        console.warn('statsUtils: No projects found in stats data');
-        throw new Error('No projects found in statistics data');
+    // Filter eligible projects for the requested mode
+    const allEligiblePaths: string[] = [];
+    for (const p of allProjectPaths) {
+        if (getProjectStatSource(statsData.projects[p], mode) !== null) {
+            allEligiblePaths.push(p);
+        }
+    }
+
+    if (allEligiblePaths.length === 0) {
+        return {
+            realScoreData: { labels: dateLabels, datasets: [] },
+            effectiveScoreData: { labels: dateLabels, datasets: [] },
+            dailyActionsData: { labels: dateLabels, datasets: [] },
+            dailyTimeData: { labels: dateLabels, datasets: [] },
+            projectTimePieData: { labels: [], datasets: [] },
+            projectTimeBarData: { labels: [], datasets: [] },
+            periodTotalMinutes: 0,
+            periodTotalSessions: 0
+        };
     }
 
     // Map projects with scores and search relevance
-    const mappedProjects = allProjectNames.map(projectPath => {
+    const mappedProjects = allEligiblePaths.map(projectPath => {
         const projectName = projectPath.split('/').pop()?.replace('.md', '') || projectPath;
-        const score = statsData.projects[projectPath].currentScore + statsData.projects[projectPath].rotationBonus;
+        const source = getProjectStatSource(statsData.projects[projectPath], mode);
+        const score = (source && typeof source.effectiveScore === 'number')
+            ? source.effectiveScore
+            : (((source?.currentScore ?? 0) + (source?.rotationBonus ?? 0)));
         const similarity = computeSearchSimilarity(projectName, searchTerm);
         return { path: projectPath, score, similarity, projectName };
     });
@@ -634,6 +677,7 @@ export function processStatsData(statsData: any, options: StatsProcessingOptions
     const realScoreData: ChartData = { labels: dateLabels, datasets: [] };
     const effectiveScoreData: ChartData = { labels: dateLabels, datasets: [] };
     const dailyActionsData: ChartData = { labels: dateLabels, datasets: [] };
+    const dailyTimeData: ChartData = { labels: dateLabels, datasets: [] };
 
     // --- REPLAY LOGIC ---
 
@@ -641,38 +685,54 @@ export function processStatsData(statsData: any, options: StatsProcessingOptions
         date: Date;
         projectPath: string;
         scoreAfter: number;
+        duration_minutes?: number;
     }
 
     const allEvents: ReviewEvent[] = [];
-    Object.keys(statsData.projects).forEach(path => {
-        const proj = statsData.projects[path];
-        proj.reviewHistory.forEach((r: any) => {
-            allEvents.push({ date: new Date(r.date), projectPath: path, scoreAfter: r.scoreAfter });
-        });
+    allEligiblePaths.forEach(path => {
+        const proj = getProjectStatSource(statsData.projects[path], mode);
+        if (proj && proj.reviewHistory && Array.isArray(proj.reviewHistory)) {
+            proj.reviewHistory.forEach((r: any) => {
+                allEvents.push({
+                    date: new Date(r.date),
+                    projectPath: path,
+                    scoreAfter: r.scoreAfter,
+                    duration_minutes: r.duration_minutes
+                });
+            });
+        }
     });
     allEvents.sort((a, b) => a.date.getTime() - b.date.getTime());
 
     // Setup replay state
     const projectStates: { [path: string]: { currentScore: number; bonusSnapshot: number } } = {};
-    Object.keys(statsData.projects).forEach(p => {
+    allEligiblePaths.forEach(p => {
+        const s = getProjectStatSource(statsData.projects[p], mode);
         projectStates[p] = {
-            currentScore: statsData.projects[p]?.currentScore ?? 0,
+            currentScore: s?.currentScore ?? s?.baseScore ?? 0,
             bonusSnapshot: 0
         };
     });
     let globalRotationAccumulator = 0;
-    const rotationBonusAmount = (plugin as any).settings.rotationBonus || 0.3;
+    const rotationBonusAmount = (plugin as any).settings?.rotationBonus || 0.3;
+    const pomodoroDuration = mode === 'agent' ? 45 : ((plugin as any)?.settings?.pomodoroDuration || 45);
 
     // Prepare dataset maps
     const realScoreMap: { [path: string]: (number | null)[] } = {};
     const effectiveScoreMap: { [path: string]: (number | null)[] } = {};
     const dailyActionsMap: { [path: string]: number[] } = {};
+    const dailyTimeMap: { [path: string]: number[] } = {};
+    const projectPeriodMinutes: { [path: string]: number } = {};
+    let periodTotalMinutes = 0;
+    let periodTotalSessions = 0;
 
     projectNames.forEach(p => {
         const len = dateLabels.length;
         realScoreMap[p] = new Array(len).fill(null);
         effectiveScoreMap[p] = new Array(len).fill(null);
         dailyActionsMap[p] = new Array(len).fill(0);
+        dailyTimeMap[p] = new Array(len).fill(0);
+        projectPeriodMinutes[p] = 0;
     });
 
     // Generate time steps
@@ -710,7 +770,7 @@ export function processStatsData(statsData: any, options: StatsProcessingOptions
             projectStates[event.projectPath].bonusSnapshot = globalRotationAccumulator;
             globalRotationAccumulator += rotationBonusAmount;
 
-            // Count daily actions
+            // Count daily actions and daily minutes
             if (projectNames.includes(event.projectPath)) {
                 let bucketIndex = -1;
                 if (daysLimit <= 1) {
@@ -722,6 +782,13 @@ export function processStatsData(statsData: any, options: StatsProcessingOptions
                 }
                 if (bucketIndex !== -1 && dailyActionsMap[event.projectPath]) {
                     dailyActionsMap[event.projectPath][bucketIndex]++;
+                    const dur = (typeof event.duration_minutes === 'number' && event.duration_minutes > 0)
+                        ? event.duration_minutes
+                        : pomodoroDuration;
+                    dailyTimeMap[event.projectPath][bucketIndex] += dur;
+                    projectPeriodMinutes[event.projectPath] += dur;
+                    periodTotalMinutes += dur;
+                    periodTotalSessions++;
                 }
             }
 
@@ -739,6 +806,39 @@ export function processStatsData(statsData: any, options: StatsProcessingOptions
             effectiveScoreMap[path][timeIndex] = effective;
             realScoreMap[path][timeIndex] = state.currentScore;
         });
+    });
+
+    // Count recentWorkDates non-duplicated with reviewHistory
+    projectNames.forEach(path => {
+        const source = getProjectStatSource(statsData.projects[path], mode);
+        if (source?.recentWorkDates && Array.isArray(source.recentWorkDates)) {
+            for (const rw of source.recentWorkDates) {
+                const rwDateStr = typeof rw === 'string' ? rw : (rw?.date ? String(rw.date) : '');
+                const d = new Date(rwDateStr);
+                if (isNaN(d.getTime())) continue;
+                const minuteKey = d.toISOString().slice(0, 16);
+                const alreadyInHistory = (source.reviewHistory || []).some((rh: any) => rh.date && String(rh.date).slice(0, 16) === minuteKey);
+                if (!alreadyInHistory) {
+                    let bucketIndex = -1;
+                    if (daysLimit <= 1) {
+                        const h = d.getHours().toString().padStart(2, '0') + ':00';
+                        if (dateMap[h] !== undefined) bucketIndex = dateMap[h];
+                    } else {
+                        const ds = d.toISOString().split('T')[0];
+                        if (dateMap[ds] !== undefined) bucketIndex = dateMap[ds];
+                    }
+                    if (bucketIndex !== -1) {
+                        const dur = (typeof rw === 'object' && typeof rw.duration_minutes === 'number' && rw.duration_minutes > 0)
+                            ? rw.duration_minutes
+                            : pomodoroDuration;
+                        dailyTimeMap[path][bucketIndex] += dur;
+                        projectPeriodMinutes[path] += dur;
+                        periodTotalMinutes += dur;
+                        periodTotalSessions++;
+                    }
+                }
+            }
+        }
     });
 
     // Build datasets
@@ -770,68 +870,179 @@ export function processStatsData(statsData: any, options: StatsProcessingOptions
             borderColor: color,
             backgroundColor: color + '80'
         });
+
+        dailyTimeData.datasets.push({
+            label: projectName,
+            data: dailyTimeMap[projectPath],
+            borderColor: color,
+            backgroundColor: color + '80'
+        });
     });
 
-    if (dailyActionsData.datasets.length === 0) {
-        throw new Error('No datasets generated for daily actions chart');
-    }
+    const projectLabels = projectNames.map(p => p.split('/').pop()?.replace('.md', '') || p);
+    const projectMinutesData = projectNames.map(p => Math.round(projectPeriodMinutes[p] || 0));
 
-    return { realScoreData, effectiveScoreData, dailyActionsData };
+    const projectTimePieData: ChartData = {
+        labels: projectLabels,
+        datasets: [{
+            label: 'Temps passé (min)',
+            data: projectMinutesData,
+            borderColor: colors[0] || '#3b82f6',
+            backgroundColor: colors.map(c => c + 'cc')
+        }]
+    };
+
+    const projectTimeBarData: ChartData = {
+        labels: projectLabels,
+        datasets: [{
+            label: 'Temps passé (min)',
+            data: projectMinutesData,
+            borderColor: colors[0] || '#3b82f6',
+            backgroundColor: colors.map(c => c + 'cc')
+        }]
+    };
+
+    return {
+        realScoreData,
+        effectiveScoreData,
+        dailyActionsData,
+        dailyTimeData,
+        projectTimePieData,
+        projectTimeBarData,
+        periodTotalMinutes: Math.round(periodTotalMinutes),
+        periodTotalSessions
+    };
 }
 
 /**
  * Calculate stats (time spent, priority, reviews) for each project card.
  */
-export function calculateProjectStats(statsData: any, plugin: Plugin): ProjectStatEntry[] {
-    const projectNames = filterArchivedProjects(Object.keys(statsData.projects), plugin);
-    const colors = generateColors(projectNames.length);
+export function calculateProjectStats(
+    statsData: any,
+    plugin: Plugin,
+    mode: 'human' | 'agent' = 'human',
+    daysLimit?: number
+): ProjectStatEntry[] {
+    if (!statsData || !statsData.projects) return [];
 
+    const allPaths = filterArchivedProjects(Object.keys(statsData.projects), plugin);
+    const eligiblePaths: string[] = [];
+    const eligibleSources: { [path: string]: any } = {};
+
+    for (const projectPath of allPaths) {
+        const source = getProjectStatSource(statsData.projects[projectPath], mode);
+        if (source) {
+            eligiblePaths.push(projectPath);
+            eligibleSources[projectPath] = source;
+        }
+    }
+
+    const colors = generateColors(eligiblePaths.length);
     const pluginAny = plugin as any;
     const weight = Number(pluginAny?.settings?.recencyPenaltyWeight ?? 0.5);
     const rf = Number(pluginAny?.settings?.rapprochementFactor ?? pluginAny?.settings?.rapprochmentFactor ?? 0.2);
     const nowMs = Date.now();
     const sixHoursMs = 6 * 60 * 60 * 1000;
+    const pomodoroDuration = mode === 'agent' ? 45 : (pluginAny?.settings?.pomodoroDuration || 45);
 
-    return projectNames.map((projectPath, index) => {
-        const project = statsData.projects[projectPath];
+    const cutoffDate = (daysLimit && daysLimit > 0)
+        ? new Date(nowMs - daysLimit * 24 * 60 * 60 * 1000)
+        : null;
+
+    return eligiblePaths.map((projectPath, index) => {
+        const source = eligibleSources[projectPath];
         const projectName = projectPath.split('/').pop()?.replace('.md', '') || projectPath;
         const color = colors[index];
-        const pomodoroDuration = pluginAny?.settings?.pomodoroDuration || 25;
-        const timeSpent = (project.totalReviews || 0) * pomodoroDuration;
-        const currentScore = project.currentScore ?? 0;
-        let effectiveScore = currentScore + (project.rotationBonus || 0);
 
-        // Malus temporel cumulatif 6h
-        if (isFinite(weight) && weight > 0 && isFinite(rf) && project.recentWorkDates && Array.isArray(project.recentWorkDates) && project.recentWorkDates.length > 0) {
-            let K = 0;
-            for (const item of project.recentWorkDates) {
-                const dateStr = typeof item === 'string' ? item : (item && typeof item === 'object' && 'date' in item ? String(item.date) : '');
-                let ratio = 1.0;
-                if (typeof item === 'object' && item !== null) {
-                    if ('ratio' in item && typeof item.ratio === 'number') ratio = item.ratio;
-                    else if ('weight' in item && typeof item.weight === 'number') ratio = item.weight;
-                }
-                const d = new Date(dateStr);
-                const t = d.getTime();
-                if (isNaN(t)) continue;
-                const deltaMs = nowMs - t;
-                if (deltaMs >= -180000 && deltaMs < sixHoursMs) {
-                    const deltaHours = Math.max(0, deltaMs / (1000 * 60 * 60));
-                    const ki = (isFinite(ratio) ? ratio : 1.0) * (1.0 - (deltaHours / 6.0));
-                    K += ki;
+        // Calcul du temps passé
+        let timeSpent = 0;
+        const reviewedMinutes = new Set<string>();
+
+        if (source.reviewHistory && Array.isArray(source.reviewHistory)) {
+            for (const r of source.reviewHistory) {
+                const d = new Date(r.date);
+                if (isNaN(d.getTime())) continue;
+                if (!cutoffDate || d >= cutoffDate) {
+                    const dur = (typeof r.duration_minutes === 'number' && r.duration_minutes > 0)
+                        ? r.duration_minutes
+                        : pomodoroDuration;
+                    timeSpent += dur;
+                    reviewedMinutes.add(d.toISOString().slice(0, 16));
                 }
             }
-            const malus = K * rf * weight * Math.max(0, currentScore - 1.0);
-            effectiveScore = Math.max(1, effectiveScore - malus);
         }
+
+        if (source.recentWorkDates && Array.isArray(source.recentWorkDates)) {
+            for (const item of source.recentWorkDates) {
+                const dateStr = typeof item === 'string' ? item : (item && typeof item === 'object' && 'date' in item ? String(item.date) : '');
+                const d = new Date(dateStr);
+                if (isNaN(d.getTime())) continue;
+                if (!cutoffDate || d >= cutoffDate) {
+                    const minuteKey = d.toISOString().slice(0, 16);
+                    if (!reviewedMinutes.has(minuteKey)) {
+                        const dur = (typeof item === 'object' && typeof item.duration_minutes === 'number' && item.duration_minutes > 0)
+                            ? item.duration_minutes
+                            : pomodoroDuration;
+                        timeSpent += dur;
+                    }
+                }
+            }
+        }
+
+        // Si pas de daysLimit (ou fallback total), compléter si reviewHistory incomplet par rapport à totalReviews
+        if (!cutoffDate) {
+            const histLen = source.reviewHistory ? source.reviewHistory.length : 0;
+            const totReviews = source.totalReviews || 0;
+            if (totReviews > histLen) {
+                timeSpent += (totReviews - histLen) * pomodoroDuration;
+            } else if (timeSpent === 0 && totReviews > 0) {
+                timeSpent = totReviews * pomodoroDuration;
+            }
+        }
+
+        // Score effectif
+        const currentScore = source.currentScore ?? source.baseScore ?? 0;
+        let effectiveScore: number;
+
+        if (typeof source.effectiveScore === 'number' && isFinite(source.effectiveScore)) {
+            effectiveScore = source.effectiveScore;
+        } else {
+            effectiveScore = currentScore + (source.rotationBonus || 0);
+            // Malus temporel cumulatif 6h
+            if (isFinite(weight) && weight > 0 && isFinite(rf) && source.recentWorkDates && Array.isArray(source.recentWorkDates) && source.recentWorkDates.length > 0) {
+                let K = 0;
+                for (const item of source.recentWorkDates) {
+                    const dateStr = typeof item === 'string' ? item : (item && typeof item === 'object' && 'date' in item ? String(item.date) : '');
+                    let ratio = 1.0;
+                    if (typeof item === 'object' && item !== null) {
+                        if ('ratio' in item && typeof item.ratio === 'number') ratio = item.ratio;
+                        else if ('weight' in item && typeof item.weight === 'number') ratio = item.weight;
+                    }
+                    const d = new Date(dateStr);
+                    const t = d.getTime();
+                    if (isNaN(t)) continue;
+                    const deltaMs = nowMs - t;
+                    if (deltaMs >= -180000 && deltaMs < sixHoursMs) {
+                        const deltaHours = Math.max(0, deltaMs / (1000 * 60 * 60));
+                        const ki = (isFinite(ratio) ? ratio : 1.0) * (1.0 - (deltaHours / 6.0));
+                        K += ki;
+                    }
+                }
+                const malus = K * rf * weight * Math.max(0, currentScore - 1.0);
+                effectiveScore = Math.max(1, effectiveScore - malus);
+            }
+        }
+
+        const baseScore = source.baseScore ?? currentScore;
+        const totalReviews = source.totalReviews ?? (source.reviewHistory ? source.reviewHistory.length : 0);
 
         return {
             path: projectPath,
             name: projectName,
-            timeSpent,
+            timeSpent: Math.round(timeSpent),
             effectiveScore,
-            baseScore: currentScore,
-            totalReviews: project.totalReviews,
+            baseScore,
+            totalReviews,
             color
         };
     });
