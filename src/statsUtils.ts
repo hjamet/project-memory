@@ -451,24 +451,46 @@ export function interpolateMissingValues(data: number[]): void {
 // ─── Plugin-Dependent Functions ──────────────────────────────────────────
 
 /**
- * Filter out archived project paths using the plugin's archive tag setting.
+ * Filter active project paths matching configured projectTags and excluding archived ones.
+ * Exactly aligns with CLI scan_projects logic and ReviewModal criteria.
  */
 export function filterArchivedProjects(projectPaths: string[], plugin: Plugin): string[] {
-    const archiveTag = (plugin as any).settings.archiveTag ?? '';
-    const normalizedArchiveTag = archiveTag ? (archiveTag.startsWith('#') ? archiveTag.slice(1) : archiveTag) : '';
+    const archiveTag = ((plugin as any).settings?.archiveTag ?? '').replace(/^#/, '').toLowerCase();
+    const projectTagsStr = (plugin as any).settings?.projectTags ?? '';
+    const tagsArray = projectTagsStr
+        .split(',')
+        .map((t: string) => t.trim().replace(/^#/, '').toLowerCase())
+        .filter(Boolean);
 
     return projectPaths.filter(projectPath => {
+        if (projectPath.toLowerCase().startsWith('advance/') || projectPath.toLowerCase().startsWith('advance\\')) {
+            return false;
+        }
+
         const file = plugin.app.vault.getAbstractFileByPath(projectPath);
         if (!file || !(file instanceof TFile)) return false;
 
-        if (normalizedArchiveTag) {
-            const cache = plugin.app.metadataCache.getFileCache(file);
-            if (cache) {
-                const allTags = getAllTags(cache) || [];
-                const hasArchive = allTags.some(t => t.replace(/^#/, '') === normalizedArchiveTag);
-                if (hasArchive) return false;
-            }
+        const cache = plugin.app.metadataCache.getFileCache(file);
+        if (!cache) return false;
+
+        const fm = (cache as any)?.frontmatter;
+        const typeVal = String(fm?.type || '').toLowerCase();
+        if (typeVal === 'autonomous-tldr' || typeVal === 'autonomous-log') {
+            return false;
         }
+
+        const allTags = (getAllTags(cache) || []).map(t => t.replace(/^#/, '').toLowerCase());
+
+        if (archiveTag) {
+            const hasArchive = allTags.some(t => t === archiveTag || t.startsWith(archiveTag + '/'));
+            if (hasArchive) return false;
+        }
+
+        if (tagsArray.length > 0) {
+            const hasProjectTag = allTags.some(t => tagsArray.some((pt: string) => t === pt || t.startsWith(pt + '/')));
+            if (!hasProjectTag) return false;
+        }
+
         return true;
     });
 }

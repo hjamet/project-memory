@@ -1279,8 +1279,6 @@ def sync_vault_cache(vault_dir=VAULT_DIR, cache_path=CACHE_PATH, fast_mode=False
         dirs[:] = [d for d in dirs if not d.startswith(".") and d.lower() not in EXCLUDED_DIRS]
         for f in files:
             if f.endswith(".md") and f.lower() not in SYSTEM_FILES:
-                if f.startswith("🤖 ") or f.startswith("🤖 Avancées Autonomes") or f.startswith("🤖 Journal Autonome"):
-                    continue
                 abs_p = os.path.join(root, f)
                 rel_p = os.path.relpath(abs_p, vault_dir).replace("\\", "/")
                 try:
@@ -1742,10 +1740,6 @@ def scan_projects(vault_dir, data, cache=None, fast_mode=False, now_dt=None, per
     for rel_path, proj_stat in stats_projects.items():
         if rel_path.lower().startswith("advance/") or rel_path.lower().startswith("advance\\"):
             continue
-        fn = os.path.basename(rel_path)
-        if fn.startswith("🤖 ") or fn.startswith("🤖 Avancées Autonomes") or fn.startswith("🤖 Journal Autonome"):
-            continue
-
         abs_path = os.path.join(vault_dir, rel_path.replace("/", os.sep))
         norm_rel = rel_path.replace("\\", "/")
 
@@ -1891,9 +1885,6 @@ def scan_projects(vault_dir, data, cache=None, fast_mode=False, now_dt=None, per
         if rel_p in known_paths:
             continue
         if rel_p.lower().startswith("advance/") or rel_p.lower().startswith("advance\\"):
-            continue
-        fn = os.path.basename(rel_p)
-        if fn.startswith("🤖 ") or fn.startswith("🤖 Avancées Autonomes") or fn.startswith("🤖 Journal Autonome"):
             continue
         if cached.get("type") in ("autonomous-tldr", "autonomous-log"):
             continue
@@ -4982,8 +4973,6 @@ def cmd_migrate_checkboxes(args, data) -> None:
         candidate_files.extend(list(notes_dir.glob("*.md")))
 
     for f in vault_dir.glob("*.md"):
-        if f.name.startswith("🤖"):
-            continue
         candidate_files.append(f)
 
     # Récupérer les items AIVC existants via _get_aivc_memories()
@@ -5013,7 +5002,7 @@ def cmd_migrate_checkboxes(args, data) -> None:
 
     for md_file in sorted(candidate_files):
         rel_p = str(md_file.relative_to(vault_dir)).replace("\\", "/")
-        if rel_p.lower().startswith("advance/") or md_file.name.startswith("🤖"):
+        if rel_p.lower().startswith("advance/"):
             continue
 
         try:

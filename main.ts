@@ -47,7 +47,20 @@ export default class ProjectsMemoryPlugin extends Plugin {
 	public pomodoroGlobalIntervalId: number | null = null;
 
 	private async loadPersistedContainer(): Promise<{ payload: PersistedPayload; isLegacy: boolean }> {
-		const raw = await this.loadData();
+		const adapter = this.app.vault.adapter;
+		const dataJsonPath = `${this.manifest.dir}/data.json`;
+		let raw: any = null;
+		try {
+			if (await adapter.exists(dataJsonPath)) {
+				const content = await adapter.read(dataJsonPath);
+				raw = JSON.parse(content);
+			}
+		} catch (e) {
+			console.warn('ProjectsMemory: Failed to read data.json directly via adapter, falling back to loadData()', e);
+		}
+		if (!raw) {
+			raw = await this.loadData();
+		}
 		if (raw && typeof raw === 'object') {
 			if ('settings' in raw || 'stats' in raw) {
 				return { payload: { ...(raw as PersistedPayload) }, isLegacy: false };
