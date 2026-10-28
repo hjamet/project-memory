@@ -24,9 +24,11 @@ import shutil
 import glob
 import argparse
 import atexit
+import uuid
+import hashlib
 from datetime import datetime, date, time as dt_time, timedelta, timezone
 from dataclasses import dataclass
-from typing import Optional, Union, List, Any, Dict, Tuple
+from typing import Optional, Union, List, Any, Dict, Tuple, Set
 from pathlib import Path
 
 if sys.platform == "win32":
@@ -49,6 +51,9 @@ def find_vault_dir(start_dir):
     candidate = os.path.abspath(os.path.join(start_dir, "..", "VoiceNotes"))
     if os.path.exists(os.path.join(candidate, ".obsidian")):
         return candidate
+    for cand in [Path.home() / "Documents" / "VoiceNotes", Path(r"C:\Users\Jamet\Documents\VoiceNotes"), Path(r"C:\Users\hjamet\Documents\VoiceNotes")]:
+        if (cand / ".obsidian").is_dir():
+            return str(cand)
     return os.path.abspath(os.path.join(start_dir, "..", ".."))
 
 
@@ -1274,7 +1279,7 @@ def sync_vault_cache(vault_dir=VAULT_DIR, cache_path=CACHE_PATH, fast_mode=False
         dirs[:] = [d for d in dirs if not d.startswith(".") and d.lower() not in EXCLUDED_DIRS]
         for f in files:
             if f.endswith(".md") and f.lower() not in SYSTEM_FILES:
-                if f.startswith("🤖 Avancées Autonomes") or f.startswith("🤖 Journal Autonome"):
+                if f.startswith("🤖 ") or f.startswith("🤖 Avancées Autonomes") or f.startswith("🤖 Journal Autonome"):
                     continue
                 abs_p = os.path.join(root, f)
                 rel_p = os.path.relpath(abs_p, vault_dir).replace("\\", "/")
@@ -1738,7 +1743,7 @@ def scan_projects(vault_dir, data, cache=None, fast_mode=False, now_dt=None, per
         if rel_path.lower().startswith("advance/") or rel_path.lower().startswith("advance\\"):
             continue
         fn = os.path.basename(rel_path)
-        if fn.startswith("🤖 Avancées Autonomes") or fn.startswith("🤖 Journal Autonome"):
+        if fn.startswith("🤖 ") or fn.startswith("🤖 Avancées Autonomes") or fn.startswith("🤖 Journal Autonome"):
             continue
 
         abs_path = os.path.join(vault_dir, rel_path.replace("/", os.sep))
@@ -1764,9 +1769,8 @@ def scan_projects(vault_dir, data, cache=None, fast_mode=False, now_dt=None, per
             milestone_str = ", ".join(m_val) if isinstance(m_val, list) else str(m_val)
             is_agent_only = bool(fm.get("agent_only", False))
 
-        # Filtrage agent_only : exclu pour humain, inclus pour agent
-        if not is_agent and is_agent_only:
-            continue
+        # agent_only supprimé : tous les projets (y compris Dream) apparaissent pour l'humain
+        pass
 
         has_project_tag = any(pt in tags or any(t.startswith(pt + "/") for t in tags) for pt in project_tags)
         has_archive_tag = any(at in tags or any(t.startswith(at + "/") for t in tags) for at in done_tags)
@@ -1889,12 +1893,12 @@ def scan_projects(vault_dir, data, cache=None, fast_mode=False, now_dt=None, per
         if rel_p.lower().startswith("advance/") or rel_p.lower().startswith("advance\\"):
             continue
         fn = os.path.basename(rel_p)
-        if fn.startswith("🤖 Avancées Autonomes") or fn.startswith("🤖 Journal Autonome"):
+        if fn.startswith("🤖 ") or fn.startswith("🤖 Avancées Autonomes") or fn.startswith("🤖 Journal Autonome"):
             continue
         if cached.get("type") in ("autonomous-tldr", "autonomous-log"):
             continue
-        if cached.get("agent_only") and not is_agent:
-            continue
+        # agent_only supprimé : tous les projets apparaissent pour l'humain
+        pass
 
         tags = set(cached.get("tags", []))
         has_project_tag = any(pt in tags or any(t.startswith(pt + "/") for t in tags) for pt in project_tags)
@@ -1977,12 +1981,21 @@ def _rewrite_paths_for_current_pc(text: str) -> str:
     In markdown text, replaces multi-PC user paths (Jamet / hjamet)
     with the actual Path.home() of the current PC.
     Uses forward slashes in file:/// URLs and backslashes in Windows paths outside URLs.
+    Guarantees no missing slash before .gemini can appear.
     """
     if not text:
         return text
     home_path = Path.home()
     home_fwd = str(home_path).replace("\\", "/").rstrip("/") + "/"
     home_back = str(home_path).replace("/", "\\").rstrip("\\") + "\\"
+
+    # Fix any existing missing slash before .gemini in raw text
+    text = re.sub(
+        r"([A-Za-z]:[\\/]Users[\\/][^\\/]+)\.(gemini)",
+        lambda m: f"{m.group(1)}\\.{m.group(2)}" if "\\" in m.group(1) else f"{m.group(1)}/.{m.group(2)}",
+        text,
+        flags=re.IGNORECASE
+    )
 
     # 1. file:/// or file:// URLs -> forward slashes
     text = re.sub(
@@ -2004,6 +2017,20 @@ def _rewrite_paths_for_current_pc(text: str) -> str:
     text = re.sub(
         r"(?<!file://)(?<!file:///)[A-Za-z]:/Users/(?:Jamet|hjamet)/",
         lambda m: home_back,
+        text,
+        flags=re.IGNORECASE
+    )
+
+    # 4. Final safety guard: ensure no Users\<user>.gemini or Users/<user>.gemini without separator
+    text = re.sub(
+        r"([A-Za-z]:\\Users\\[^\\]+)\.(gemini)",
+        r"\1\\.\2",
+        text,
+        flags=re.IGNORECASE
+    )
+    text = re.sub(
+        r"((?:file:///?)[A-Za-z]:/Users/[^/]+)\.(gemini)",
+        r"\1/.\2",
         text,
         flags=re.IGNORECASE
     )
@@ -2084,6 +2111,7 @@ def _get_aivc_memories() -> List[Tuple[Any, Dict[str, Any]]]:
                             cache[key] = {"mtime": mtime, "data": None}
 
                     if item_data is not None:
+                        item_data["source_file"] = entry.path
                         mem_id = item_data.get("id")
                         if mem_id:
                             if mem_id in seen_ids:
@@ -2121,6 +2149,583 @@ def _invalidate_aivc_cache() -> None:
     _AIVC_MEMORIES_CACHE = None
 
 
+_AIVC_REMOTE_RESTORE_CACHE: Optional[Set[str]] = None
+_AIVC_REMOTE_SYNC_DISABLED: bool = False
+_AIVC_REMOTE_MISSING_DIRTY: bool = False
+_AIVC_SESSION_TRIED_PATHS: Set[str] = set()
+_AIVC_REMOTE_BRAIN_INDEX: Optional[Set[str]] = None
+
+
+def _normalize_local_path(p: Union[str, Path]) -> Path:
+    r"""
+    Normalise les chemins locaux pour gérer les contextes multi-PC (ex: C:\Users\hjamet\... -> C:\Users\Jamet\...).
+    Remappe systématiquement le répertoire utilisateur vers Path.home().
+    """
+    p_str = str(p)
+    m = re.match(r'^(?:[a-zA-Z]:[\\/][Uu]sers[\\/][^\\/]+|[\\/]?home[\\/][^\\/]+)[\\/](.*)$', p_str)
+    if m:
+        return Path.home() / m.group(1)
+    if p_str.startswith("~/") or p_str.startswith("~\\"):
+        return Path.home() / p_str[2:]
+    return Path(p_str)
+
+
+def _get_remote_missing_cache(storage_root: Path) -> Set[str]:
+    global _AIVC_REMOTE_RESTORE_CACHE
+    if _AIVC_REMOTE_RESTORE_CACHE is not None:
+        return _AIVC_REMOTE_RESTORE_CACHE
+    cache_file = storage_root / "rclone_missing_blobs.json"
+    _AIVC_REMOTE_RESTORE_CACHE = set()
+    if cache_file.is_file():
+        try:
+            with open(cache_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    _AIVC_REMOTE_RESTORE_CACHE = set(data)
+        except Exception:
+            pass
+    return _AIVC_REMOTE_RESTORE_CACHE
+
+
+def _record_remote_missing_blob(storage_root: Path, gdrive_path: str, flush: bool = False) -> None:
+    global _AIVC_REMOTE_MISSING_DIRTY
+    cache = _get_remote_missing_cache(storage_root)
+    if gdrive_path and gdrive_path not in cache:
+        cache.add(gdrive_path)
+        _AIVC_REMOTE_MISSING_DIRTY = True
+    if flush and _AIVC_REMOTE_MISSING_DIRTY:
+        cache_file = storage_root / "rclone_missing_blobs.json"
+        try:
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump(sorted(list(cache)), f, ensure_ascii=False)
+            _AIVC_REMOTE_MISSING_DIRTY = False
+        except Exception:
+            pass
+
+
+def _auto_restore_aivc_blobs_for_active_items(
+    active_items: List[Dict[str, Any]],
+    mem_list: List[Dict[str, Any]],
+    allow_remote: bool = False
+) -> List[str]:
+    r"""
+    For active user_items (done == False), inspect their linked memories' file_changes
+    and any .gemini/antigravity/brain/<conv_id>/<file> referenced in details.
+    If the target local file does not exist on disk and a blob is found in AIVC BlobStore
+    (either via change.blob_hash or matching filename in SQLite core_index.db),
+    extract and write the file to local disk.
+    If allow_remote is True (disabled by default for fast CLI listing), falls back
+    to rclone with a strict timeout, circuit-breaker, remote brain index and negative caching.
+    Returns list of restored local file paths.
+    """
+    global _AIVC_REMOTE_SYNC_DISABLED, _AIVC_SESSION_TRIED_PATHS, _AIVC_REMOTE_BRAIN_INDEX
+    storage_root = Path.home() / ".aivc" / "storage"
+    blobs_dir = storage_root / "blobs"
+    db_path = storage_root / "core_index.db"
+    if not storage_root.exists() or not blobs_dir.exists():
+        return []
+
+    restored = []
+    sqlite_conn = None
+    if db_path.exists():
+        try:
+            import sqlite3
+            sqlite_conn = sqlite3.connect(str(db_path))
+        except Exception:
+            sqlite_conn = None
+
+    try:
+        def _try_restore(local_path: Path, blob_hash: Optional[str] = None, filename: Optional[str] = None) -> bool:
+            global _AIVC_REMOTE_SYNC_DISABLED, _AIVC_REMOTE_BRAIN_INDEX
+            local_path = _normalize_local_path(local_path)
+            if local_path.is_file():
+                return False
+
+            path_key = str(local_path).replace("\\", "/").lower()
+            if path_key in _AIVC_SESSION_TRIED_PATHS:
+                return False
+            _AIVC_SESSION_TRIED_PATHS.add(path_key)
+
+            content = None
+            # 1. From direct blob_hash
+            if blob_hash and (blobs_dir / blob_hash).is_file():
+                try:
+                    content = (blobs_dir / blob_hash).read_bytes()
+                except OSError:
+                    content = None
+
+            # 2. From SQLite match by filename
+            if content is None and sqlite_conn is not None:
+                fn = filename or local_path.name
+                try:
+                    cur = sqlite_conn.cursor()
+                    cur.execute(
+                        "SELECT blob_hash FROM file_changes WHERE (path LIKE ? OR path LIKE ?) AND blob_hash IS NOT NULL LIMIT 1",
+                        (f"%/{fn}", f"%\\{fn}")
+                    )
+                    row = cur.fetchone()
+                    if row and row[0] and (blobs_dir / row[0]).is_file():
+                        content = (blobs_dir / row[0]).read_bytes()
+                except Exception:
+                    pass
+
+            if content is not None:
+                try:
+                    local_path.parent.mkdir(parents=True, exist_ok=True)
+                    local_path.write_bytes(content)
+                    restored.append(str(local_path))
+                    return True
+                except OSError:
+                    pass
+
+            # 3. Fallback: rclone copyto from Google Drive if allowed, not tripped, and under brain
+            if not allow_remote or _AIVC_REMOTE_SYNC_DISABLED:
+                return False
+
+            norm_str = str(local_path).replace("\\", "/")
+            match = re.search(
+                r"\.?gemini/antigravity/brain/([a-f0-9\-]+)/([^/]+)$",
+                norm_str,
+                re.IGNORECASE,
+            )
+            if match:
+                conv_id = match.group(1)
+                fn = match.group(2)
+                gdrive_path = f"gdrive:AIVC_Sync/files/.gemini/antigravity/brain/{conv_id}/{fn}"
+                missing_cache = _get_remote_missing_cache(storage_root)
+                if gdrive_path in missing_cache:
+                    return False
+
+                if not shutil.which("rclone"):
+                    _AIVC_REMOTE_SYNC_DISABLED = True
+                    return False
+
+                # Interroger une seule fois par session l'index distant des fichiers brain/
+                if _AIVC_REMOTE_BRAIN_INDEX is None:
+                    try:
+                        import subprocess
+                        cmd_lsf = ["rclone", "lsf", "-R", "--files-only", "gdrive:AIVC_Sync/files/.gemini/antigravity/brain"]
+                        res_lsf = subprocess.run(cmd_lsf, capture_output=True, text=True, timeout=10)
+                        if res_lsf.returncode == 0:
+                            _AIVC_REMOTE_BRAIN_INDEX = {
+                                line.strip().replace("\\", "/").lower()
+                                for line in res_lsf.stdout.splitlines()
+                                if line.strip()
+                            }
+                        else:
+                            err = (res_lsf.stderr or "").lower()
+                            if "directory not found" in err or res_lsf.returncode == 3:
+                                _AIVC_REMOTE_SYNC_DISABLED = True
+                            _AIVC_REMOTE_BRAIN_INDEX = set()
+                    except subprocess.TimeoutExpired:
+                        _AIVC_REMOTE_SYNC_DISABLED = True
+                        _AIVC_REMOTE_BRAIN_INDEX = set()
+                    except Exception:
+                        _AIVC_REMOTE_BRAIN_INDEX = set()
+
+                remote_file_key = f"{conv_id}/{fn}".lower()
+                if remote_file_key not in _AIVC_REMOTE_BRAIN_INDEX:
+                    _record_remote_missing_blob(storage_root, gdrive_path)
+                    return False
+
+                try:
+                    import subprocess
+                    local_path.parent.mkdir(parents=True, exist_ok=True)
+                    cmd = ["rclone", "copyto", "--retries", "1", "--timeout", "3s", "--contimeout", "2s", gdrive_path, str(local_path)]
+                    res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+                    if res.returncode == 0 and local_path.is_file():
+                        restored.append(str(local_path))
+                        return True
+                    else:
+                        _record_remote_missing_blob(storage_root, gdrive_path)
+                        err = (res.stderr or "").lower()
+                        if "directory not found" in err or res.returncode == 3:
+                            _AIVC_REMOTE_SYNC_DISABLED = True
+                except subprocess.TimeoutExpired:
+                    _record_remote_missing_blob(storage_root, gdrive_path)
+                    _AIVC_REMOTE_SYNC_DISABLED = True
+                except Exception:
+                    pass
+
+            return False
+
+        # 1. Scan file_changes of linked memories
+        for mem in mem_list:
+            changes = mem.get("changes", [])
+            for ch in changes:
+                p_str = ch.get("path", "") if isinstance(ch, dict) else str(ch)
+                if not p_str:
+                    continue
+                if ".gemini" in p_str and "antigravity" in p_str and "brain" in p_str:
+                    local_p = _normalize_local_path(p_str)
+                    _try_restore(local_p, blob_hash=ch.get("blob_hash") if isinstance(ch, dict) else None, filename=local_p.name)
+
+        # 2. Scan details of active items for .gemini/antigravity/brain/<id>/<file>
+        brain_pattern = re.compile(
+            r"(?:file:///?(?:[A-Za-z]:)?[\\/]|~/|[A-Za-z]:[\\/])?\.?gemini[\\/]antigravity[\\/]brain[\\/]([a-f0-9\-]+)[\\/]([^\s\)\"\'<>`:]+)",
+            re.IGNORECASE
+        )
+        for it in active_items:
+            details = it.get("details", "")
+            for match in brain_pattern.finditer(details):
+                conv_id = match.group(1)
+                raw_fn = match.group(2).rstrip("\\/.,")
+                local_p = Path.home() / ".gemini" / "antigravity" / "brain" / conv_id / raw_fn
+                local_p = _normalize_local_path(local_p)
+                _try_restore(local_p, filename=raw_fn)
+
+    finally:
+        _record_remote_missing_blob(storage_root, "", flush=True)
+        if sqlite_conn is not None:
+            try:
+                sqlite_conn.close()
+            except Exception:
+                pass
+
+    return restored
+
+
+def _clean_text_tokens(text: str) -> Set[str]:
+    t = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
+    t = re.sub(r'<[^>]+>', ' ', t)
+    t = re.sub(r'[*_`#]', '', t)
+    t = re.sub(r'\[[^\]]*\]', ' ', t)
+    t = re.sub(r'[^\w\s]', ' ', t.lower())
+    words = t.split()
+    stopwords = {
+        "pour", "dans", "avec", "sur", "les", "des", "une", "par", "est",
+        "qui", "que", "aux", "son", "ses", "leur", "leurs", "cette", "cet",
+        "the", "and", "for", "with", "from", "that", "this", "suite", "afin",
+        "tout", "tous", "toutes", "mais", "donc", "nous", "vous", "ils", "elles",
+        "faire", "fait", "plus", "très", "bien", "aussi", "comme", "apres", "après",
+        "jeudi", "vendredi", "lundi", "mardi", "mercredi", "semaine", "internef"
+    }
+    return {w for w in words if len(w) >= 3 and w not in stopwords}
+
+
+def _extract_identifiers(text: str) -> Set[str]:
+    ids = set(re.findall(r'\b\d{5,8}\b', text))
+    for m in re.finditer(r'#(\d{4,8})\b', text):
+        ids.add(m.group(1))
+    for m in re.finditer(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b', text):
+        ids.add(m.group(1).lower())
+    return ids
+
+
+def _is_matching_task(checkbox_text: str, candidate_task: str, candidate_details: str = "") -> bool:
+    ids1 = _extract_identifiers(checkbox_text)
+    ids2 = _extract_identifiers(candidate_task + " " + candidate_details)
+    common_ids = ids1.intersection(ids2)
+    numeric_ids = {i for i in common_ids if i.isdigit() and len(i) >= 5}
+    if numeric_ids:
+        return True
+
+    def _norm(s: str) -> str:
+        s = re.sub(r'[*_`#]', '', s)
+        s = re.sub(r'\[[a-zA-Z0-9\-]+\]', '', s)
+        s = re.sub(r'^(?:[🔴🟢🟡🟠⚪\s]|👤\s*\[[^\]]+\])+', '', s)
+        s = re.sub(r'[^\w\s]', ' ', s.lower())
+        return " ".join(s.split())
+
+    n_cb = _norm(checkbox_text)
+    n_cand = _norm(candidate_task)
+    if n_cb and n_cand:
+        if n_cb == n_cand:
+            return True
+        if len(n_cand) >= 5 and (n_cand in n_cb or n_cb in n_cand):
+            return True
+
+    tokens1 = _clean_text_tokens(checkbox_text)
+    tokens_task = _clean_text_tokens(candidate_task)
+    if not tokens1 or not tokens_task:
+        return False
+
+    if tokens1 == tokens_task:
+        return True
+    if tokens_task.issubset(tokens1) or tokens1.issubset(tokens_task):
+        return True
+
+    intersection = tokens1.intersection(tokens_task)
+    overlap_task = len(intersection) / len(tokens_task)
+    overlap_cb = len(intersection) / len(tokens1)
+
+    if len(intersection) >= 2 and (overlap_task >= 0.35 or overlap_cb >= 0.35):
+        return True
+    elif len(intersection) == 1 and (len(tokens1) == 1 or len(tokens_task) == 1):
+        return True
+
+    m_bold = re.search(r'\*\*([^*]+)\*\*', checkbox_text)
+    if m_bold:
+        bold_tokens = _clean_text_tokens(m_bold.group(1))
+        if bold_tokens:
+            if bold_tokens == tokens_task or tokens_task.issubset(bold_tokens) or bold_tokens.issubset(tokens_task):
+                return True
+            bold_intersection = bold_tokens.intersection(tokens_task)
+            if len(bold_intersection) >= 1 and (len(bold_intersection) / len(bold_tokens) >= 0.35 or len(bold_intersection) / len(tokens_task) >= 0.35):
+                return True
+
+    return False
+
+
+
+def _parse_checkbox_task(line: str) -> Tuple[str, str]:
+    m = re.match(r"^\s*[-*+]\s+\[ \]\s+(.*)$", line)
+    raw = m.group(1).strip() if m else line.strip()
+
+    raw = re.sub(r'^(?:\*\*\[[a-zA-Z0-9\-]+\]\*\*|\[[a-zA-Z0-9\-]+\])\s*', '', raw).strip()
+    raw = re.sub(r'^(?:[🔴🟢🟡🟠⚪\s]|👤\s*\[[^\]]+\])+', '', raw).strip()
+
+    m_bold_colon = re.match(r'^\*\*([^*]+)\*\*\s*:\s*(.*)$', raw)
+    if m_bold_colon:
+        return m_bold_colon.group(1).strip(), m_bold_colon.group(2).strip()
+
+    m_bold = re.match(r'^\*\*([^*]+)\*\*\s*(.*)$', raw)
+    if m_bold and m_bold.group(2).strip():
+        return m_bold.group(1).strip(), m_bold.group(2).strip()
+    elif m_bold:
+        return m_bold.group(1).strip(), ""
+
+    if " : " in raw:
+        parts = raw.split(" : ", 1)
+        if not parts[0].endswith("http") and not parts[0].endswith("https"):
+            return parts[0].strip(), parts[1].strip()
+
+    return raw, ""
+
+
+def _extract_project_roadmap(
+    note_path: str,
+    aivc_roadmap_items: List[Dict[str, Any]],
+    deliverable_items: Optional[List[Dict[str, Any]]] = None,
+    done_items: Optional[List[Dict[str, Any]]] = None,
+    target_portable: str = "",
+    title: str = "",
+    project_mems: Optional[List[Dict[str, Any]]] = None
+) -> List[str]:
+    """
+    Extracts pending roadmap tasks from AIVC roadmap items and note checkboxes.
+    Automatically registers unrecorded checkboxes into AIVC commit storage with [r-xxxx-N] IDs.
+    Deduplicates against active deliverables and already completed (done == True) tasks.
+    """
+    if deliverable_items is None:
+        deliverable_items = []
+    if done_items is None:
+        done_items = []
+    if project_mems is None:
+        project_mems = []
+
+    seen_iids: Set[str] = set()
+    for it in aivc_roadmap_items + deliverable_items + done_items:
+        iid = (it.get("id") or "").strip().lower()
+        if iid:
+            seen_iids.add(iid)
+            if iid.startswith("r-"):
+                seen_iids.add(iid[2:])
+
+    # 1. Read open checkboxes from note
+    new_checkbox_tasks: List[Tuple[str, str]] = []
+    if os.path.exists(note_path):
+        try:
+            with open(note_path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+            lines = content.splitlines()
+            in_roadmap_section = False
+            found_roadmap_heading = False
+            section_lines = []
+
+            for line in lines:
+                stripped = line.strip()
+                if re.match(r"^##\s+.*(?:feuille de route|roadmap|road\s*map|statut des tâches)", stripped, re.IGNORECASE):
+                    in_roadmap_section = True
+                    found_roadmap_heading = True
+                    continue
+                elif stripped.startswith("## ") and in_roadmap_section:
+                    in_roadmap_section = False
+                    break
+
+                if in_roadmap_section:
+                    section_lines.append(line)
+
+            search_lines = section_lines if found_roadmap_heading else lines
+
+            in_details = False
+            for line in search_lines:
+                stripped = line.strip()
+                if "<details" in stripped.lower():
+                    in_details = True
+                if "</details>" in stripped.lower():
+                    in_details = False
+                    continue
+                if in_details:
+                    continue
+
+                if re.match(r"^\s*[-*+]\s+\[ \]\s+", line):
+                    task_text, details_text = _parse_checkbox_task(line)
+                    if not task_text:
+                        continue
+
+                    # Check explicit ID
+                    m_id = re.search(r'\[(r-[a-zA-Z0-9\-]+|[a-zA-Z0-9\-]+)\]', line)
+                    if m_id and m_id.group(1).lower() in seen_iids:
+                        continue
+
+                    # Check duplicate with deliverable_items
+                    is_dup = False
+                    for d in deliverable_items:
+                        if _is_matching_task(line, d.get("task", ""), d.get("details", "")):
+                            is_dup = True
+                            break
+                    if is_dup:
+                        continue
+
+                    # Check duplicate with done_items
+                    for d in done_items:
+                        if _is_matching_task(line, d.get("task", ""), d.get("details", "")):
+                            is_dup = True
+                            break
+                    if is_dup:
+                        continue
+
+                    # Check duplicate with existing aivc_roadmap_items
+                    for r in aivc_roadmap_items:
+                        if _is_matching_task(line, r.get("task", ""), r.get("details", "")):
+                            is_dup = True
+                            break
+                    if is_dup:
+                        continue
+
+                    # Check duplicate with newly discovered tasks in this pass
+                    for t_prev, _d_prev in new_checkbox_tasks:
+                        if _is_matching_task(line, t_prev, _d_prev):
+                            is_dup = True
+                            break
+                    if is_dup:
+                        continue
+
+                    new_checkbox_tasks.append((task_text, details_text))
+        except Exception:
+            pass
+
+    # 2. If new checkboxes found, auto-register them in AIVC commit storage
+    if new_checkbox_tasks:
+        storage_root = Path.home() / ".aivc" / "storage"
+        commits_dir = storage_root / "commits"
+        commits_dir.mkdir(parents=True, exist_ok=True)
+
+        portable_for_uuid = target_portable or (_to_portable_path(note_path) if note_path else title)
+        target_commit_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"aivc:roadmap:{portable_for_uuid.lower()}"))
+        target_commit_path = commits_dir / f"{target_commit_id}.json"
+
+        # S'il n'existe pas encore sous cet UUID, réutiliser un commit existant STRICTEMENT ET UNIQUEMENT s'il ne touche que cette note maîtresse
+        if not target_commit_path.is_file():
+            target_norm = (target_portable or _to_portable_path(note_path)).lower()
+            for mem in reversed(project_mems):
+                sf = mem.get("source_file")
+                if sf and os.path.isfile(sf) and "commits" in sf:
+                    all_paths = set()
+                    for c in mem.get("changes", []):
+                        p = c.get("path") if isinstance(c, dict) else str(c)
+                        if p:
+                            all_paths.add(_to_portable_path(p).lower())
+                    for p in mem.get("read_files", []):
+                        p_str = p.get("path") if isinstance(p, dict) else str(p)
+                        if p_str:
+                            all_paths.add(_to_portable_path(p_str).lower())
+                    for p in mem.get("edited_files", []):
+                        p_str = p.get("path") if isinstance(p, dict) else str(p)
+                        if p_str:
+                            all_paths.add(_to_portable_path(p_str).lower())
+                    notes_paths = [p for p in all_paths if p.endswith(".md") and ("notes/" in p or p.endswith("/aivc.md"))]
+                    if len(notes_paths) == 1 and notes_paths[0] == target_norm:
+                        target_commit_path = Path(sf)
+                        target_commit_id = mem.get("id")
+                        break
+
+
+        commit_data: Dict[str, Any] = {}
+        if target_commit_path.is_file():
+            try:
+                with open(target_commit_path, "r", encoding="utf-8") as f:
+                    commit_data = json.load(f)
+            except Exception:
+                commit_data = {}
+
+        if not commit_data:
+            commit_data = {
+                "id": target_commit_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "title": f"[Roadmap] {title or Path(note_path).stem}",
+                "journal": f"Roadmap synchronisée pour {title or Path(note_path).stem}",
+                "user_items": [],
+                "note": f"Roadmap {title or Path(note_path).stem}",
+                "parent_id": "",
+                "machine_id": os.environ.get("COMPUTERNAME", ""),
+                "urls": [],
+                "changes": [
+                    {
+                        "path": target_portable or _to_portable_path(note_path),
+                        "action": "roadmap"
+                    }
+                ]
+            }
+
+        hash6 = (commit_data.get("id") or target_commit_id or "roadmp")[:6]
+        existing_indices: Set[int] = set()
+        for it in commit_data.get("user_items", []):
+            iid_str = it.get("id", "")
+            m_idx = re.search(r'-(\d+)$', iid_str)
+            if m_idx:
+                existing_indices.add(int(m_idx.group(1)))
+        next_idx = max(existing_indices) + 1 if existing_indices else 1
+
+        if "user_items" not in commit_data:
+            commit_data["user_items"] = []
+
+        for task_t, details_t in new_checkbox_tasks:
+            new_id = f"r-{hash6}-{next_idx}"
+            next_idx += 1
+            new_it = {
+                "id": new_id,
+                "task_status": "new",
+                "kind": "roadmap",
+                "task": task_t,
+                "details": details_t,
+                "done": False
+            }
+            commit_data["user_items"].append(new_it)
+            aivc_roadmap_items.append(new_it)
+
+        try:
+            with open(target_commit_path, "w", encoding="utf-8") as f:
+                json.dump(commit_data, f, indent=2, ensure_ascii=False)
+            _invalidate_aivc_cache()
+            tldr_cache = storage_root / "tldr_items_cache.json"
+            if tldr_cache.exists():
+                tldr_cache.unlink()
+        except Exception:
+            pass
+
+    # 3. Format all aivc_roadmap_items with **[r-xxxx-N]** prefix
+    roadmap_lines: List[str] = []
+    for it in aivc_roadmap_items:
+        iid = it.get("id", "").strip()
+        task = it.get("task", "").strip()
+        details = it.get("details", "").strip()
+
+        prefix = f"**[{iid}]** " if iid else ""
+        line = f"- [ ] {prefix}{task}"
+        if details:
+            if "\n" not in details.strip():
+                line += f" : {details.strip()}"
+            else:
+                first_line = details.strip().splitlines()[0].strip()
+                if first_line and not first_line.startswith("```") and not first_line.startswith("Source :"):
+                    line += f" : {first_line}"
+        roadmap_lines.append(line)
+
+    return roadmap_lines
+
+
 def _sync_and_render_aivc_tldr(
     vault_root: str,
     rel_path: str,
@@ -2139,7 +2744,8 @@ def _sync_and_render_aivc_tldr(
     # Search in AIVC memories
     memories = _get_aivc_memories()
     had_aivc_items = False
-    items_map: Dict[str, Tuple[Dict[str, Any], bool]] = {}
+    items_map: Dict[str, Tuple[Dict[str, Any], bool, Dict[str, Any]]] = {}
+    project_mems: List[Dict[str, Any]] = []
 
     for _ts, mem in memories:
         concerns = False
@@ -2168,66 +2774,87 @@ def _sync_and_render_aivc_tldr(
                     break
 
         if concerns:
+            project_mems.append(mem)
             user_items = mem.get("user_items", [])
             if user_items:
                 had_aivc_items = True
                 for idx, item in enumerate(user_items, start=1):
                     iid = item.get("id") or f"{mem.get('id', 'item')[:6]}-{idx}"
-                    is_done = bool(item.get("done", False))
-                    items_map[iid] = (item, is_done)
+                    st = item.get("task_status")
+                    if st == "validated":
+                        is_done = True
+                    elif st in ("new", "await_validation"):
+                        is_done = False
+                    else:
+                        is_done = bool(item.get("done", False))
+                    items_map[iid] = (item, is_done, mem)
 
-    # Filter active (not done) items
-    active_items = [it for iid, (it, is_done) in items_map.items() if not is_done]
-    n_active = len(active_items)
+    # Filter active and done items
+    active_items = [it for iid, (it, is_done, mem) in items_map.items() if not is_done]
+    done_items = [it for iid, (it, is_done, mem) in items_map.items() if is_done]
+    active_mems = [mem for iid, (it, is_done, mem) in items_map.items() if not is_done]
+
+    # Separate deliverables vs roadmap
+    deliverable_items = [
+        it for it in active_items
+        if it.get("task_status") == "await_validation" or (not it.get("task_status") and it.get("kind") != "roadmap" and it.get("type") != "roadmap")
+    ]
+    roadmap_aivc_items = [
+        it for it in active_items
+        if it.get("task_status") == "new" or (not it.get("task_status") and (it.get("kind") == "roadmap" or it.get("type") == "roadmap"))
+    ]
+    n_deliverables = len(deliverable_items)
 
     advance_dir = ADVANCE_TLDR_DIR
-    tldr_adv = os.path.join(advance_dir, f"🤖 Avancées Autonomes {title}.md")
-    tldr_notes = os.path.join(vault_root, "notes", f"🤖 Avancées Autonomes {title}.md")
+    tldr_adv = os.path.join(advance_dir, f"🤖 {title}.md")
+    old_tldr_adv = os.path.join(advance_dir, f"🤖 Avancées Autonomes {title}.md")
+    if os.path.exists(old_tldr_adv):
+        try:
+            os.remove(old_tldr_adv)
+        except OSError:
+            pass
 
-    # Cas A : il existe N > 0 items user_items non terminés dans AIVC pour ce projet
-    if n_active > 0:
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        rel_clean = rel_path.replace("\\", "/")
-        rel_no_ext = rel_clean[:-3] if rel_clean.endswith(".md") else rel_clean
+    # Auto-restore missing brain files from CAS blobs for active items (local-only fast path by default)
+    if n_deliverables > 0:
+        remote_enabled = os.environ.get("AIVC_RESTORE_REMOTE", "").strip().lower() in ("1", "true", "yes")
+        _auto_restore_aivc_blobs_for_active_items(deliverable_items, active_mems, allow_remote=remote_enabled)
+
+    # Extract and synchronize roadmap
+    roadmap_tasks = _extract_project_roadmap(
+        note_path=target_full,
+        aivc_roadmap_items=roadmap_aivc_items,
+        deliverable_items=deliverable_items,
+        done_items=done_items,
+        target_portable=target_portable,
+        title=title,
+        project_mems=project_mems
+    )
+    n_roadmap = len(roadmap_tasks)
+
+    # Render document if there are active deliverables OR active roadmap items
+    if n_deliverables > 0 or n_roadmap > 0:
         abs_note_forward = os.path.abspath(target_full).replace("\\", "/")
 
-        sec1_lines = []
-        for it in active_items:
-            iid = it.get("id", "")
-            task = it.get("task", "").strip()
-            sec1_lines.append(f"- [ ] **[{iid}]** {task}")
-        sec1_text = "\n".join(sec1_lines)
+        sections = [
+            f"# 🤖 {title}\n\n[📄 {title} (Note Maîtresse)](file:///{abs_note_forward})"
+        ]
 
-        sec2_parts = []
-        for it in active_items:
-            iid = it.get("id", "")
-            task = it.get("task", "").strip()
-            details = it.get("details", "").strip()
-            sec2_parts.append(f"### [{iid}] {task}\n{details}")
-        sec2_text = "\n\n".join(sec2_parts)
+        if n_deliverables > 0:
+            sec2_parts = []
+            for it in deliverable_items:
+                iid = it.get("id", "")
+                task = it.get("task", "").strip()
+                details = it.get("details", "").strip()
+                sec2_parts.append(f"### [{iid}] {task}\n{details}")
+            sec2_text = "\n\n".join(sec2_parts)
+            sections.append(f"## ⚡ Décisions & Livrables Prêts\n\n{sec2_text}")
 
-        doc = (
-            f"---\n"
-            f'parent: "[[{rel_no_ext}]]"\n'
-            f"type: autonomous-tldr\n"
-            f"autonomous_unvalidated: true\n"
-            f"updated: {today_str}\n"
-            f"---\n\n"
-            f"# 🤖 Quelles Sont les Avancées Autonomes et Décisions Prêtes sur {title} ?\n\n"
-            f"[{title} (Note Maîtresse)](file:///{abs_note_forward})\n\n"
-            f"> [!WARNING]\n"
-            f"> **🤖 TRAVAIL AUTONOME D'ANTIGRAVITY — GÉNÉRÉ AUTOMATIQUEMENT DEPUIS AIVC (`0 token`)**\n"
-            f"> Cette vue affiche uniquement les tâches et livrables non encore traités (`done == False`). "
-            f'Dès qu\'un point `[id]` est validé ou écarté via `complete_user_items(["id"])`, il quitte automatiquement cette note.\n\n'
-            f"---\n\n"
-            f"## ⚖️ 1. Quelles sont les tâches et décisions à prendre par Henri ?\n\n"
-            f"{sec1_text}\n\n"
-            f"---\n\n"
-            f"## ⚡ 2. Quels sont les détails et artefacts concernés par chaque point ?\n\n"
-            f"{sec2_text}\n"
-        )
+        if n_roadmap > 0:
+            sections.append(f"## 📋 Roadmap du Projet\n\n" + "\n".join(roadmap_tasks))
 
+        doc = "\n\n---\n\n".join(sections) + "\n"
         doc = _rewrite_paths_for_current_pc(doc)
+
         os.makedirs(advance_dir, exist_ok=True)
         write_needed = True
         if os.path.exists(tldr_adv):
@@ -2242,19 +2869,20 @@ def _sync_and_render_aivc_tldr(
             with open(tldr_adv, "w", encoding="utf-8") as f:
                 f.write(doc)
 
-        return (tldr_adv, n_active)
+        return (tldr_adv, n_deliverables if n_deliverables > 0 else n_roadmap)
 
-    # Cas B : le projet avait des user_items dans AIVC mais ils sont tous done == True (N == 0)
-    if had_aivc_items and n_active == 0:
+    # No deliverables and no roadmap tasks
+    if had_aivc_items:
         if os.path.exists(tldr_adv):
             try:
-                with open(tldr_adv, "r", encoding="utf-8") as f:
-                    content = f.read()
-                if "GÉNÉRÉ AUTOMATIQUEMENT DEPUIS AIVC" in content or "autonomous-tldr" in content:
-                    os.remove(tldr_adv)
+                os.remove(tldr_adv)
             except OSError:
                 pass
-        return (None, 0)
+        if os.path.exists(old_tldr_adv):
+            try:
+                os.remove(old_tldr_adv)
+            except OSError:
+                pass
 
     return (None, 0)
 
@@ -2265,6 +2893,9 @@ def enrich_project_auto_fields(p, vault_dir=VAULT_DIR):
     Sets p['auto_note_path'] and p['auto_link'].
     Returns auto_disp.
     """
+    if "auto_disp" in p:
+        return p["auto_disp"]
+
     n = p.get("agent_sessions_since_human", 0)
     rel_path = p.get("rel_path", "")
     title = p.get("title", "")
@@ -2288,6 +2919,7 @@ def enrich_project_auto_fields(p, vault_dir=VAULT_DIR):
         p["auto_note_path"] = None
         p["auto_link"] = None
 
+    p["auto_disp"] = auto_disp
     return auto_disp
 
 
@@ -2301,13 +2933,9 @@ def format_project_table(projects, verbose=False):
         title_links.append(f"[{p['title']}](file:///{abs_forward})")
         auto_disps.append(enrich_project_auto_fields(p, vault_dir=VAULT_DIR))
 
-    title_width = max(32, max((len(tl) for tl in title_links), default=32))
-    auto_width = max(6, max((len(ad) for ad in auto_disps), default=6))
-
     if verbose:
-        header = f"{'Rank':<5} {'Title':<{title_width}} {'Eff.Score':<10} {'Base':<6} {'Rot.':<6} {'Dead.Urg':<9} {'Milest.Urg':<10} {'Malus(K)':<11} {'Deadline':<11} {'Milestone':<14} {'Reviews':<7}"
-        lines.append(header)
-        lines.append("-" * len(header))
+        lines.append("| Rank | Title | Eff.Score | Base | Rot. | Dead.Urg | Milest.Urg | Malus(K) | Deadline | Milestone | Reviews |")
+        lines.append("| :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
         for idx, (p, title_link) in enumerate(zip(projects, title_links), 1):
             rev_str = "NEW" if p["total_reviews"] == 0 else str(p["total_reviews"])
             eff_str = f"{p['effective_score']:.2f}" if p['effective_score'] is not None else "N/A"
@@ -2329,13 +2957,11 @@ def format_project_table(projects, verbose=False):
             if len(milestone_disp) > 13:
                 milestone_disp = milestone_disp[:11] + ".."
 
-            line = f"{idx:<5} {title_link:<{title_width}} {eff_str:<10} {base_str:<6} {rot_str:<6} {dead_urg_str:<9} {mile_urg_str:<10} {malus_str:<11} {deadline_disp:<11} {milestone_disp:<14} {rev_str:<7}"
-            lines.append(line)
+            lines.append(f"| {idx} | {title_link} | {eff_str} | {base_str} | {rot_str} | {dead_urg_str} | {mile_urg_str} | {malus_str} | {deadline_disp} | {milestone_disp} | {rev_str} |")
     else:
         # Affichage épuré par défaut : Rank, Title, Score, Auto, Deadline, Milestone
-        header = f"{'Rank':<5} {'Title':<{title_width}} {'Score':<8} {'Auto':<{auto_width}} {'Deadline':<12} {'Milestone':<16}"
-        lines.append(header)
-        lines.append("-" * len(header))
+        lines.append("| Rank | Title | Score | Auto | Deadline | Milestone |")
+        lines.append("| :---: | :--- | :---: | :---: | :---: | :---: |")
         for idx, (p, title_link, auto_disp) in enumerate(zip(projects, title_links, auto_disps), 1):
             eff_str = f"{p['effective_score']:.2f}" if p['effective_score'] is not None else "N/A"
 
@@ -2347,8 +2973,7 @@ def format_project_table(projects, verbose=False):
             if len(milestone_disp) > 15:
                 milestone_disp = milestone_disp[:13] + ".."
 
-            line = f"{idx:<5} {title_link:<{title_width}} {eff_str:<8} {auto_disp:<{auto_width}} {deadline_disp:<12} {milestone_disp:<16}"
-            lines.append(line)
+            lines.append(f"| {idx} | {title_link} | {eff_str} | {auto_disp} | {deadline_disp} | {milestone_disp} |")
 
     return "\n".join(lines)
 
@@ -2431,8 +3056,6 @@ def cmd_list(args, data):
     no_persist = getattr(args, "no_persist", False)
     is_agent_mode = getattr(args, "agent", False)
     projects = scan_projects(VAULT_DIR, data, fast_mode=fast_mode, persist=not no_persist, is_agent=is_agent_mode)
-    for p in projects:
-        enrich_project_auto_fields(p, vault_dir=VAULT_DIR)
     top_n = getattr(args, "top", None)
     if top_n is None and getattr(args, "n", None) is not None:
         top_n = args.n
@@ -2454,6 +3077,9 @@ def cmd_list(args, data):
         reviewed_disp = reviewed[:top_n] if top_n is not None and top_n > 0 else reviewed
 
     if getattr(args, "json", False):
+        for p in (unreviewed_disp + reviewed_disp):
+            enrich_project_auto_fields(p, vault_dir=VAULT_DIR)
+
         def _clean_for_json(p):
             cp = dict(p)
             abs_p = cp.get("file_path") or cp.get("full_path") or os.path.abspath(os.path.join(VAULT_DIR, cp["rel_path"].replace("/", os.sep)))
@@ -2628,9 +3254,10 @@ def cmd_get(args, data):
             title=proj_info.get("title", ""),
             sessions_since_human=n_auto
         )
-        tldr_adv = os.path.join(ADVANCE_TLDR_DIR, f"🤖 Avancées Autonomes {proj_info['title']}.md")
-        tldr_notes = os.path.join(VAULT_DIR, "notes", f"🤖 Avancées Autonomes {proj_info['title']}.md")
-        tldr_note = tldr_sync if tldr_sync and os.path.exists(tldr_sync) else (tldr_adv if os.path.exists(tldr_adv) else tldr_notes)
+        tldr_adv = os.path.join(ADVANCE_TLDR_DIR, f"🤖 {proj_info['title']}.md")
+        old_adv = os.path.join(ADVANCE_TLDR_DIR, f"🤖 Avancées Autonomes {proj_info['title']}.md")
+        tldr_notes = os.path.join(VAULT_DIR, "notes", f"🤖 {proj_info['title']}.md")
+        tldr_note = tldr_sync if tldr_sync and os.path.exists(tldr_sync) else (tldr_adv if os.path.exists(tldr_adv) else (old_adv if os.path.exists(old_adv) else tldr_notes))
 
         log_matches = glob.glob(os.path.join(ADVANCE_TLDR_DIR, f"🤖 Journal Autonome {proj_info['title']}.md"))
         if log_matches:
@@ -4216,6 +4843,271 @@ def cmd_status_work(args, data):
         print("============================================================", flush=True)
 
 
+
+
+def _clean_checkboxes_from_note_content(content: str) -> Tuple[str, List[str], List[str]]:
+    r"""
+    Supprime proprement les lignes de cases à cocher `- [ ]` et `- [x]` / `- [X]` tout en
+    préservant strictement les sections Q&A, citations, blocs de code et explications.
+    Retourne (contenu_nettoyé, open_tasks, done_tasks).
+    """
+    lines = content.splitlines()
+    new_lines = []
+    open_tasks = []
+    done_tasks = []
+    in_code_block = False
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            new_lines.append(line)
+            continue
+
+        if in_code_block:
+            new_lines.append(line)
+            continue
+
+        m_open = re.match(r"^\s*[-*+]\s+\[ \]\s+(.*)$", line)
+        if m_open:
+            open_tasks.append(m_open.group(1).strip())
+            continue
+
+        m_done = re.match(r"^\s*[-*+]\s+\[[xX]\]\s+(.*)$", line)
+        if m_done:
+            done_tasks.append(m_done.group(1).strip())
+            continue
+
+        new_lines.append(line)
+
+    cleaned = "\n".join(new_lines)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    if content.endswith("\n") and not cleaned.endswith("\n"):
+        cleaned += "\n"
+    return cleaned, open_tasks, done_tasks
+
+
+def _register_tasks_in_aivc(note_path: str, new_tasks: List[Tuple[str, str]], title: str = "") -> List[Dict[str, Any]]:
+    r"""
+    Enregistre des tâches ouvertes non encore indexées dans le commit storage AIVC du projet.
+    """
+    storage_root = Path.home() / ".aivc" / "storage"
+    commits_dir = storage_root / "commits"
+    commits_dir.mkdir(parents=True, exist_ok=True)
+
+    target_portable = _to_portable_path(note_path)
+    target_commit_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"aivc:roadmap:{target_portable.lower()}"))
+    target_commit_path = commits_dir / f"{target_commit_id}.json"
+
+    commit_data = {}
+    if target_commit_path.is_file():
+        try:
+            with open(target_commit_path, "r", encoding="utf-8") as f:
+                commit_data = json.load(f)
+        except Exception:
+            commit_data = {}
+
+    if not commit_data:
+        commit_data = {
+            "id": target_commit_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "title": f"[Roadmap] {title or Path(note_path).stem}",
+            "journal": f"Roadmap migrée pour {title or Path(note_path).stem}",
+            "user_items": [],
+            "note": f"Roadmap {title or Path(note_path).stem}",
+            "parent_id": "",
+            "machine_id": os.environ.get("COMPUTERNAME", ""),
+            "urls": [],
+            "changes": [
+                {
+                    "path": target_portable,
+                    "action": "roadmap"
+                }
+            ]
+        }
+
+    hash6 = (commit_data.get("id") or target_commit_id or "roadmp")[:6]
+    existing_indices = set()
+    for it in commit_data.get("user_items", []):
+        iid_str = it.get("id", "")
+        m_idx = re.search(r'-(\d+)$', iid_str)
+        if m_idx:
+            existing_indices.add(int(m_idx.group(1)))
+    next_idx = max(existing_indices) + 1 if existing_indices else 1
+
+    added_items = []
+    for task_t, details_t in new_tasks:
+        new_id = f"r-{hash6}-{next_idx}"
+        next_idx += 1
+        new_it = {
+            "id": new_id,
+            "task_status": "new",
+            "kind": "roadmap",
+            "task": task_t,
+            "details": details_t,
+            "done": False
+        }
+        commit_data.setdefault("user_items", []).append(new_it)
+        added_items.append(new_it)
+
+    try:
+        with open(target_commit_path, "w", encoding="utf-8") as f:
+            json.dump(commit_data, f, indent=2, ensure_ascii=False)
+        _invalidate_aivc_cache()
+        tldr_cache = storage_root / "tldr_items_cache.json"
+        if tldr_cache.exists():
+            try:
+                tldr_cache.unlink()
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+    return added_items
+
+
+def cmd_migrate_checkboxes(args, data) -> None:
+    r"""
+    Scanne les notes de projet dans notes/*.md, identifie les cases - [ ] et - [x],
+    enregistre les - [ ] non encore présents dans AIVC sous task_status='new',
+    et retire proprement les lignes de cases des fichiers Markdown.
+    """
+    vault_dir = Path(args.vault_dir) if getattr(args, "vault_dir", None) else Path(VAULT_DIR)
+    is_apply = bool(getattr(args, "apply", False))
+    dry_run = not is_apply
+
+    notes_dir = vault_dir / "notes"
+    candidate_files = []
+    if notes_dir.exists():
+        candidate_files.extend(list(notes_dir.glob("*.md")))
+
+    for f in vault_dir.glob("*.md"):
+        if f.name.startswith("🤖"):
+            continue
+        candidate_files.append(f)
+
+    # Récupérer les items AIVC existants via _get_aivc_memories()
+    aivc_mems = _get_aivc_memories()
+    all_existing_tasks = []
+    for _ts, mem in aivc_mems:
+        for it in mem.get("user_items", []):
+            all_existing_tasks.append(it)
+
+    report_lines = [
+        "# Rapport de Migration des Cases à Cocher vers AIVC",
+        "",
+        f"- **Mode** : {'--dry-run (Simulation, aucun fichier modifié)' if dry_run else '--apply (Modifications appliquées)'}",
+        f"- **Répertoire du coffre** : `{vault_dir}`",
+        f"- **Date d'exécution** : {datetime.now(timezone.utc).isoformat()}",
+        "",
+        "## Synthèse Globale",
+        ""
+    ]
+
+    total_scanned = 0
+    total_notes_with_boxes = 0
+    total_open_migrated = 0
+    total_open_already_in_aivc = 0
+    total_done_removed = 0
+    details_per_note = []
+
+    for md_file in sorted(candidate_files):
+        rel_p = str(md_file.relative_to(vault_dir)).replace("\\", "/")
+        if rel_p.lower().startswith("advance/") or md_file.name.startswith("🤖"):
+            continue
+
+        try:
+            content = md_file.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+
+        total_scanned += 1
+        cleaned_content, open_tasks, done_tasks = _clean_checkboxes_from_note_content(content)
+
+        if not open_tasks and not done_tasks:
+            continue
+
+        total_notes_with_boxes += 1
+        new_tasks_to_add = []
+        already_in_aivc = []
+
+        for ot in open_tasks:
+            parsed_task, parsed_details = _parse_checkbox_task(f"- [ ] {ot}")
+            dup = False
+            for ex in all_existing_tasks:
+                if _is_matching_task(ot, ex.get("task", ""), ex.get("details", "")):
+                    dup = True
+                    break
+            if dup:
+                already_in_aivc.append(ot)
+            else:
+                new_tasks_to_add.append((parsed_task, parsed_details))
+
+        total_open_migrated += len(new_tasks_to_add)
+        total_open_already_in_aivc += len(already_in_aivc)
+        total_done_removed += len(done_tasks)
+
+        details_per_note.append({
+            "file": rel_p,
+            "title": md_file.stem,
+            "open_to_add": new_tasks_to_add,
+            "open_already": already_in_aivc,
+            "done_removed": done_tasks
+        })
+
+        if is_apply:
+            if new_tasks_to_add:
+                _register_tasks_in_aivc(str(md_file), new_tasks_to_add, title=md_file.stem)
+            md_file.write_text(cleaned_content, encoding="utf-8")
+
+    report_lines.append(f"- **Notes scannées** : {total_scanned}")
+    report_lines.append(f"- **Notes contenant des cases à cocher** : {total_notes_with_boxes}")
+    report_lines.append(f"- **Tâches ouvertes `[- ]` préparées/migrées dans AIVC** : {total_open_migrated}")
+    report_lines.append(f"- **Tâches ouvertes déjà présentes dans AIVC** : {total_open_already_in_aivc}")
+    report_lines.append(f"- **Cases terminées `[- x]` résiduelles à supprimer** : {total_done_removed}")
+    report_lines.append("")
+    report_lines.append("## Détail par Note de Projet")
+    report_lines.append("")
+
+    for item in details_per_note:
+        report_lines.append(f"### 📄 `{item['file']}` ({item['title']})")
+        if item["open_to_add"]:
+            report_lines.append("- **Tâches ouvertes à inscrire dans AIVC (`task_status: new`)** :")
+            for t, d in item["open_to_add"]:
+                det_str = f" *(détails: {d})*" if d else ""
+                report_lines.append(f"  - `{t}`{det_str}")
+        if item["open_already"]:
+            report_lines.append("- **Tâches ouvertes déjà indexées dans AIVC (conservées dans AIVC)** :")
+            for t in item["open_already"]:
+                report_lines.append(f"  - `{t}`")
+        if item["done_removed"]:
+            report_lines.append("- **Cases résiduelles terminées retirées** :")
+            for t in item["done_removed"]:
+                report_lines.append(f"  - `{t}`")
+        report_lines.append("")
+
+    full_report = "\n".join(report_lines)
+
+    report_dest = Path(args.report) if getattr(args, "report", None) else Path(r"C:\Users\Jamet\.gemini\antigravity\brain\59bb502e-fd05-4162-9fbf-3e3d33d8d13a\rapport_migration_checkboxes.md")
+    report_dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        report_dest.write_text(full_report, encoding="utf-8")
+        print(f"[OK] Rapport généré dans : {report_dest}")
+    except Exception as e:
+        print(f"[WARN] Impossible d'écrire le rapport dans {report_dest}: {e}")
+
+    local_report = Path(r"C:\Users\Jamet\.gemini\antigravity\brain\e9d8c330-0c04-44c2-802f-d1bf183f7abc\rapport_migration_checkboxes.md")
+    try:
+        local_report.write_text(full_report, encoding="utf-8")
+    except Exception:
+        pass
+
+    print(f"Total notes avec checkboxes : {total_notes_with_boxes}")
+    print(f"Tâches ouvertes à migrer vers AIVC : {total_open_migrated}")
+    print(f"Tâches déjà dans AIVC : {total_open_already_in_aivc}")
+    print(f"Cases résiduelles terminées retirées : {total_done_removed}")
+
+
 def try_delegate_to_node() -> bool:
     """
     Supporte la délégation transparente vers `node code/project-memory/dist/cli.js` si présent,
@@ -4246,7 +5138,7 @@ def try_delegate_to_node() -> bool:
 
     try:
         import subprocess
-        res = subprocess.run([node_bin, cli_path, *sys.argv[1:]])
+        res = subprocess.run([node_bin, cli_path, *sys.argv[1:]], timeout=60)
         sys.exit(res.returncode)
     except Exception:
         return False
@@ -4337,6 +5229,13 @@ def main():
     status_parser.add_argument("--json", action="store_true", help="Sortie au format JSON")
     status_parser.add_argument("--agent", action="store_true", help="Bascule en mode agent autonome (classement, scores et historique propres à l'agent)")
 
+    # migrate-checkboxes
+    mig_parser = subparsers.add_parser("migrate-checkboxes", help="Scanne les notes de projet, extrait les cases [- ] vers AIVC et retire les cases [- ] et [- x] résiduelles")
+    mig_parser.add_argument("--apply", action="store_true", default=False, help="Applique réellement la migration vers AIVC et nettoie les notes Markdown")
+    mig_parser.add_argument("--dry-run", action="store_true", default=True, help="Mode simulation sans modifier le disque (défaut)")
+    mig_parser.add_argument("--vault-dir", type=str, default=None, help="Chemin alternatif du coffre Obsidian")
+    mig_parser.add_argument("--report", type=str, default=None, help="Chemin alternatif du rapport Markdown de sortie")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -4363,6 +5262,8 @@ def main():
         cmd_stop_work(args, data)
     elif args.command in ("status-work", "active-pomodoro", "status"):
         cmd_status_work(args, data)
+    elif args.command == "migrate-checkboxes":
+        cmd_migrate_checkboxes(args, data)
 
 
 if __name__ == "__main__":
