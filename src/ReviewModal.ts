@@ -1,6 +1,6 @@
 import { App, Modal, Setting, Notice, Plugin, MarkdownRenderer, getAllTags, Component, TFile } from 'obsidian';
 import { MilestoneInfo, ProjectStats, ProjectsMemorySettings, StatsData } from './types';
-import { calculateTemporalBonus, parseMilestoneTarget } from './statsUtils';
+import { calculateTemporalBonus, parseMilestoneTarget, isEligibleProject } from './statsUtils';
 
 export default class ReviewModal extends Modal {
 	plugin: Plugin;
@@ -148,20 +148,15 @@ export default class ReviewModal extends Modal {
 
 	async onOpen() {
 		// Phase 1 - Load data (async) before touching the DOM
-		const projectTagsStr = (this.plugin as any).settings.projectTags ?? '';
-		const tagsArray = projectTagsStr
-			.split(',')
-			.map((t: string) => t.trim())
-			.filter(Boolean)
-			.map((t: string) => (t.startsWith('#') ? t : `#${t}`));
-
-		if (tagsArray.length === 0) {
-			new Notice('No project tags configured. Please set them in plugin settings.');
-			this.close();
-			return;
-		}
-
 		const mdFiles = this.app.vault.getMarkdownFiles();
+		const pluginAny = this.plugin as any;
+		let statsProjects: any = {};
+		try {
+			const stats = await pluginAny.loadStatsData();
+			statsProjects = stats.projects ?? {};
+		} catch (e) {
+			console.error('Failed to load stats data:', e);
+		}
 
 		// Collect candidate project files
 		const candidates: {
@@ -175,23 +170,14 @@ export default class ReviewModal extends Modal {
 		for (const file of mdFiles) {
 			// Skip files temporarily ignored for this session
 			try {
-				const pluginAny = this.plugin as any;
 				if (pluginAny.sessionIgnoredProjects && pluginAny.sessionIgnoredProjects.has(file.path)) continue;
 			} catch (e) {
 				// if plugin does not expose the set, proceed normally
 			}
+			const projectStats = statsProjects[file.path];
+			if (!isEligibleProject(file.path, this.plugin, projectStats)) continue;
 			const cache = this.app.metadataCache.getFileCache(file);
 			if (!cache) continue;
-			// Use unified tag extraction API to include frontmatter and body tags
-			const allTags = getAllTags(cache) || [];
-			// Check for presence of any configured project tag
-			const hasProjectTag = allTags.some((t: string) => tagsArray.includes(t));
-			if (!hasProjectTag) continue;
-			// Exclude archived projects: skip if archiveTag is present in unified tags
-			const archiveTag = (this.plugin as any).settings.archiveTag ?? '';
-			const normalizedArchiveTag = archiveTag ? (archiveTag.startsWith('#') ? archiveTag : `#${archiveTag}`) : '';
-			const hasArchiveTag = normalizedArchiveTag ? allTags.includes(normalizedArchiveTag) : false;
-			if (hasArchiveTag) continue;
 			// Get current score from stats.json
 			let baseScore: number | null = null;
 			try {
@@ -516,7 +502,6 @@ export default class ReviewModal extends Modal {
 		workYesBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>';
 
 		// If a pomodoro is already active at the plugin level, reflect it in this modal's UI
-		const pluginAny = this.plugin as any;
 		if (pluginAny.pomodoroState && pluginAny.pomodoroState.isActive) {
 			this.isPomodoroActive = true;
 			// set UI: hide start, show cancel, show time and progress, hide action buttons

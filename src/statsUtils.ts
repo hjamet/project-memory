@@ -451,48 +451,105 @@ export function interpolateMissingValues(data: number[]): void {
 // ─── Plugin-Dependent Functions ──────────────────────────────────────────
 
 /**
- * Filter active project paths matching configured projectTags and excluding archived ones.
- * Exactly aligns with CLI scan_projects logic and ReviewModal criteria.
+ * Universal project eligibility rule:
+ * 1. Must exist on disk.
+ * 2. Not in system-excluded folders (_agents, voicenotes, souvenirs, administratif, advance).
+ * 3. Not archived (no #done, #projet-fini, archiveTag, not status: done/archived/abandoned, not score == 0 or action == finished).
+ * 4. Eligible if:
+ *    - Has project tag (todo, project, projet, or configured projectTags)
+ *    - OR type: project / type: projet in frontmatter
+ *    - OR tracked active in data.json (totalReviews > 0, currentScore > 0, not finished)
  */
-export function filterArchivedProjects(projectPaths: string[], plugin: Plugin): string[] {
+export function isEligibleProject(
+    projectPath: string,
+    plugin: Plugin,
+    statsEntry?: any
+): boolean {
+    if (!projectPath) return false;
+    const normPath = projectPath.replace(/\\/g, '/').replace(/^\/+/, '');
+    const lowerPath = normPath.toLowerCase();
+
+    // System-excluded folders
+    const excludedPrefixes = [
+        '_agents/', 'voicenotes/', 'souvenirs/', 'administratif/', 'advance/',
+        '.obsidian/', '.git/', '.trash/'
+    ];
+    if (excludedPrefixes.some(p => lowerPath.startsWith(p) || lowerPath.includes('/' + p))) {
+        return false;
+    }
+
+    const file = plugin.app.vault.getAbstractFileByPath(normPath);
+    if (!file || !(file instanceof TFile)) return false;
+
+    const cache = plugin.app.metadataCache.getFileCache(file);
+    if (!cache) return false;
+
+    const fm = (cache as any)?.frontmatter;
+    const typeVal = String(fm?.type || '').trim().toLowerCase();
+    if (typeVal === 'autonomous-tldr' || typeVal === 'autonomous-log') {
+        return false;
+    }
+
+    // Status check
+    const status = String(fm?.status || '').trim().toLowerCase();
+    if (status === 'done' || status === 'archived' || status === 'abandoned') {
+        return false;
+    }
+
+    // Archive tags
     const archiveTag = ((plugin as any).settings?.archiveTag ?? '').replace(/^#/, '').toLowerCase();
+    const doneTags = ['done', 'projet-fini', 'archive', 'archived'];
+    if (archiveTag && !doneTags.includes(archiveTag)) {
+        doneTags.push(archiveTag);
+    }
+
+    const allTags = (getAllTags(cache) || []).map(t => t.replace(/^#/, '').toLowerCase());
+    const hasArchive = allTags.some(t => doneTags.some(dt => t === dt || t.startsWith(dt + '/')));
+    if (hasArchive) return false;
+
+    // Stats history check
+    if (statsEntry) {
+        const rawScore = statsEntry.currentScore;
+        const history = statsEntry.reviewHistory ?? [];
+        const lastAction = history.length > 0 ? history[history.length - 1]?.action : '';
+        if ((rawScore !== undefined && rawScore !== null && Number(rawScore) === 0) || lastAction === 'finished') {
+            return false;
+        }
+    }
+
+    // Active project criteria
     const projectTagsStr = (plugin as any).settings?.projectTags ?? '';
     const tagsArray = projectTagsStr
         .split(',')
         .map((t: string) => t.trim().replace(/^#/, '').toLowerCase())
         .filter(Boolean);
-
-    return projectPaths.filter(projectPath => {
-        if (projectPath.toLowerCase().startsWith('advance/') || projectPath.toLowerCase().startsWith('advance\\')) {
-            return false;
+    const defaultProjectTags = ['todo', 'project', 'projet'];
+    for (const dpt of defaultProjectTags) {
+        if (!tagsArray.includes(dpt)) {
+            tagsArray.push(dpt);
         }
+    }
 
-        const file = plugin.app.vault.getAbstractFileByPath(projectPath);
-        if (!file || !(file instanceof TFile)) return false;
+    const hasProjectTag = allTags.some(t => tagsArray.some((pt: string) => t === pt || t.startsWith(pt + '/')));
+    const isTypeProject = typeVal === 'project' || typeVal === 'projet';
+    const isTrackedActive = Boolean(
+        statsEntry &&
+        Number(statsEntry.totalReviews ?? 0) > 0 &&
+        statsEntry.currentScore !== undefined &&
+        statsEntry.currentScore !== null &&
+        Number(statsEntry.currentScore) > 0
+    );
 
-        const cache = plugin.app.metadataCache.getFileCache(file);
-        if (!cache) return false;
+    return hasProjectTag || isTypeProject || isTrackedActive;
+}
 
-        const fm = (cache as any)?.frontmatter;
-        const typeVal = String(fm?.type || '').toLowerCase();
-        if (typeVal === 'autonomous-tldr' || typeVal === 'autonomous-log') {
-            return false;
-        }
-
-        const allTags = (getAllTags(cache) || []).map(t => t.replace(/^#/, '').toLowerCase());
-
-        if (archiveTag) {
-            const hasArchive = allTags.some(t => t === archiveTag || t.startsWith(archiveTag + '/'));
-            if (hasArchive) return false;
-        }
-
-        if (tagsArray.length > 0) {
-            const hasProjectTag = allTags.some(t => tagsArray.some((pt: string) => t === pt || t.startsWith(pt + '/')));
-            if (!hasProjectTag) return false;
-        }
-
-        return true;
-    });
+/**
+ * Filter active project paths matching eligibility criteria and excluding archived ones.
+ * Exactly aligns with CLI scan_projects logic and ReviewModal criteria.
+ */
+export function filterArchivedProjects(projectPaths: string[], plugin: Plugin, statsData?: any): string[] {
+    const projectsMap = statsData?.projects ?? (plugin as any).statsData?.projects ?? {};
+    return projectPaths.filter(projectPath => isEligibleProject(projectPath, plugin, projectsMap[projectPath]));
 }
 
 /**

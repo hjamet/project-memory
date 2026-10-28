@@ -2,7 +2,7 @@ import { App, Plugin, PluginSettingTab, Setting, AbstractInputSuggest, TFile, ge
 import ReviewModal from './src/ReviewModal';
 import StatsModal from './src/StatsModal';
 import StatsView, { VIEW_TYPE_STATS } from './src/StatsView';
-import { calculateTemporalBonus } from './src/statsUtils';
+import { calculateTemporalBonus, isEligibleProject } from './src/statsUtils';
 import {
 	ProjectsMemorySettings,
 	ProjectStats,
@@ -124,6 +124,15 @@ export default class ProjectsMemoryPlugin extends Plugin {
 		this.registerInterval(window.setInterval(() => this.updateStatusBar(), 1000));
 		setTimeout(() => this.updateStatusBar(), 2000);
 
+		// Track renamed project notes to keep data.json stats in sync
+		this.registerEvent(
+			this.app.vault.on('rename', async (file, oldPath) => {
+				if (file instanceof TFile && file.extension === 'md') {
+					await this.handleFileRename(oldPath, file.path);
+				}
+			})
+		);
+
 		// Settings tab
 		this.addSettingTab(new ProjectsMemorySettingTab(this.app, this));
 	}
@@ -162,16 +171,45 @@ export default class ProjectsMemoryPlugin extends Plugin {
 		return initial;
 	}
 
-	// Save stats data to plugin data storage
+	// Save stats data to plugin data storage with disk merge protection
 	async saveStatsData(data: StatsData): Promise<void> {
 		const { payload } = await this.loadPersistedContainer();
 		const currentSettings = this.settings ?? payload.settings ?? DEFAULT_SETTINGS;
+		const diskProjects = payload.stats?.projects ?? {};
+		const mergedProjects = { ...diskProjects };
+		for (const key in data.projects) {
+			if (mergedProjects[key]) {
+				const diskProj = mergedProjects[key];
+				const memProj = data.projects[key];
+				mergedProjects[key] = {
+					...diskProj,
+					...memProj,
+					agent: memProj.agent ? { ...(diskProj.agent ?? {}), ...memProj.agent } : diskProj.agent
+				};
+			} else {
+				mergedProjects[key] = data.projects[key];
+			}
+		}
+		const nextStats: StatsData = {
+			...data,
+			projects: mergedProjects,
+			globalStats: data.globalStats ?? payload.stats?.globalStats ?? { totalReviews: 0, totalPomodoroTime: 0 }
+		};
 		const nextPayload: PersistedPayload = {
 			...payload,
 			settings: currentSettings,
-			stats: data
+			stats: nextStats
 		};
 		await this.saveData(nextPayload);
+	}
+
+	async handleFileRename(oldPath: string, newPath: string): Promise<void> {
+		const { payload } = await this.loadPersistedContainer();
+		if (payload.stats?.projects && oldPath in payload.stats.projects) {
+			payload.stats.projects[newPath] = payload.stats.projects[oldPath];
+			delete payload.stats.projects[oldPath];
+			await this.saveStatsData(payload.stats);
+		}
 	}
 
 	private async migrateStatsToSaveData(): Promise<void> {
@@ -240,12 +278,12 @@ export default class ProjectsMemoryPlugin extends Plugin {
 		await this.saveStatsData(stats);
 	}
 
-	// Increment rotation bonus for all projects except the excluded one
+	// Increment rotation bonus for all active eligible projects except the excluded one
 	async incrementRotationBonus(excludedPath: string): Promise<void> {
 		const stats = await this.loadStatsData();
 		const bonusAmount = this.settings.rotationBonus;
 		for (const filePath in stats.projects) {
-			if (filePath !== excludedPath) {
+			if (filePath !== excludedPath && isEligibleProject(filePath, this, stats.projects[filePath])) {
 				stats.projects[filePath].rotationBonus = (stats.projects[filePath].rotationBonus || 0) + bonusAmount;
 			}
 		}
@@ -321,19 +359,7 @@ export default class ProjectsMemoryPlugin extends Plugin {
 	}
 
 	private async getMostUrgentProjectName(): Promise<string> {
-		const projectTagsStr = this.settings.projectTags ?? '';
-		const tagsArray = projectTagsStr
-			.split(',')
-			.map((t: string) => t.trim())
-			.filter(Boolean)
-			.map((t: string) => (t.startsWith('#') ? t : `#${t}`));
-
-		if (tagsArray.length === 0) return '';
-		const archiveTag = this.settings.archiveTag ?? '';
-		const normalizedArchiveTag = archiveTag ? (archiveTag.startsWith('#') ? archiveTag : `#${archiveTag}`) : '';
-
 		const mdFiles = this.app.vault.getMarkdownFiles();
-
 		const stats = await this.loadStatsData();
 		const deadlineProp = this.settings.deadlineProperty || 'deadline';
 		const milestoneProp = this.settings.milestoneProperty || 'milestone';
@@ -343,17 +369,12 @@ export default class ProjectsMemoryPlugin extends Plugin {
 
 		for (const file of mdFiles) {
 			if (this.sessionIgnoredProjects && this.sessionIgnoredProjects.has(file.path)) continue;
+			const projectStats = stats.projects[file.path];
+			if (!isEligibleProject(file.path, this, projectStats)) continue;
+
 			const cache = this.app.metadataCache.getFileCache(file);
 			if (!cache) continue;
 
-			const allTags = getAllTags(cache) || [];
-			const hasProjectTag = allTags.some((t: string) => tagsArray.includes(t));
-			if (!hasProjectTag) continue;
-
-			const hasArchiveTag = normalizedArchiveTag ? allTags.includes(normalizedArchiveTag) : false;
-			if (hasArchiveTag) continue;
-
-			const projectStats = stats.projects[file.path];
 			const isUnreviewed = !projectStats || projectStats.totalReviews === 0 || projectStats.currentScore === undefined || projectStats.currentScore === null;
 
 			if (isUnreviewed) {

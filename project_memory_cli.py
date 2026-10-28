@@ -28,7 +28,7 @@ import uuid
 import hashlib
 from datetime import datetime, date, time as dt_time, timedelta, timezone
 from dataclasses import dataclass
-from typing import Optional, Union, List, Any, Dict, Tuple, Set
+from typing import Optional, Union, List, Any, Dict, Tuple, Set, Iterable
 from pathlib import Path
 
 if sys.platform == "win32":
@@ -69,7 +69,8 @@ EXCLUDED_DIRS = {
     ".smart-env", ".pytest_cache", "attachments", "thumbnails",
     "excalidraw", "antigravity", "voicenotes", "readwise",
     "test_output_vault", "rattrapage_aib_pack", "templates",
-    "tests", "agents", ".agents", "_agents", "advance"
+    "tests", "agents", ".agents", "_agents", "advance",
+    "souvenirs", "administratif"
 }
 
 SYSTEM_FILES = {"agents.md", "readme.md", "claude.md", "gemini.md"}
@@ -912,14 +913,17 @@ def clear_active_pomodoro(active_path=None, data_path=DATA_JSON_PATH, project_ke
         _persist_active_pomodoros({}, active_path, data_path, is_agent=is_agent)
 
 
-def update_achilles_rotation_bonuses(stats: Dict[str, Any], current_project_key: str, ratio: float, alpha: float, is_agent: bool = False) -> None:
+def update_achilles_rotation_bonuses(stats: Dict[str, Any], current_project_key: str, ratio: float, alpha: float, is_agent: bool = False, vault_dir: str = VAULT_DIR) -> None:
     """
     Applique le modèle d'Achille et la Tortue pour le bonus de rotation des projets non travaillés :
     Delta B = alpha * (100 - S_rot) * ratio, avec S_rot = S_base + B_rot.
     Garantit strictement que S_rot <= 100.0 et B_rot <= 100.0 - S_base (Directive Borne 100).
+    Incrémente UNIQUEMENT les projets actifs réellement éligibles (is_eligible_project).
     """
     for p_key, p_val in stats.items():
         if p_key != current_project_key:
+            if not is_eligible_project(p_key, vault_dir=vault_dir, proj_stat=p_val):
+                continue
             target_obj = p_val.setdefault("agent", {}) if is_agent else p_val
             tot_reviews = int(target_obj.get("totalReviews", 0))
             if tot_reviews == 0 and not is_agent and int(p_val.get("totalReviews", 0)) == 0:
@@ -1263,6 +1267,98 @@ def parse_markdown_file(file_path, content=None, parse_checkboxes=True):
     return frontmatter, tags, checkboxes, content
 
 
+ARCHIVED_STATUSES = {"done", "archived", "abandoned"}
+DEFAULT_PROJECT_TAGS = {"todo", "project", "projet"}
+DEFAULT_ARCHIVE_TAGS = {"done", "projet-fini", "archive", "archived"}
+
+
+def is_eligible_project(
+    rel_path: str,
+    vault_dir: str = VAULT_DIR,
+    proj_stat: Optional[Dict[str, Any]] = None,
+    cache_entry: Optional[Dict[str, Any]] = None,
+    project_tags: Optional[Iterable[str]] = None,
+    archive_tags: Optional[Iterable[str]] = None,
+) -> bool:
+    """
+    Règle unique d'éligibilité canonique d'un projet actif :
+    1. Un fichier .md existant sur le disque.
+    2. Hors dossiers système (_agents, voicenotes, souvenirs, administratif, advance).
+    3. Non archivé (pas de tag #done/#projet-fini/#archive, pas de status: done/archived/abandoned,
+       pas de currentScore == 0 ni last_action == 'finished').
+    4. Éligible si :
+       - possède un projectTag (ex: #todo, #project, #projet)
+       - OU type: project / type: projet dans le frontmatter
+       - OU déjà suivi dans data.json["stats"]["projects"] avec un score évalué (totalReviews > 0, currentScore > 0, non finished).
+    """
+    if not rel_path:
+        return False
+
+    norm_rel = rel_path.replace("\\", "/").strip().lstrip("/")
+    lower_rel = norm_rel.lower()
+
+    # 2. Hors dossiers système
+    system_excluded = ("_agents/", "voicenotes/", "souvenirs/", "administratif/", "advance/", ".obsidian/", ".git/", ".trash/")
+    if any(lower_rel.startswith(p) or ("/" + p) in lower_rel for p in system_excluded):
+        return False
+
+    abs_path = os.path.join(vault_dir, norm_rel.replace("/", os.sep))
+    if not os.path.exists(abs_path):
+        return False
+
+    # Extraction des métadonnées (cache ou direct)
+    if cache_entry and "tags" in cache_entry and "status" in cache_entry:
+        tags = set(cache_entry.get("tags", []))
+        type_val = str(cache_entry.get("type", "")).strip().lower()
+        status_val = str(cache_entry.get("status", "")).strip().lower()
+    else:
+        fm, tags_set, _, _ = parse_markdown_file(abs_path, parse_checkboxes=False)
+        tags = tags_set
+        type_val = str(fm.get("type", "")).strip().lower()
+        status_val = str(fm.get("status", "")).strip().lower()
+
+    if type_val in ("autonomous-tldr", "autonomous-log"):
+        return False
+
+    # 3. Vérification de non-archivage
+    if status_val in ARCHIVED_STATUSES:
+        return False
+
+    done_tags_set = set(DEFAULT_ARCHIVE_TAGS)
+    if archive_tags:
+        for at in archive_tags:
+            done_tags_set.add(at.strip().lstrip("#").lower())
+
+    has_archive_tag = any(at in tags or any(t.startswith(at + "/") for t in tags) for at in done_tags_set)
+    if has_archive_tag:
+        return False
+
+    total_reviews = 0
+    raw_score = None
+    last_action = ""
+    if proj_stat:
+        total_reviews = int(proj_stat.get("totalReviews", 0))
+        raw_score = proj_stat.get("currentScore")
+        history = proj_stat.get("reviewHistory", [])
+        last_action = history[-1].get("action") if history else ""
+        if (raw_score is not None and float(raw_score) == 0) or last_action == "finished":
+            return False
+
+    # 4. Éligibilité active
+    proj_tags_set = set(DEFAULT_PROJECT_TAGS)
+    if project_tags:
+        for pt in project_tags:
+            proj_tags_set.add(pt.strip().lstrip("#").lower())
+
+    has_project_tag = any(pt in tags or any(t.startswith(pt + "/") for t in tags) for pt in proj_tags_set)
+    is_type_project = type_val in ("project", "projet")
+    is_tracked_active = bool(
+        proj_stat and total_reviews > 0 and raw_score is not None and float(raw_score) > 0 and last_action != "finished"
+    )
+
+    return bool(has_project_tag or is_type_project or is_tracked_active)
+
+
 def sync_vault_cache(vault_dir=VAULT_DIR, cache_path=CACHE_PATH, fast_mode=False):
     """
     Synchronizes the fast metadata cache with disk state using incremental mtime checks.
@@ -1287,7 +1383,7 @@ def sync_vault_cache(vault_dir=VAULT_DIR, cache_path=CACHE_PATH, fast_mode=False
                     continue
 
                 cached = cache.get(rel_p)
-                if not cached or cached.get("mtime") != mt or "milestone" not in cached or "agent_only" not in cached:
+                if not cached or cached.get("mtime") != mt or "milestone" not in cached or "agent_only" not in cached or "status" not in cached:
                     fm, tags, _, _ = parse_markdown_file(abs_p, parse_checkboxes=False)
                     type_val = str(fm.get("type", "")).lower()
                     if type_val in ("autonomous-tldr", "autonomous-log"):
@@ -1295,13 +1391,15 @@ def sync_vault_cache(vault_dir=VAULT_DIR, cache_path=CACHE_PATH, fast_mode=False
                     deadline = str(fm.get("deadline") or fm.get("due") or "")
                     m_val = fm.get("milestone") or fm.get("milestones") or fm.get("jalon") or ""
                     milestone = ", ".join(m_val) if isinstance(m_val, list) else str(m_val)
+                    status_val = str(fm.get("status", "")).strip().lower()
                     cache[rel_p] = {
                         "mtime": mt,
                         "tags": list(tags),
                         "deadline": deadline,
                         "milestone": str(milestone),
                         "agent_only": bool(fm.get("agent_only", False)),
-                        "type": type_val
+                        "type": type_val,
+                        "status": status_val
                     }
                     cache_dirty = True
                 valid_paths.add(rel_p)
@@ -1626,11 +1724,23 @@ def calculate_and_persist_effective_scores(
     rf = float(settings.get("rapprochementFactor") or settings.get("rapprochmentFactor") or 0.2)
     recency_weight = float(settings.get("recencyPenaltyWeight", 0.5))
 
+    raw_tags = settings.get("projectTags", "todo, project")
+    project_tags = [t.strip().lstrip("#").lower() for t in raw_tags.split(",") if t.strip()]
+    archive_tag = settings.get("archiveTag", "done").strip().lstrip("#").lower()
+    done_tags = {"done", "projet-fini", archive_tag}
+
     results = {}
 
     for rel_path, proj_stat in stats_projects.items():
         norm_rel = rel_path.replace("\\", "/")
         cached = cache.get(norm_rel) if cache else None
+
+        if not is_eligible_project(norm_rel, vault_dir=vault_dir, proj_stat=proj_stat, cache_entry=cached, project_tags=project_tags, archive_tags=done_tags):
+            if proj_stat.get("rotationBonus"):
+                proj_stat["rotationBonus"] = 0.0
+            if proj_stat.get("effectiveScore"):
+                proj_stat["effectiveScore"] = 0.0
+            continue
 
         is_agent_only = False
         if cached and "milestone" in cached:
@@ -1766,10 +1876,7 @@ def scan_projects(vault_dir, data, cache=None, fast_mode=False, now_dt=None, per
         # agent_only supprimé : tous les projets (y compris Dream) apparaissent pour l'humain
         pass
 
-        has_project_tag = any(pt in tags or any(t.startswith(pt + "/") for t in tags) for pt in project_tags)
-        has_archive_tag = any(at in tags or any(t.startswith(at + "/") for t in tags) for at in done_tags)
-
-        if not has_project_tag or has_archive_tag:
+        if not is_eligible_project(norm_rel, vault_dir=vault_dir, proj_stat=proj_stat, cache_entry=cached, project_tags=project_tags, archive_tags=done_tags):
             continue
 
         total_reviews = int(proj_stat.get("totalReviews", 0))
@@ -1891,11 +1998,7 @@ def scan_projects(vault_dir, data, cache=None, fast_mode=False, now_dt=None, per
         # agent_only supprimé : tous les projets apparaissent pour l'humain
         pass
 
-        tags = set(cached.get("tags", []))
-        has_project_tag = any(pt in tags or any(t.startswith(pt + "/") for t in tags) for pt in project_tags)
-        has_archive_tag = any(at in tags or any(t.startswith(at + "/") for t in tags) for at in done_tags)
-
-        if has_project_tag and not has_archive_tag:
+        if is_eligible_project(rel_p, vault_dir=vault_dir, cache_entry=cached, project_tags=project_tags, archive_tags=done_tags):
             abs_p = os.path.join(vault_dir, rel_p.replace("/", os.sep))
             title = os.path.splitext(os.path.basename(rel_p))[0]
             deadline_str = cached.get("deadline", "")
