@@ -2950,6 +2950,21 @@ def _format_file_links(file_list: Any, main_note_path: str = "", is_read: bool =
         if not base or base.startswith("🤖"):
             continue
 
+        base_lower = base.lower()
+        # Exclusion des artefacts purement internes de plomberie des sous-agents
+        if (
+            base_lower in {
+                "sources_eclaireur.md",
+                "sources_executant.md",
+                "sources_audit.md",
+                "remember_payload.json",
+                "task_commit_payload.json",
+            }
+            or (base_lower.startswith("sources_") and base_lower.endswith(".md"))
+            or (base_lower.startswith("questions_") and base_lower.endswith(".md"))
+        ):
+            continue
+
         # Exclusion de la note maîtresse
         clean_port = _to_portable_path(clean).lower()
         if main_port and (
