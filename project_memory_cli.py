@@ -6271,8 +6271,7 @@ def main():
     args = parser.parse_args()
 
     if not args.command:
-        parser.print_help()
-        sys.exit(0)
+        args.command = "dashboard"
 
     data = load_data(DATA_JSON_PATH)
 
