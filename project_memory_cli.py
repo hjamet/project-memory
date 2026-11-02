@@ -2290,6 +2290,210 @@ def _convert_wikilinks_to_markdown_links(text: str, vault_dir: Optional[str] = N
     return wikilink_pattern.sub(_replace_wikilink, text)
 
 
+def _get_aivc_storage_root() -> Path:
+    env_root = os.environ.get("PROJECT_MEMORY_AIVC_STORAGE_ROOT")
+    if env_root:
+        return Path(env_root)
+    return Path.home() / ".aivc" / "storage"
+
+
+def _extract_artifact_subpath(raw: str) -> Optional[str]:
+    """Extrait le sous-chemin relatif d'un artefact depuis une URL ou un chemin brut."""
+    if not raw:
+        return None
+    s = str(raw).strip().replace("\\", "/")
+    if s.startswith("file:///"):
+        s = s[8:]
+    elif s.startswith("file://"):
+        s = s[7:]
+    if ":L" in s or re.search(r":\d+", s):
+        s = re.split(r":L?\d+", s)[0]
+    s = s.rstrip(").,'\"`>")
+    for marker in ("aivc/artifacts/", ".gemini/antigravity-cli/brain/", ".gemini/antigravity/brain/", "antigravity-cli/brain/", "antigravity/brain/"):
+        idx = s.lower().find(marker)
+        if idx != -1:
+            rel = s[idx + len(marker):].strip().strip("/")
+            return urllib.parse.unquote(rel) if rel else None
+    clean_s = urllib.parse.unquote(s.strip("/"))
+    if re.match(r"^[0-9a-fA-F\-]{8,}/", clean_s) or clean_s.startswith("advance_artifacts/"):
+        return clean_s
+    return None
+
+
+def _ensure_public_artifact_exists(subpath: str, blob_hash: str = "") -> Optional[Path]:
+    """
+    S'assure qu'un artefact référencé par son subpath (ex: <uuid>/fichier.ext ou brain/<uuid>/fichier.ext)
+    existe physiquement dans C:\\Users\\Public\\aivc\\artifacts\\<subpath>.
+    Si absent :
+    1. Cherche dans ~/.gemini/antigravity/brain/<subpath>
+    2. Cherche dans ~/.gemini/antigravity-cli/brain/<subpath>
+    3. Cherche dans LOCALAPPDATA/Temp/aivc/artifacts/<subpath> ou AIVC_USER_TEMP_DIR/artifacts/<subpath>
+    4. Cherche le blob_hash (fourni ou extrait via SQLite core_index.db) dans storage_root/blobs/<hash>
+    Si trouvé, copie vers target_public (et AIVC_USER_TEMP_DIR).
+    Synchronise également les autres fichiers du même sous-dossier de conversation.
+    Retourne le Path cible s'il existe et est valide (> 8 octets), None sinon.
+    """
+    if not subpath:
+        return None
+    extracted = _extract_artifact_subpath(subpath)
+    clean_sub = (extracted or str(subpath)).replace("\\", "/").strip("/")
+    if re.match(r"^[a-zA-Z]:", clean_sub):
+        parts = clean_sub.split("/", 2)
+        clean_sub = parts[-1] if len(parts) > 1 else clean_sub
+    clean_sub = urllib.parse.unquote(clean_sub).strip("/")
+    if not clean_sub:
+        return None
+
+    target_public = AIVC_ARTIFACTS_DIR / Path(clean_sub)
+    target_user = AIVC_USER_TEMP_DIR / "artifacts" / Path(clean_sub)
+
+    def _is_corrupt_8b(p: Path) -> bool:
+        try:
+            if p.is_file() and p.stat().st_size == 8:
+                if p.read_bytes() == b"restored":
+                    p.unlink(missing_ok=True)
+                    return True
+        except Exception:
+            pass
+        return False
+
+    _is_corrupt_8b(target_public)
+    _is_corrupt_8b(target_user)
+
+    if target_public.is_file():
+        try:
+            if not target_user.is_file() or target_user.stat().st_size != target_public.stat().st_size:
+                target_user.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(target_public, target_user)
+        except Exception:
+            pass
+        return target_public
+
+    # 1. Chercher dans les sources candidates locales
+    candidate_roots = [
+        Path.home() / ".gemini" / "antigravity" / "brain",
+        Path.home() / ".gemini" / "antigravity-cli" / "brain",
+        AIVC_USER_TEMP_DIR / "artifacts",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Temp" / "aivc" / "artifacts",
+    ]
+
+    for cand_root in candidate_roots:
+        if not cand_root or not cand_root.is_dir():
+            continue
+        cand_file = cand_root / Path(clean_sub)
+        if cand_file.is_file() and not _is_corrupt_8b(cand_file):
+            try:
+                target_public.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(cand_file, target_public)
+                if cand_file != target_user:
+                    target_user.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(cand_file, target_user)
+            except OSError:
+                pass
+            break
+
+    # 2. Synchroniser les sous-dossiers existants de brain si applicables
+    if "/" in clean_sub:
+        conv_dir_name = clean_sub.split("/")[0]
+        for b_root in [
+            Path.home() / ".gemini" / "antigravity" / "brain" / conv_dir_name,
+            Path.home() / ".gemini" / "antigravity-cli" / "brain" / conv_dir_name,
+        ]:
+            if b_root.is_dir():
+                pub_conv_dir = AIVC_ARTIFACTS_DIR / conv_dir_name
+                try:
+                    pub_conv_dir.mkdir(parents=True, exist_ok=True)
+                    for item in b_root.iterdir():
+                        if item.is_file() and not item.name.startswith("sources_") and not item.name.startswith("questions_"):
+                            dest_f = pub_conv_dir / item.name
+                            if not dest_f.exists() or (dest_f.stat().st_size != item.stat().st_size and item.stat().st_size != 8):
+                                try:
+                                    shutil.copy2(item, dest_f)
+                                except Exception:
+                                    pass
+                except Exception:
+                    pass
+
+    if target_public.is_file():
+        return target_public
+
+    # 3. Chercher dans le BlobStore AIVC
+    storage_root = _get_aivc_storage_root()
+    blobs_dir = storage_root / "blobs"
+    effective_hash = blob_hash.strip() if blob_hash else ""
+
+    if not effective_hash and blobs_dir.exists():
+        db_path = storage_root / "core_index.db"
+        if db_path.exists():
+            try:
+                import sqlite3
+                with sqlite3.connect(str(db_path)) as conn:
+                    cur = conn.cursor()
+                    cand_queries = [
+                        ("~/.gemini/antigravity/brain/" + clean_sub, "="),
+                        ("~/.gemini/antigravity-cli/brain/" + clean_sub, "="),
+                        ("%" + clean_sub, "LIKE"),
+                        ("%" + Path(clean_sub).name, "LIKE"),
+                    ]
+                    for cq, op in cand_queries:
+                        cur.execute(f"SELECT blob_hash FROM file_changes WHERE path {op} ? AND blob_hash IS NOT NULL LIMIT 1", (cq,))
+                        row = cur.fetchone()
+                        if row and row[0]:
+                            effective_hash = row[0]
+                            break
+            except Exception:
+                pass
+
+    if effective_hash and blobs_dir.exists():
+        blob_file = blobs_dir / effective_hash
+        if not blob_file.is_file():
+            alt_blob = Path.home() / ".aivc" / "storage" / "blobs" / effective_hash
+            if alt_blob.is_file():
+                blob_file = alt_blob
+        if blob_file.is_file():
+            try:
+                content = blob_file.read_bytes()
+                if len(content) != 8 or content != b"restored":
+                    target_public.parent.mkdir(parents=True, exist_ok=True)
+                    target_public.write_bytes(content)
+                    try:
+                        target_user.parent.mkdir(parents=True, exist_ok=True)
+                        target_user.write_bytes(content)
+                    except Exception:
+                        pass
+                    return target_public
+            except Exception:
+                pass
+
+    return target_public if (target_public.is_file() and target_public.stat().st_size != 8) else None
+
+
+def _merge_file_paths_latest_wins(existing_list: List[str], new_files: List[str]) -> List[str]:
+    """
+    Fusionne new_files dans existing_list en remplaçant in-situ toute version antérieure
+    ayant le même basename (insensible à la casse) par la nouvelle version la plus récente.
+    Si le basename n'existait pas, le nouveau fichier est ajouté à la fin.
+    """
+    res = list(existing_list)
+    for nf in new_files:
+        clean_nf = nf.strip()
+        if not clean_nf:
+            continue
+        base_nf = Path(clean_nf.replace("\\", "/").rstrip("/")).name.lower()
+        if not base_nf:
+            continue
+        replaced = False
+        for i, ef in enumerate(res):
+            base_ef = Path(ef.replace("\\", "/").rstrip("/")).name.lower()
+            if base_ef == base_nf:
+                res[i] = clean_nf
+                replaced = True
+                break
+        if not replaced:
+            res.append(clean_nf)
+    return res
+
+
 def _rewrite_paths_for_current_pc(text: str) -> str:
     """
     In markdown text, replaces multi-PC user paths (Jamet / hjamet)
@@ -2341,6 +2545,12 @@ def _rewrite_paths_for_current_pc(text: str) -> str:
                 sub = raw_sub.replace("/", "\\").strip("\\")
                 return str(AIVC_ARTIFACTS_DIR / Path(sub)) + suffix
         text = combined_pattern.sub(_replace_combined, text)
+
+    # S'assurer que tous les artefacts référencés existent physiquement dans C:\\Users\\Public\\aivc\\artifacts
+    for m in re.finditer(r"(?:aivc[\\/]artifacts|\.?gemini[\\/]antigravity(?:-cli)?[\\/]brain)[\\/]([^\s\[\]\(\)\"\'\`<>:]+)", text, re.IGNORECASE):
+        raw_sub = m.group(1).split(":")[0].strip("\\/.,")
+        if raw_sub:
+            _ensure_public_artifact_exists(raw_sub)
 
     home_path = Path.home()
     home_fwd = str(home_path).replace("\\", "/").rstrip("/") + "/"
@@ -2818,37 +3028,12 @@ def _auto_restore_aivc_blobs_for_active_items(
                         except OSError:
                             pass
 
-            # Si artifact_target existe déjà et est valide (> 8 octets)
-            if artifact_target.is_file() and artifact_target.stat().st_size != 8:
-                _mirror_artifact(artifact_target)
+            # Vérification et copie via _ensure_public_artifact_exists
+            res = _ensure_public_artifact_exists(subpath, blob_hash=blob_hash or "")
+            if res is not None and res.is_file():
+                _mirror_artifact(res)
+                restored.append(str(res))
                 return True
-
-            # 1. Vérifier source locale dans ~/.gemini/antigravity/brain/ ou ~/.gemini/antigravity-cli/brain/
-            for candidate_root in [
-                Path.home() / ".gemini" / "antigravity" / "brain",
-                Path.home() / ".gemini" / "antigravity-cli" / "brain",
-            ]:
-                for s_var in sub_variants:
-                    cand_src = candidate_root / Path(s_var)
-                    _purge_corrupt(cand_src)
-                    if cand_src.is_file() and cand_src.stat().st_size != 8:
-                        try:
-                            _mirror_artifact(cand_src)
-                            restored.append(str(artifact_target))
-                            return True
-                        except OSError:
-                            pass
-
-            # Vérifier aussi user_target si présent et valide
-            for s_var in sub_variants:
-                u_cand = AIVC_USER_TEMP_DIR / "artifacts" / Path(s_var)
-                if u_cand.is_file() and u_cand.stat().st_size != 8:
-                    try:
-                        _mirror_artifact(u_cand)
-                        restored.append(str(artifact_target))
-                        return True
-                    except OSError:
-                        pass
 
             # 2. Sinon restaurer depuis BlobStore / SQLite / rclone directement dans artifact_target
             fn = filename or artifact_target.name
@@ -2922,10 +3107,16 @@ def _format_file_links(file_list: Any, main_note_path: str = "", is_read: bool =
     [📄 nom1.ext](file:///...) · [📄 nom2.ext](file:///...)
     Applique la normalisation des artefacts (C:/Users/Public/aivc/artifacts/...) et des chemins locaux.
     Exclut la note maîtresse (main_note_path) et les fichiers advance_tldr/🤖 ...
+    Exclut les fichiers .tex bruts de ✏️ Fichiers modifiés si un .pdf ou un diff_*.md est présent.
+    Déduplique par basename (dernière version gagnante).
+    Vérifie l'existence physique sur disque pour éviter tout lien mort.
     """
     raw_paths = _extract_file_path_list(file_list)
     if not raw_paths:
         return ""
+
+    # Déduplication par basename en conservant la dernière version gagnante
+    raw_paths = _merge_file_paths_latest_wins([], raw_paths)
 
     main_port = _to_portable_path(main_note_path).lower() if main_note_path else ""
     main_base = Path(main_note_path).name.lower() if main_note_path else ""
@@ -2933,8 +3124,20 @@ def _format_file_links(file_list: Any, main_note_path: str = "", is_read: bool =
     v_dir = Path(vault_dir) if vault_dir else Path(VAULT_DIR)
     posix_home = Path.home().as_posix()
 
+    # Conformément à task-tracking.md, si un .pdf compilé ou un diff markdown est présent,
+    # exclure les fichiers .tex bruts de ✏️ Fichiers modifiés (is_read=False)
+    has_pdf_or_diff = False
+    if not is_read:
+        for p in raw_paths:
+            p_clean = str(p).strip().replace("\\", "/")
+            b_name = Path(p_clean).name.lower()
+            if b_name.endswith(".pdf") or (b_name.startswith("diff_") and b_name.endswith(".md")) or ("diff" in b_name and b_name.endswith(".md")):
+                has_pdf_or_diff = True
+                break
+
     formatted_links: List[str] = []
     seen_urls: Set[str] = set()
+    seen_basenames: Set[str] = set()
 
     for raw in raw_paths:
         clean = raw.strip()
@@ -2965,13 +3168,17 @@ def _format_file_links(file_list: Any, main_note_path: str = "", is_read: bool =
         ):
             continue
 
+        # Exclusion des .tex bruts si .pdf ou diff présent dans les fichiers modifiés
+        if not is_read and has_pdf_or_diff and base_lower.endswith(".tex"):
+            continue
+
         # Exclusion de la note maîtresse
         clean_port = _to_portable_path(clean).lower()
         if main_port and (
             clean_port == main_port
             or clean_port == main_base
             or clean_port.endswith("/" + main_base)
-            or base.lower() == main_base
+            or base_lower == main_base
         ):
             continue
 
@@ -2981,8 +3188,9 @@ def _format_file_links(file_list: Any, main_note_path: str = "", is_read: bool =
             link = _rewrite_paths_for_current_pc(link)
             m_u = re.search(r'\(([^)]+)\)', link)
             target_url = m_u.group(1).lower() if m_u else link.lower()
-            if target_url not in seen_urls:
+            if target_url not in seen_urls and base_lower not in seen_basenames:
                 seen_urls.add(target_url)
+                seen_basenames.add(base_lower)
                 formatted_links.append(link)
             continue
 
@@ -2992,6 +3200,10 @@ def _format_file_links(file_list: Any, main_note_path: str = "", is_read: bool =
             f_path = f_path[8:]
         elif f_path.startswith("file://"):
             f_path = f_path[7:]
+
+        sub_artifact = _extract_artifact_subpath(f_path)
+        if sub_artifact:
+            _ensure_public_artifact_exists(sub_artifact)
 
         if f_path.startswith("~/") or f_path.startswith("~\\"):
             sub = f_path[2:].replace("\\", "/").lstrip("/")
@@ -3017,9 +3229,23 @@ def _format_file_links(file_list: Any, main_note_path: str = "", is_read: bool =
         raw_link = f"[📄 {base}](file:///{abs_forward.lstrip('/')})"
         rewritten_link = _rewrite_paths_for_current_pc(raw_link)
         m_u = re.search(r'\(([^)]+)\)', rewritten_link)
-        target_url = m_u.group(1).lower() if m_u else rewritten_link.lower()
-        if target_url not in seen_urls:
-            seen_urls.add(target_url)
+        target_url = m_u.group(1) if m_u else rewritten_link
+        target_url_lower = target_url.lower()
+
+        # Vérification d'existence physique sur disque pour éviter tout lien mort
+        if target_url_lower.startswith("file:///"):
+            local_fs = urllib.parse.unquote(target_url[8:])
+            p_check = Path(local_fs)
+            if not p_check.exists():
+                cand_sub = _extract_artifact_subpath(local_fs)
+                if cand_sub:
+                    _ensure_public_artifact_exists(cand_sub)
+                if not p_check.exists():
+                    continue
+
+        if target_url_lower not in seen_urls and base_lower not in seen_basenames:
+            seen_urls.add(target_url_lower)
+            seen_basenames.add(base_lower)
             formatted_links.append(rewritten_link)
 
     return " · ".join(formatted_links)
@@ -3486,30 +3712,60 @@ def _sync_and_render_aivc_tldr(
                     item_edited = _extract_file_path_list(item.get("edited_files"))
                     item_read = _extract_file_path_list(item.get("read_files"))
 
-                    eff_edited = list(item_edited)
-                    if not item_edited or len(user_items) == 1:
-                        for f in mem_edited_raw:
-                            if f not in eff_edited:
-                                eff_edited.append(f)
+                    if item_edited:
+                        eff_edited = list(item_edited)
+                    elif len(user_items) == 1:
+                        eff_edited = list(mem_edited_raw)
+                    else:
+                        # Commit multi-tâches sans edited_files explicite pour cet item
+                        item_text = (item.get("details", "") + " " + item.get("task", "")).lower()
+                        matching_edited = [
+                            f for f in mem_edited_raw
+                            if Path(f.replace("\\", "/").rstrip("/")).name.lower() in item_text
+                        ]
+                        if matching_edited:
+                            eff_edited = matching_edited
+                        else:
+                            any_other_mentions = False
+                            for other_it in user_items:
+                                if other_it is not item:
+                                    o_text = (other_it.get("details", "") + " " + other_it.get("task", "")).lower()
+                                    if any(Path(f.replace("\\", "/").rstrip("/")).name.lower() in o_text for f in mem_edited_raw):
+                                        any_other_mentions = True
+                                        break
+                            if not any_other_mentions and idx == 1:
+                                eff_edited = list(mem_edited_raw)
+                            else:
+                                eff_edited = []
 
-                    eff_read = list(item_read)
-                    if not item_read or len(user_items) == 1:
-                        for f in mem_read_raw:
-                            if f not in eff_read:
-                                eff_read.append(f)
+                    if item_read:
+                        eff_read = list(item_read)
+                    elif len(user_items) == 1:
+                        eff_read = list(mem_read_raw)
+                    else:
+                        item_text = (item.get("details", "") + " " + item.get("task", "")).lower()
+                        matching_read = [
+                            f for f in mem_read_raw
+                            if Path(f.replace("\\", "/").rstrip("/")).name.lower() in item_text
+                        ]
+                        if matching_read:
+                            eff_read = matching_read
+                        else:
+                            any_other_mentions_read = False
+                            for other_it in user_items:
+                                if other_it is not item:
+                                    o_text = (other_it.get("details", "") + " " + other_it.get("task", "")).lower()
+                                    if any(Path(f.replace("\\", "/").rstrip("/")).name.lower() in o_text for f in mem_read_raw):
+                                        any_other_mentions_read = True
+                                        break
+                            if not any_other_mentions_read and idx == 1:
+                                eff_read = list(mem_read_raw)
+                            else:
+                                eff_read = []
 
-                    # Cumuler de façon dédupliquée pour cet iid au fil des commits
-                    if iid not in accumulated_edited:
-                        accumulated_edited[iid] = []
-                    for f in eff_edited:
-                        if f not in accumulated_edited[iid]:
-                            accumulated_edited[iid].append(f)
-
-                    if iid not in accumulated_read:
-                        accumulated_read[iid] = []
-                    for f in eff_read:
-                        if f not in accumulated_read[iid]:
-                            accumulated_read[iid].append(f)
+                    # Cumuler de façon dédupliquée pour cet iid au fil des commits (dernière version gagnante par nom de fichier)
+                    accumulated_edited[iid] = _merge_file_paths_latest_wins(accumulated_edited.get(iid, []), eff_edited)
+                    accumulated_read[iid] = _merge_file_paths_latest_wins(accumulated_read.get(iid, []), eff_read)
 
                     item_to_store = dict(item)
                     item_to_store["edited_files"] = list(accumulated_edited[iid])
