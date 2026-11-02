@@ -3560,7 +3560,8 @@ def _extract_project_roadmap(
                 "task": task_t,
                 "details": details_t,
                 "done": False,
-                "created_at": now_iso
+                "created_at": now_iso,
+                "updated_at": now_iso,
             }
             commit_data["user_items"].append(new_it)
             aivc_roadmap_items.append(new_it)
@@ -3627,6 +3628,55 @@ def _extract_project_notes_from_mem(mem: Dict[str, Any]) -> List[str]:
             if fname not in SYSTEM_FILES and fname not in ("home.md", "morning_sync_state.json"):
                 return [port]
     return []
+
+
+def format_french_task_date(ts: Any) -> str:
+    """Format an ISO timestamp, unix timestamp or datetime into a deterministic French string:
+    '(Jour J mois, HHhMM)', e.g. '(Mardi 2 novembre, 14h11)'.
+    Does not depend on locale.setlocale. Converts to local timezone.
+    """
+    if not ts:
+        return ""
+
+    dt: Optional[datetime] = None
+    if isinstance(ts, datetime):
+        dt = ts
+    elif isinstance(ts, (int, float)):
+        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+    elif isinstance(ts, str):
+        raw_s = ts.strip()
+        if not raw_s:
+            return ""
+        try:
+            clean_s = raw_s.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(clean_s)
+        except Exception:
+            try:
+                import dateutil.parser
+                dt = dateutil.parser.parse(raw_s)
+            except Exception:
+                return ""
+
+    if dt is None:
+        return ""
+
+    if dt.tzinfo is not None:
+        dt = dt.astimezone()
+    else:
+        dt = dt.replace(tzinfo=timezone.utc).astimezone()
+
+    days = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
+    months = [
+        "janvier", "février", "mars", "avril", "mai", "juin",
+        "juillet", "août", "septembre", "octobre", "novembre", "décembre"
+    ]
+
+    day_name = days[dt.weekday()]
+    day_num = dt.day
+    month_name = months[dt.month - 1]
+    time_str = f"{dt.hour:02d}h{dt.minute:02d}"
+
+    return f"({day_name} {day_num} {month_name}, {time_str})"
 
 
 def _sync_and_render_aivc_tldr(
@@ -3770,6 +3820,8 @@ def _sync_and_render_aivc_tldr(
                     item_to_store = dict(item)
                     item_to_store["edited_files"] = list(accumulated_edited[iid])
                     item_to_store["read_files"] = list(accumulated_read[iid])
+                    eff_ts = item.get("updated_at") or mem.get("timestamp") or mem_ts or item.get("created_at") or str(_ts)
+                    item_to_store["updated_at"] = eff_ts
 
                     # Livrable 1 : Remplacement in-situ reposant EXCLUSIVEMENT sur iid exact
                     items_map[iid] = (item_to_store, is_done, mem)
@@ -3790,12 +3842,13 @@ def _sync_and_render_aivc_tldr(
                     it_copy = dict(it)
                     it_copy["done"] = True
                     it_copy["task_status"] = "validated"
+                    it_copy["updated_at"] = mem_ts
                     items_map[cid] = (it_copy, True, origin_mem)
                 else:
                     seq_counter += 1
                     if cid not in first_seen_order:
                         first_seen_order[cid] = (mem_ts, seq_counter)
-                    items_map[cid] = ({"id": cid, "task_status": "validated", "done": True}, True, mem)
+                    items_map[cid] = ({"id": cid, "task_status": "validated", "done": True, "updated_at": mem_ts}, True, mem)
 
     # Filter active and done items
     active_items = [it for iid, (it, is_done, mem) in items_map.items() if not is_done]
@@ -3889,7 +3942,7 @@ def _sync_and_render_aivc_tldr(
                 if read_links and "- 📖 **Fichiers consultés** :" not in details:
                     file_lines.append(f"- 📖 **Fichiers consultés** : {read_links}")
 
-                details_clean = details.strip()
+                details_clean = re.sub(r"^>\s*\[!NOTE\][^\r\n]*\r?\n*", "", details.strip()).strip()
                 if file_lines:
                     if details_clean:
                         body = f"{details_clean}\n\n" + "\n".join(file_lines)
@@ -3898,7 +3951,17 @@ def _sync_and_render_aivc_tldr(
                 else:
                     body = details_clean
 
-                sec2_parts.append(f"### [{iid}] {task}\n{body}")
+                task_ts = it.get("updated_at") or it.get("timestamp") or it.get("created_at")
+                date_callout = ""
+                if task_ts:
+                    date_str = format_french_task_date(task_ts)
+                    if date_str:
+                        date_callout = f"> [!NOTE] {date_str}\n\n"
+
+                if body:
+                    sec2_parts.append(f"### [{iid}] {task}\n{date_callout}{body}")
+                else:
+                    sec2_parts.append(f"### [{iid}] {task}\n{date_callout.rstrip()}")
             toc_text = "\n".join(toc_lines)
             sec2_text = f"{toc_text}\n\n" + "\n\n".join(sec2_parts)
             sections.append(f"## ⚡ Décisions & Livrables Prêts\n\n{sec2_text}")
