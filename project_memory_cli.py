@@ -2320,6 +2320,9 @@ def _extract_artifact_subpath(raw: str) -> Optional[str]:
     return None
 
 
+_RCLONE_ATTEMPTED_CONV_IDS: set[str] = set()
+
+
 def _ensure_public_artifact_exists(subpath: str, blob_hash: str = "") -> Optional[Path]:
     """
     S'assure qu'un artefact référencé par son subpath (ex: <uuid>/fichier.ext ou brain/<uuid>/fichier.ext)
@@ -2328,7 +2331,8 @@ def _ensure_public_artifact_exists(subpath: str, blob_hash: str = "") -> Optiona
     1. Cherche dans ~/.gemini/antigravity/brain/<subpath>
     2. Cherche dans ~/.gemini/antigravity-cli/brain/<subpath>
     3. Cherche dans LOCALAPPDATA/Temp/aivc/artifacts/<subpath> ou AIVC_USER_TEMP_DIR/artifacts/<subpath>
-    4. Cherche le blob_hash (fourni ou extrait via SQLite core_index.db) dans storage_root/blobs/<hash>
+    4. Tente un rapatriement ciblé via rclone depuis Google Drive (antigravity-cli/brain puis antigravity/brain)
+    5. Cherche le blob_hash (fourni ou extrait via SQLite core_index.db) dans storage_root/blobs/<hash>
     Si trouvé, copie vers target_public (et AIVC_USER_TEMP_DIR).
     Synchronise également les autres fichiers du même sous-dossier de conversation.
     Retourne le Path cible s'il existe et est valide (> 8 octets), None sinon.
@@ -2346,6 +2350,12 @@ def _ensure_public_artifact_exists(subpath: str, blob_hash: str = "") -> Optiona
 
     target_public = AIVC_ARTIFACTS_DIR / Path(clean_sub)
     target_user = AIVC_USER_TEMP_DIR / "artifacts" / Path(clean_sub)
+
+    if target_public.parent.is_file():
+        try:
+            target_public.parent.unlink(missing_ok=True)
+        except Exception:
+            pass
 
     def _is_corrupt_8b(p: Path) -> bool:
         try:
@@ -2417,7 +2427,45 @@ def _ensure_public_artifact_exists(subpath: str, blob_hash: str = "") -> Optiona
     if target_public.is_file():
         return target_public
 
-    # 3. Chercher dans le BlobStore AIVC
+    # 3. Tenter un rapatriement ciblé via rclone depuis Google Drive
+    if "/" in clean_sub:
+        conv_dir_name = clean_sub.split("/")[0]
+        if conv_dir_name not in _RCLONE_ATTEMPTED_CONV_IDS:
+            _RCLONE_ATTEMPTED_CONV_IDS.add(conv_dir_name)
+            pub_conv_dir = AIVC_ARTIFACTS_DIR / conv_dir_name
+            if pub_conv_dir.is_file():
+                try:
+                    pub_conv_dir.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            for remote_brain in (
+                f"gdrive:AIVC_Sync/files/.gemini/antigravity-cli/brain/{conv_dir_name}/",
+                f"gdrive:AIVC_Sync/files/.gemini/antigravity/brain/{conv_dir_name}/",
+                f"gdrive:AIVC_Sync/files/AppData/Local/Temp/aivc/artifacts/{conv_dir_name}/",
+            ):
+                try:
+                    import subprocess
+                    pub_conv_dir.mkdir(parents=True, exist_ok=True)
+                    res = subprocess.run(
+                        ["rclone", "copy", remote_brain, str(pub_conv_dir)],
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                    )
+                    if res.returncode == 0 and target_public.is_file():
+                        break
+                except Exception:
+                    pass
+
+            if target_public.is_file():
+                try:
+                    target_user.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(target_public, target_user)
+                except Exception:
+                    pass
+                return target_public
+
+    # 4. Chercher dans le BlobStore AIVC
     storage_root = _get_aivc_storage_root()
     blobs_dir = storage_root / "blobs"
     effective_hash = blob_hash.strip() if blob_hash else ""
