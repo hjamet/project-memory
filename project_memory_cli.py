@@ -2423,7 +2423,7 @@ def _ensure_public_artifact_exists(subpath: str, blob_hash: str = "") -> Optiona
             pub_conv_dir = AIVC_ARTIFACTS_DIR / conv_dir_name
             if pub_conv_dir.is_file():
                 pub_conv_dir.unlink(missing_ok=True)
-            if shutil.which("rclone"):
+            if shutil.which("rclone") and os.environ.get("AIVC_RESTORE_REMOTE", "").strip().lower() in ("1", "true", "yes"):
                 import subprocess
                 pub_conv_dir.mkdir(parents=True, exist_ok=True)
                 for remote_brain in (
@@ -3907,6 +3907,8 @@ def _sync_and_render_aivc_tldr(
     items_map: Dict[str, Tuple[Dict[str, Any], bool, Dict[str, Any]]] = {}
     accumulated_edited: Dict[str, List[str]] = {}
     accumulated_read: Dict[str, List[str]] = {}
+    recurring_by_id: Dict[str, bool] = {}
+    base_details_by_id: Dict[str, str] = {}
     first_seen_order: Dict[str, Tuple[str, int]] = {}
     seq_counter = 0
     project_mems: List[Dict[str, Any]] = []
@@ -3957,6 +3959,22 @@ def _sync_and_render_aivc_tldr(
                 for idx, item in enumerate(user_items, start=1):
                     iid = item.get("id") or f"{mem.get('id', 'item')[:6]}-{idx}"
                     st = item.get("task_status")
+
+                    # Suivi is_recurring
+                    if "is_recurring" in item:
+                        recurring_by_id[iid] = bool(item.get("is_recurring"))
+                    elif "recurring" in item:
+                        recurring_by_id[iid] = bool(item.get("recurring"))
+
+                    # Suivi base_details
+                    b_det = item.get("base_details")
+                    if b_det and not (str(b_det).strip().startswith("[VALIDÉ") or str(b_det).strip().startswith("[ÉCARTÉ")):
+                        base_details_by_id[iid] = str(b_det).strip()
+                    elif st == "new":
+                        cur_det = str(item.get("details") or "").strip()
+                        if cur_det and not (cur_det.startswith("[VALIDÉ") or cur_det.startswith("[ÉCARTÉ")):
+                            base_details_by_id[iid] = cur_det
+
                     if st == "validated":
                         is_done = True
                     elif st in ("new", "await_validation"):
@@ -4019,19 +4037,26 @@ def _sync_and_render_aivc_tldr(
                             else:
                                 eff_read = []
 
-                    # Ne plus cumuler les anciens fichiers de commits obsolètes :
-                    # La version la plus récente de la tâche fournit ses propres fichiers effectifs
-                    if eff_edited:
-                        accumulated_edited[iid] = list(eff_edited)
-                    elif iid not in accumulated_edited:
-                        accumulated_edited[iid] = []
+                    is_recurring_task = recurring_by_id.get(iid, False)
+                    if is_done and is_recurring_task:
+                        # Tâche récurrente validée : remise automatique en "new" dans la roadmap
+                        is_done = False
+                        eff_edited = []
+                        eff_read = []
 
-                    if eff_read:
-                        accumulated_read[iid] = list(eff_read)
-                    elif iid not in accumulated_read:
-                        accumulated_read[iid] = []
+                    # Remplacement strict : les fichiers liés proviennent exclusivement du dernier commit
+                    accumulated_edited[iid] = list(eff_edited)
+                    accumulated_read[iid] = list(eff_read)
 
                     item_to_store = dict(item)
+                    if is_recurring_task:
+                        item_to_store["is_recurring"] = True
+                        if is_done is False and (st == "validated" or item.get("done", False)):
+                            item_to_store["task_status"] = "new"
+                            item_to_store["done"] = False
+                            restored_details = base_details_by_id.get(iid, str(item.get("base_details") or ""))
+                            item_to_store["details"] = restored_details
+
                     item_to_store["edited_files"] = list(accumulated_edited[iid])
                     item_to_store["read_files"] = list(accumulated_read[iid])
                     parent_ts = (
@@ -4068,18 +4093,43 @@ def _sync_and_render_aivc_tldr(
             completed_cids = mem.get("completed_user_items", []) or []
             for cid in completed_cids:
                 cid_ts = mem.get("updated_at") or mem.get("timestamp") or mem.get("created_at") or mem_ts
+                is_recurring_cid = recurring_by_id.get(cid, False)
                 if cid in items_map:
                     it, _, origin_mem = items_map[cid]
                     it_copy = dict(it)
-                    it_copy["done"] = True
-                    it_copy["task_status"] = "validated"
-                    it_copy["updated_at"] = cid_ts
-                    items_map[cid] = (it_copy, True, origin_mem)
+                    if is_recurring_cid:
+                        it_copy["done"] = False
+                        it_copy["task_status"] = "new"
+                        it_copy["is_recurring"] = True
+                        it_copy["details"] = base_details_by_id.get(cid, str(it.get("base_details") or ""))
+                        it_copy["edited_files"] = []
+                        it_copy["read_files"] = []
+                        accumulated_edited[cid] = []
+                        accumulated_read[cid] = []
+                        it_copy["updated_at"] = cid_ts
+                        items_map[cid] = (it_copy, False, origin_mem)
+                    else:
+                        it_copy["done"] = True
+                        it_copy["task_status"] = "validated"
+                        it_copy["updated_at"] = cid_ts
+                        items_map[cid] = (it_copy, True, origin_mem)
                 else:
                     seq_counter += 1
                     if cid not in first_seen_order:
                         first_seen_order[cid] = (cid_ts, seq_counter)
-                    items_map[cid] = ({"id": cid, "task_status": "validated", "done": True, "updated_at": cid_ts}, True, mem)
+                    if is_recurring_cid:
+                        items_map[cid] = ({
+                            "id": cid,
+                            "task_status": "new",
+                            "done": False,
+                            "is_recurring": True,
+                            "details": base_details_by_id.get(cid, ""),
+                            "edited_files": [],
+                            "read_files": [],
+                            "updated_at": cid_ts
+                        }, False, mem)
+                    else:
+                        items_map[cid] = ({"id": cid, "task_status": "validated", "done": True, "updated_at": cid_ts}, True, mem)
 
     # Filter active and done items
     active_items = [it for iid, (it, is_done, mem) in items_map.items() if not is_done]
@@ -4143,6 +4193,8 @@ def _sync_and_render_aivc_tldr(
         if project_dict is not None:
             project_dict["auto_await_count"] = n_deliverables
             project_dict["auto_roadmap_count"] = n_roadmap
+            project_dict["deliverable_items"] = list(deliverable_items)
+            project_dict["roadmap_items"] = list(roadmap_aivc_items)
 
         abs_note_forward = os.path.abspath(target_full).replace("\\", "/")
 
@@ -4225,6 +4277,8 @@ def _sync_and_render_aivc_tldr(
     if project_dict is not None:
         project_dict["auto_await_count"] = 0
         project_dict["auto_roadmap_count"] = 0
+        project_dict["deliverable_items"] = []
+        project_dict["roadmap_items"] = []
 
     # No deliverables and no roadmap tasks
     if had_aivc_items:
@@ -4697,6 +4751,109 @@ def cmd_list(args, data):
             write_root_dashboard(vault_dir=VAULT_DIR, data=data, projects=projects)
         except Exception:
             pass
+
+
+def cmd_next_autonomous(args, data):
+    """
+    Sélectionne le prochain projet autonome éligible sans seuil de priorité minimum
+    selon l'ordre exact de `list --agent`, à condition qu'il n'ait aucune tâche en attente
+    de validation humaine (await_validation_count == 0).
+    """
+    fast_mode = getattr(args, "fast", False)
+    projects = scan_projects(VAULT_DIR, data, fast_mode=fast_mode, persist=True, is_agent=True)
+
+    def _is_excluded(p: Dict[str, Any]) -> bool:
+        title = (p.get("title") or "").lower()
+        rel = (p.get("rel_path") or "").lower()
+        if "consolidation et exploration dream" in title or "consolidation et exploration dream" in rel:
+            return True
+        if "dream.md" in rel or "🤖 consolidation et exploration dream" in title:
+            return True
+        return False
+
+    candidate_projects = [p for p in projects if not _is_excluded(p)]
+
+    # Inspecter les projets un à un dans l'ordre exact de priorité
+    selected_tuple = None
+    first_empty_await_tuple = None
+
+    for p in candidate_projects:
+        clean_title = re.sub(r"^(?:🤖\s*)+", "", p.get("title", "")).strip()
+        tldr_path, _ = _sync_and_render_aivc_tldr(
+            vault_root=VAULT_DIR,
+            rel_path=p["rel_path"],
+            title=clean_title,
+            sessions_since_human=p.get("agent_sessions_since_human", 0),
+            project_dict=p
+        )
+        deliv = p.get("deliverable_items") or []
+        roadmap = p.get("roadmap_items") or []
+
+        if len(deliv) == 0:
+            if len(roadmap) > 0:
+                selected_tuple = (p, clean_title, tldr_path, deliv, roadmap)
+                break
+            elif first_empty_await_tuple is None:
+                first_empty_await_tuple = (p, clean_title, tldr_path, deliv, roadmap)
+
+    if selected_tuple is None and first_empty_await_tuple is not None:
+        selected_tuple = first_empty_await_tuple
+
+    as_json = getattr(args, "json", False)
+
+    if selected_tuple is None:
+        if as_json:
+            print(json.dumps({
+                "selected": False,
+                "reason": "all_projects_awaiting_validation"
+            }, indent=2, ensure_ascii=False))
+        else:
+            print("⏸️ Aucun projet éligible : tous les projets actifs ont au moins une tâche en attente de validation (await_validation).")
+        return
+
+    p, clean_title, tldr_path, deliv, roadmap = selected_tuple
+    abs_path = os.path.abspath(p.get("file_path") or p.get("full_path") or os.path.join(VAULT_DIR, p["rel_path"].replace("/", os.sep)))
+    resolved_tldr = os.path.abspath(tldr_path) if tldr_path else os.path.abspath(os.path.join(ADVANCE_TLDR_DIR, f"🤖 {clean_title}.md"))
+
+    new_tasks = []
+    for it in roadmap:
+        new_tasks.append({
+            "id": it.get("id", ""),
+            "title": it.get("task") or it.get("title") or "",
+            "details": it.get("details", ""),
+            "is_recurring": bool(it.get("is_recurring", False))
+        })
+
+    eff_score = p.get("effective_score")
+    if eff_score is not None:
+        eff_score = round(float(eff_score), 2)
+    b_score = p.get("base_score")
+    if b_score is not None:
+        b_score = round(float(b_score), 2)
+
+    result = {
+        "selected": True,
+        "title": clean_title,
+        "file": p["rel_path"].replace("\\", "/"),
+        "abs_path": abs_path,
+        "tldr_path": resolved_tldr,
+        "effective_score": eff_score,
+        "base_score": b_score,
+        "await_validation_count": len(deliv),
+        "new_tasks": new_tasks
+    }
+
+    if as_json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        print(f"🎯 Prochain projet autonome sélectionné : {clean_title}")
+        print(f"📁 Fichier : {result['file']}")
+        print(f"⭐ Score effectif : {eff_score} (Base : {b_score})")
+        print(f"📋 Tâches en attente (new) : {len(new_tasks)}")
+        for idx, t in enumerate(new_tasks, start=1):
+            rec_tag = " [récurrente]" if t["is_recurring"] else ""
+            t_id = f"[{t['id']}] " if t['id'] else ""
+            print(f"   {idx}. {t_id}{t['title']}{rec_tag}")
 
 
 def cmd_get(args, data):
@@ -6844,6 +7001,14 @@ def main():
     dash_parser = subparsers.add_parser("dashboard", help="Recalcule les scores utilisateur et régénère le tableau de bord 🎯 Projets.md")
     dash_parser.add_argument("--json", action="store_true", help="Sortie au format JSON")
 
+    # next-autonomous
+    next_auto_parser = subparsers.add_parser(
+        "next-autonomous",
+        help="Sélectionne le prochain projet autonome éligible sans seuil minimum et sans tâche en attente de validation"
+    )
+    next_auto_parser.add_argument("--json", action="store_true", help="Sortie au format JSON")
+    next_auto_parser.add_argument("--fast", action="store_true", help="Mode rapide utilisant le cache sans rescanner tout le coffre")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -6855,6 +7020,8 @@ def main():
         cmd_list(args, data)
     elif args.command == "dashboard":
         cmd_dashboard(args, data)
+    elif args.command == "next-autonomous":
+        cmd_next_autonomous(args, data)
     elif args.command == "clean-orphans":
         cmd_clean_orphans(args, DATA_JSON_PATH, CACHE_PATH)
     elif args.command == "get":
