@@ -3058,7 +3058,7 @@ def _auto_restore_aivc_blobs_for_active_items(
                     b_hash = ch.get("blob_hash") if isinstance(ch, dict) else getattr(ch, "blob_hash", None)
                     _materialize_artifact(sub, blob_hash=b_hash, filename=Path(sub).name)
 
-        # 2. Scan details of active items for artifact paths (brain or aivc/artifacts)
+        # 2. Scan details, edited_files and read_files of active items for artifact paths
         artifact_pattern = re.compile(
             r"(?:file:///?(?:[A-Za-z]:)?[\\/]|~/|[A-Za-z]:[\\/]|/)?(?:Users|home)?[^\"\'\`\s\)\>]*?(?:\.?gemini[\\/]antigravity(?:-cli)?[\\/]brain|aivc[\\/]artifacts)[\\/]([^\s\)\"\'<>`:]+)",
             re.IGNORECASE
@@ -3066,9 +3066,16 @@ def _auto_restore_aivc_blobs_for_active_items(
         for it in active_items:
             details = it.get("details", "")
             for match in artifact_pattern.finditer(details):
-                raw_match = match.group(1).rstrip("\\/.,")
+                raw_match = match.group(1).split(":")[0].rstrip("\\/.,")
                 sub = _extract_artifact_subpath(raw_match) or raw_match
-                _materialize_artifact(sub, filename=Path(sub).name)
+                sub_clean = sub.split(":")[0]
+                _materialize_artifact(sub_clean, filename=Path(sub_clean).name)
+            for f_list in (it.get("edited_files", []) or [], it.get("read_files", []) or []):
+                for f_item in _extract_file_path_list(f_list):
+                    sub = _extract_artifact_subpath(f_item)
+                    if sub:
+                        sub_clean = sub.split(":")[0]
+                        _materialize_artifact(sub_clean, filename=Path(sub_clean).name)
 
     finally:
         _record_remote_missing_blob(storage_root, "", flush=True)
@@ -3251,6 +3258,177 @@ def _format_file_links(file_list: Any, main_note_path: str = "", is_read: bool =
             formatted_links.append(rewritten_link)
 
     return " · ".join(formatted_links)
+
+
+def _linkify_mentioned_files_in_details(
+    text: str,
+    edited_files: Any,
+    read_files: Any,
+    main_note_path: str = "",
+    vault_dir: str = VAULT_DIR,
+) -> str:
+    """
+    Rétrocompatibilité automatique pour les tâches :
+    Si un nom de fichier présent dans edited_files ou read_files (ex: diff_foo.md, Response.pdf, etc.)
+    est mentionné en texte brut (ou entre backticks) dans le texte sans être déjà dans un lien Markdown
+    [...](file:///...), remplace cette mention par le lien Markdown cliquable [📄 nom](file:///...)
+    (ou [📕 nom](file:///...) pour .pdf) pointant vers son chemin synchronisé sur le poste actuel.
+    """
+    if not text:
+        return text
+
+    raw_paths = _extract_file_path_list(edited_files) + _extract_file_path_list(read_files)
+    if not raw_paths:
+        return text
+
+    # Déduplication par basename en conservant la dernière version gagnante
+    raw_paths = _merge_file_paths_latest_wins([], raw_paths)
+
+    main_port = _to_portable_path(main_note_path).lower() if main_note_path else ""
+    main_base = Path(main_note_path).name.lower() if main_note_path else ""
+    v_dir = Path(vault_dir) if vault_dir else Path(VAULT_DIR)
+    posix_home = Path.home().as_posix()
+    artifacts_posix = AIVC_ARTIFACTS_DIR.as_posix().replace("\\", "/").lstrip("/")
+
+    # Exclure les .tex bruts si .pdf ou diff présent
+    has_pdf_or_diff = any(
+        Path(str(p).strip().replace("\\", "/")).name.lower().endswith(".pdf")
+        or ("diff" in Path(str(p).strip().replace("\\", "/")).name.lower() and Path(str(p).strip().replace("\\", "/")).name.lower().endswith(".md"))
+        for p in raw_paths
+    )
+
+    file_targets: List[Tuple[str, str, str]] = []
+    seen_bases: Set[str] = set()
+
+    for raw in raw_paths:
+        clean = raw.strip()
+        if not clean:
+            continue
+        clean_lower = clean.lower()
+        if "advance_tldr" in clean_lower or (clean_lower.endswith(".md") and "🤖" in clean):
+            continue
+        base = Path(clean.replace("\\", "/").rstrip("/")).name
+        if not base or base.startswith("🤖"):
+            continue
+        base_lower = base.lower()
+        if (
+            base_lower in {
+                "sources_eclaireur.md",
+                "sources_executant.md",
+                "sources_audit.md",
+                "remember_payload.json",
+                "task_commit_payload.json",
+            }
+            or (base_lower.startswith("sources_") and base_lower.endswith(".md"))
+            or (base_lower.startswith("questions_") and base_lower.endswith(".md"))
+        ):
+            continue
+
+        if has_pdf_or_diff and base_lower.endswith(".tex"):
+            continue
+
+        clean_port = _to_portable_path(clean).lower()
+        if main_port and (
+            clean_port == main_port
+            or clean_port == main_base
+            or clean_port.endswith("/" + main_base)
+            or base_lower == main_base
+        ):
+            continue
+
+        if base_lower in seen_bases:
+            continue
+        seen_bases.add(base_lower)
+
+        icon = "📕 " if base_lower.endswith(".pdf") else "📄 "
+
+        if clean.lower().startswith(("http://", "https://")):
+            url = clean
+        else:
+            f_path = clean
+            if f_path.startswith("file:///"):
+                f_path = f_path[8:]
+            elif f_path.startswith("file://"):
+                f_path = f_path[7:]
+
+            sub_artifact = _extract_artifact_subpath(f_path)
+            if sub_artifact:
+                _ensure_public_artifact_exists(sub_artifact)
+                clean_sub = sub_artifact.replace("\\", "/").strip("/")
+                url = f"file:///{artifacts_posix}/{clean_sub}"
+            else:
+                if f_path.startswith("~/") or f_path.startswith("~\\"):
+                    sub = f_path[2:].replace("\\", "/").lstrip("/")
+                    abs_forward = f"{posix_home}/{sub}"
+                elif re.match(r'^[A-Za-z]:[\\/]', f_path) or f_path.startswith("/"):
+                    abs_forward = f_path.replace("\\", "/")
+                else:
+                    f_clean = f_path.replace("\\", "/")
+                    if f_clean.startswith("Documents/VoiceNotes/"):
+                        sub = f_clean[len("Documents/VoiceNotes/"):]
+                        abs_forward = (v_dir / Path(sub)).as_posix()
+                    elif f_clean.startswith("~/Documents/VoiceNotes/"):
+                        sub = f_clean[len("~/Documents/VoiceNotes/"):]
+                        abs_forward = (v_dir / Path(sub)).as_posix()
+                    else:
+                        cand_v = v_dir / Path(f_clean)
+                        if cand_v.exists():
+                            abs_forward = cand_v.as_posix()
+                        else:
+                            cand_h = Path.home() / Path(f_clean)
+                            abs_forward = cand_h.as_posix() if cand_h.exists() else cand_v.as_posix()
+
+                raw_url = f"file:///{abs_forward.lstrip('/')}"
+                rewritten = _rewrite_paths_for_current_pc(raw_url)
+                m_u = re.search(r'\(([^)]+)\)', rewritten)
+                url = m_u.group(1) if m_u else rewritten
+
+        file_targets.append((base, icon, url))
+
+    if not file_targets:
+        return text
+
+    md_links: List[str] = []
+    def _stash_md_link(m: re.Match) -> str:
+        idx = len(md_links)
+        md_links.append(m.group(0))
+        return f"\x00MDLINK_{idx}\x00"
+
+    masked = re.sub(r'\[([^\]]*)\]\(([^)]*)\)', _stash_md_link, text)
+
+    wikilinks: List[str] = []
+    def _stash_wikilink(m: re.Match) -> str:
+        idx = len(wikilinks)
+        wikilinks.append(m.group(0))
+        return f"\x00WIKILINK_{idx}\x00"
+
+    masked = re.sub(r'\[\[([^\]]+)\]\]', _stash_wikilink, masked)
+
+    existing_links_lower = [link.lower() for link in md_links] + [wl.lower() for wl in wikilinks]
+
+    # Trier par longueur décroissante de basename pour éviter les conflits de préfixes
+    file_targets.sort(key=lambda t: len(t[0]), reverse=True)
+
+    for base, icon, url in file_targets:
+        base_lower = base.lower()
+        if any(base_lower in lk for lk in existing_links_lower):
+            continue
+        if base_lower not in masked.lower():
+            continue
+        esc_base = re.escape(base)
+        pat = re.compile(
+            r"(?<![A-Za-z0-9_/\\])(?:`(" + esc_base + r")`|(" + esc_base + r"))(?![A-Za-z0-9_/\\])",
+            re.IGNORECASE
+        )
+        replacement = f"[{icon}{base}]({url})"
+        masked = pat.sub(replacement, masked, count=1)
+
+    for idx, wl in enumerate(wikilinks):
+        masked = masked.replace(f"\x00WIKILINK_{idx}\x00", wl)
+    for idx, lk in enumerate(md_links):
+        masked = masked.replace(f"\x00MDLINK_{idx}\x00", lk)
+
+    return masked
 
 
 def _clean_text_tokens(text: str) -> Set[str]:
@@ -3604,15 +3782,13 @@ def _extract_project_roadmap(
                 first_line = details.strip().splitlines()[0].strip()
                 if first_line and not first_line.startswith("```") and not first_line.startswith("Source :"):
                     line += f" : {first_line}"
+        line = _linkify_mentioned_files_in_details(
+            line,
+            edited_files=it.get("edited_files", []),
+            read_files=it.get("read_files", []),
+            main_note_path=note_path,
+        )
         roadmap_lines.append(line)
-
-        # Fichiers modifiés et consultés attachés à cette tâche de roadmap
-        edited_links = _format_file_links(it.get("edited_files", []), note_path, is_read=False)
-        read_links = _format_file_links(it.get("read_files", []), note_path, is_read=True)
-        if edited_links:
-            roadmap_lines.append(f"  - ✏️ **Fichiers modifiés** : {edited_links}")
-        if read_links:
-            roadmap_lines.append(f"  - 📖 **Fichiers consultés** : {read_links}")
 
     return roadmap_lines
 
@@ -3811,9 +3987,17 @@ def _sync_and_render_aivc_tldr(
                             else:
                                 eff_read = []
 
-                    # Cumuler de façon dédupliquée pour cet iid au fil des commits (dernière version gagnante par nom de fichier)
-                    accumulated_edited[iid] = _merge_file_paths_latest_wins(accumulated_edited.get(iid, []), eff_edited)
-                    accumulated_read[iid] = _merge_file_paths_latest_wins(accumulated_read.get(iid, []), eff_read)
+                    # Ne plus cumuler les anciens fichiers de commits obsolètes :
+                    # La version la plus récente de la tâche fournit ses propres fichiers effectifs
+                    if eff_edited:
+                        accumulated_edited[iid] = list(eff_edited)
+                    elif iid not in accumulated_edited:
+                        accumulated_edited[iid] = []
+
+                    if eff_read:
+                        accumulated_read[iid] = list(eff_read)
+                    elif iid not in accumulated_read:
+                        accumulated_read[iid] = []
 
                     item_to_store = dict(item)
                     item_to_store["edited_files"] = list(accumulated_edited[iid])
@@ -3948,23 +4132,18 @@ def _sync_and_render_aivc_tldr(
                 id_badge = f"**[`[{iid}]`]({anchor_link})**" if iid else f"**[Étape {idx}]({anchor_link})**"
                 toc_lines.append(f"> {idx}. {id_badge} — {task}")
 
-                edited_links = _format_file_links(it.get("edited_files", []), target_full, is_read=False)
-                read_links = _format_file_links(it.get("read_files", []), target_full, is_read=True)
-
-                file_lines = []
-                if edited_links and "- ✏️ **Fichiers modifiés** :" not in details:
-                    file_lines.append(f"- ✏️ **Fichiers modifiés** : {edited_links}")
-                if read_links and "- 📖 **Fichiers consultés** :" not in details:
-                    file_lines.append(f"- 📖 **Fichiers consultés** : {read_links}")
-
                 details_clean = re.sub(r"^>\s*\[!NOTE\][^\r\n]*\r?\n*", "", details.strip()).strip()
-                if file_lines:
-                    if details_clean:
-                        body = f"{details_clean}\n\n" + "\n".join(file_lines)
-                    else:
-                        body = "\n".join(file_lines)
-                else:
-                    body = details_clean
+                details_clean = re.sub(r"(?:\r?\n)*-\s*✏️\s*\*\*Fichiers modifiés\*\*:[^\r\n]*", "", details_clean)
+                details_clean = re.sub(r"(?:\r?\n)*-\s*📖\s*\*\*Fichiers consultés\*\*:[^\r\n]*", "", details_clean)
+                details_clean = details_clean.strip()
+
+                body = _linkify_mentioned_files_in_details(
+                    details_clean,
+                    edited_files=it.get("edited_files", []),
+                    read_files=it.get("read_files", []),
+                    main_note_path=target_full,
+                    vault_dir=VAULT_DIR,
+                )
 
                 task_ts = it.get("updated_at") or it.get("timestamp") or it.get("created_at")
                 date_callout = ""
