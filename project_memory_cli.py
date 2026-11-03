@@ -2352,31 +2352,25 @@ def _ensure_public_artifact_exists(subpath: str, blob_hash: str = "") -> Optiona
     target_user = AIVC_USER_TEMP_DIR / "artifacts" / Path(clean_sub)
 
     if target_public.parent.is_file():
-        try:
-            target_public.parent.unlink(missing_ok=True)
-        except Exception:
-            pass
+        target_public.parent.unlink(missing_ok=True)
 
     def _is_corrupt_8b(p: Path) -> bool:
-        try:
-            if p.is_file() and p.stat().st_size == 8:
+        if p.is_file() and p.stat().st_size == 8:
+            try:
                 if p.read_bytes() == b"restored":
                     p.unlink(missing_ok=True)
                     return True
-        except Exception:
-            pass
+            except OSError:
+                pass
         return False
 
     _is_corrupt_8b(target_public)
     _is_corrupt_8b(target_user)
 
     if target_public.is_file():
-        try:
-            if not target_user.is_file() or target_user.stat().st_size != target_public.stat().st_size:
-                target_user.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(target_public, target_user)
-        except Exception:
-            pass
+        if not target_user.is_file() or target_user.stat().st_size != target_public.stat().st_size:
+            target_user.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(target_public, target_user)
         return target_public
 
     # 1. Chercher dans les sources candidates locales
@@ -2411,18 +2405,12 @@ def _ensure_public_artifact_exists(subpath: str, blob_hash: str = "") -> Optiona
         ]:
             if b_root.is_dir():
                 pub_conv_dir = AIVC_ARTIFACTS_DIR / conv_dir_name
-                try:
-                    pub_conv_dir.mkdir(parents=True, exist_ok=True)
-                    for item in b_root.iterdir():
-                        if item.is_file() and not item.name.startswith("sources_") and not item.name.startswith("questions_"):
-                            dest_f = pub_conv_dir / item.name
-                            if not dest_f.exists() or (dest_f.stat().st_size != item.stat().st_size and item.stat().st_size != 8):
-                                try:
-                                    shutil.copy2(item, dest_f)
-                                except Exception:
-                                    pass
-                except Exception:
-                    pass
+                pub_conv_dir.mkdir(parents=True, exist_ok=True)
+                for item in b_root.iterdir():
+                    if item.is_file() and not item.name.startswith("sources_") and not item.name.startswith("questions_"):
+                        dest_f = pub_conv_dir / item.name
+                        if not dest_f.exists() or (dest_f.stat().st_size != item.stat().st_size and item.stat().st_size != 8):
+                            shutil.copy2(item, dest_f)
 
     if target_public.is_file():
         return target_public
@@ -2434,35 +2422,31 @@ def _ensure_public_artifact_exists(subpath: str, blob_hash: str = "") -> Optiona
             _RCLONE_ATTEMPTED_CONV_IDS.add(conv_dir_name)
             pub_conv_dir = AIVC_ARTIFACTS_DIR / conv_dir_name
             if pub_conv_dir.is_file():
-                try:
-                    pub_conv_dir.unlink(missing_ok=True)
-                except Exception:
-                    pass
-            for remote_brain in (
-                f"gdrive:AIVC_Sync/files/.gemini/antigravity-cli/brain/{conv_dir_name}/",
-                f"gdrive:AIVC_Sync/files/.gemini/antigravity/brain/{conv_dir_name}/",
-                f"gdrive:AIVC_Sync/files/AppData/Local/Temp/aivc/artifacts/{conv_dir_name}/",
-            ):
-                try:
-                    import subprocess
-                    pub_conv_dir.mkdir(parents=True, exist_ok=True)
-                    res = subprocess.run(
-                        ["rclone", "copy", remote_brain, str(pub_conv_dir)],
-                        capture_output=True,
-                        text=True,
-                        timeout=15,
-                    )
-                    if res.returncode == 0 and target_public.is_file():
-                        break
-                except Exception:
-                    pass
+                pub_conv_dir.unlink(missing_ok=True)
+            if shutil.which("rclone"):
+                import subprocess
+                pub_conv_dir.mkdir(parents=True, exist_ok=True)
+                for remote_brain in (
+                    f"gdrive:AIVC_Sync/files/.gemini/antigravity-cli/brain/{conv_dir_name}/",
+                    f"gdrive:AIVC_Sync/files/.gemini/antigravity/brain/{conv_dir_name}/",
+                    f"gdrive:AIVC_Sync/files/AppData/Local/Temp/aivc/artifacts/{conv_dir_name}/",
+                ):
+                    try:
+                        res = subprocess.run(
+                            ["rclone", "copy", remote_brain, str(pub_conv_dir)],
+                            capture_output=True,
+                            text=True,
+                            timeout=15,
+                            check=False,
+                        )
+                        if res.returncode == 0 and target_public.is_file():
+                            break
+                    except subprocess.TimeoutExpired:
+                        pass
 
             if target_public.is_file():
-                try:
-                    target_user.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(target_public, target_user)
-                except Exception:
-                    pass
+                target_user.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(target_public, target_user)
                 return target_public
 
     # 4. Chercher dans le BlobStore AIVC
