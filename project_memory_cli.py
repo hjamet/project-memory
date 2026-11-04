@@ -2319,8 +2319,66 @@ def _extract_artifact_subpath(raw: str) -> Optional[str]:
         return clean_s
     return None
 
+def _get_public_aivc_root() -> Path:
+    return AIVC_TEMP_DIR
+
 
 _RCLONE_ATTEMPTED_CONV_IDS: set[str] = set()
+_RCLONE_ATTEMPTED_CONV_TS: Optional[dict[str, float]] = None
+
+
+def _get_rclone_attempted_file() -> Path:
+    return _get_public_aivc_root() / "rclone_attempted_convs.json"
+
+
+def _has_recent_rclone_attempt(conv_id: str, ttl_seconds: int = 86400) -> bool:
+    """Charge une fois le fichier JSON en mémoire (_RCLONE_ATTEMPTED_CONV_TS),
+    purge les entrées expirées (now - ts >= ttl_seconds) et retourne True si
+    conv_id a déjà été tenté depuis moins de ttl_seconds."""
+    global _RCLONE_ATTEMPTED_CONV_TS, _RCLONE_ATTEMPTED_CONV_IDS
+    now = time.time()
+    if _RCLONE_ATTEMPTED_CONV_TS is None:
+        _RCLONE_ATTEMPTED_CONV_TS = {}
+        fpath = _get_rclone_attempted_file()
+        if fpath.is_file():
+            raw = json.loads(fpath.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                _RCLONE_ATTEMPTED_CONV_TS = {str(k): float(v) for k, v in raw.items()}
+        for cid, ts in _RCLONE_ATTEMPTED_CONV_TS.items():
+            if now - ts < ttl_seconds:
+                _RCLONE_ATTEMPTED_CONV_IDS.add(cid)
+
+    expired = [cid for cid, ts in _RCLONE_ATTEMPTED_CONV_TS.items() if (now - ts) >= ttl_seconds]
+    if expired:
+        for cid in expired:
+            _RCLONE_ATTEMPTED_CONV_TS.pop(cid, None)
+            _RCLONE_ATTEMPTED_CONV_IDS.discard(cid)
+
+    ts = _RCLONE_ATTEMPTED_CONV_TS.get(conv_id)
+    if ts is not None and (now - ts) < ttl_seconds:
+        _RCLONE_ATTEMPTED_CONV_IDS.add(conv_id)
+        return True
+    return False
+
+
+def _record_rclone_attempt(conv_id: str) -> None:
+    """Enregistre conv_id: time.time() dans _RCLONE_ATTEMPTED_CONV_TS, maintient
+    _RCLONE_ATTEMPTED_CONV_IDS.add(conv_id) et persiste le dictionnaire JSON sur disque."""
+    global _RCLONE_ATTEMPTED_CONV_TS, _RCLONE_ATTEMPTED_CONV_IDS
+    now = time.time()
+    if _RCLONE_ATTEMPTED_CONV_TS is None:
+        _has_recent_rclone_attempt(conv_id)
+
+    assert _RCLONE_ATTEMPTED_CONV_TS is not None
+    _RCLONE_ATTEMPTED_CONV_TS[conv_id] = now
+    _RCLONE_ATTEMPTED_CONV_IDS.add(conv_id)
+
+    fpath = _get_rclone_attempted_file()
+    fpath.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = fpath.with_suffix(".tmp")
+    with open(temp_path, "w", encoding="utf-8") as f:
+        json.dump(_RCLONE_ATTEMPTED_CONV_TS, f, indent=2, ensure_ascii=False)
+    os.replace(temp_path, fpath)
 
 
 def _ensure_public_artifact_exists(subpath: str, blob_hash: str = "") -> Optional[Path]:
@@ -2418,8 +2476,8 @@ def _ensure_public_artifact_exists(subpath: str, blob_hash: str = "") -> Optiona
     # 3. Tenter un rapatriement ciblé via rclone depuis Google Drive
     if "/" in clean_sub:
         conv_dir_name = clean_sub.split("/")[0]
-        if conv_dir_name not in _RCLONE_ATTEMPTED_CONV_IDS:
-            _RCLONE_ATTEMPTED_CONV_IDS.add(conv_dir_name)
+        if not _has_recent_rclone_attempt(conv_dir_name):
+            _record_rclone_attempt(conv_dir_name)
             pub_conv_dir = AIVC_ARTIFACTS_DIR / conv_dir_name
             if pub_conv_dir.is_file():
                 pub_conv_dir.unlink(missing_ok=True)
@@ -4462,11 +4520,14 @@ def format_project_table(projects, verbose=False):
     return "\n".join(lines)
 
 
-def write_root_dashboard(vault_dir=VAULT_DIR, data=None, projects=None, show_progress: bool = False) -> str:
+def write_root_dashboard(vault_dir=VAULT_DIR, data=None, projects=None, show_progress: bool = False, quiet: Optional[bool] = None) -> str:
     """
     Construit et écrit le tableau de bord Markdown épuré 🎯 Projets.md
     à la racine du coffre Obsidian.
     """
+    if quiet is not None:
+        show_progress = not quiet
+
     t_start = time.time()
     if data is None:
         data = load_data(os.path.join(vault_dir, ".obsidian", "plugins", "project-memory", "data.json"))
@@ -4474,14 +4535,11 @@ def write_root_dashboard(vault_dir=VAULT_DIR, data=None, projects=None, show_pro
     if projects is None:
         projects = scan_projects(vault_dir, data, fast_mode=True, persist=False, is_agent=False)
 
-    if show_progress:
-        print("⏳ Synchronisation des projets et des vues AIVC (🤖 advance_tldr)...")
-
     # Préchargement unique du cache AIVC pour éviter les lectures O(N) disque
     _get_aivc_memories()
 
     total_projs = len(projects)
-    bar_width = 20
+    bar_width = 24
     projects_with_await = []
 
     for idx, p in enumerate(projects, 1):
@@ -4504,9 +4562,9 @@ def write_root_dashboard(vault_dir=VAULT_DIR, data=None, projects=None, show_pro
         if show_progress and total_projs > 0:
             pct = int((idx / total_projs) * 100)
             filled = int(bar_width * idx / total_projs)
-            disp_title = (p_title[:27] + "...") if len(p_title) > 30 else p_title
+            disp_title = (p_title[:24] + "...") if len(p_title) > 27 else p_title
             bar = "█" * filled + "░" * (bar_width - filled)
-            sys.stdout.write(f"\r  [{bar}] {idx:2d}/{total_projs:2d} ({pct:3d}%) · Synchronisation : {disp_title:<30}")
+            sys.stdout.write(f"\r⏳ [{bar}] {idx}/{total_projs} ({pct}%) | Sync: {disp_title:<27}")
             sys.stdout.flush()
 
     # Synchroniser également tous les projets ayant des mémoires AIVC mais non indexés dans scan_projects
@@ -4538,14 +4596,13 @@ def write_root_dashboard(vault_dir=VAULT_DIR, data=None, projects=None, show_pro
                 )
 
     if show_progress and total_projs > 0:
-        bar = "█" * bar_width
-        sys.stdout.write(f"\r  [{bar}] {total_projs:2d}/{total_projs:2d} (100%) · Synchronisation terminée.{' ' * 20}\n")
-        sys.stdout.flush()
+        bar_full = "█" * bar_width
         if projects_with_await:
-            print(f"\n⚡ Projets avec livrables prêts à revoir ({len(projects_with_await)}) :")
-            for item in projects_with_await:
-                print(f"  • {item['title']} : {item['n_await']} livrable(s) prêt(s), {item['n_roadmap']} roadmap (Score {item['score_str']} {item['trend']})")
-            print()
+            compact_items = ", ".join(f"{item['title']} (🤖 {item['n_await']})" for item in projects_with_await)
+            sys.stdout.write(f"\r📊 [{bar_full}] 100% — {len(projects_with_await)} projet(s) avec livrables prêts : {compact_items}\n")
+        else:
+            sys.stdout.write(f"\r📊 [{bar_full}] 100% — Synchronisation terminée{' ' * 30}\n")
+        sys.stdout.flush()
 
     unreviewed = [p for p in projects if p.get("total_reviews", 0) == 0]
     reviewed = [p for p in projects if p.get("total_reviews", 0) > 0]
@@ -6253,7 +6310,7 @@ def cmd_stop_work(args, data):
             }, indent=2, ensure_ascii=False))
         else:
             role_pfx = " [Agent]" if is_agent else ""
-            print(f"✅ Toutes les sessions Pomodoro{role_pfx} actives ({len(stopped_list)}) ont été interrompues avec succès.", flush=True)
+            print(f"✅  Toutes les sessions Pomodoro{role_pfx} actives ({len(stopped_list)}) ont été interrompues avec succès.", flush=True)
         return
 
     # Cas 2 : Un projet spécifique est demandé
