@@ -21,6 +21,7 @@ import math
 import re
 import time
 import shutil
+import subprocess
 import glob
 import argparse
 import atexit
@@ -30,6 +31,7 @@ from datetime import datetime, date, time as dt_time, timedelta, timezone
 from dataclasses import dataclass
 from typing import Optional, Union, List, Any, Dict, Tuple, Set, Iterable
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 import urllib.parse
 
 if sys.platform == "win32":
@@ -4527,6 +4529,216 @@ def format_project_table(projects, verbose=False):
     return "\n".join(lines)
 
 
+_RUNTIME_QUOTA_CACHE: Optional[Tuple[List[str], List[str]]] = None
+_RUNTIME_QUOTA_TIME: float = 0.0
+
+
+def _fetch_agy_usage() -> dict:
+    agy_candidates = [
+        Path(os.environ.get("LOCALAPPDATA", "")) / "agy" / "bin" / "agy.exe",
+        Path.home() / "AppData" / "Local" / "agy" / "bin" / "agy.exe",
+        Path(r"C:\Users\Jamet\AppData\Local\agy\bin\agy.exe"),
+    ]
+    agy_exe = shutil.which("agy")
+    if not agy_exe:
+        for cand in agy_candidates:
+            if cand.is_file():
+                agy_exe = str(cand)
+                break
+    if not agy_exe:
+        raise FileNotFoundError("Exécutable `agy.exe` introuvable.")
+
+    cmd = [agy_exe, "--output-format", "json", "-p", "/usage"]
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
+    if proc.returncode != 0:
+        raise RuntimeError(f"agy.exe returned exit {proc.returncode}: {proc.stderr or proc.stdout}")
+    return json.loads(proc.stdout)
+
+
+def _fetch_claude_usage() -> dict:
+    claude_subagent_path = Path(__file__).resolve().parent / "claude_subagent.py"
+    if not claude_subagent_path.is_file():
+        cand = Path(r"C:\Users\Jamet\Documents\VoiceNotes\_agents\scripts-for-skills\claude_subagent.py")
+        if cand.is_file():
+            claude_subagent_path = cand
+    if str(claude_subagent_path.parent) not in sys.path:
+        sys.path.insert(0, str(claude_subagent_path.parent))
+    import claude_subagent
+    quota = claude_subagent.fetch_claude_quota()
+    if not quota:
+        raise RuntimeError("fetch_claude_quota returned None.")
+    return quota
+
+
+def _format_quota_duration_short(sec: float) -> str:
+    sec = max(0.0, sec)
+    if sec >= 86400:
+        d = int(sec // 86400)
+        h = int((sec % 86400) // 3600)
+        return f"{d}j {h:02d}h"
+    h = int(sec // 3600)
+    m = int((sec % 3600) // 60)
+    return f"{h}h {m:02d}m"
+
+
+def _format_quota_date_fr(iso_str: str) -> str:
+    d = datetime.fromisoformat(iso_str.replace("Z", "+00:00")).astimezone()
+    days_map = {"Mon": "lun.", "Tue": "mar.", "Wed": "mer.", "Thu": "jeu.", "Fri": "ven.", "Sat": "sam.", "Sun": "dim."}
+    day_fr = days_map.get(d.strftime("%a"), d.strftime("%a").lower())
+    return f"{day_fr} {d.strftime('%Hh%M')}"
+
+
+def _eval_quota_bucket(used_5h: float, used_7d: float, rem_hours_7d: float) -> Tuple[float, float, str, str]:
+    elapsed_fraction = max(0.0, min(1.0, (168.0 - rem_hours_7d) / 168.0))
+    target_used_pct = 96.0 * elapsed_fraction
+    delta = used_7d - target_used_pct
+    if used_5h >= 85.0 or used_7d >= 96.0:
+        v_md = "🔴 **PAUSE (Quota 5h ou 7j presque épuisé)**"
+        v_cli = "🔴 PAUSE (Quota 5h ou 7j presque épuisé)"
+    elif delta < -8.0:
+        v_md = "🟢 **UTILISER PLUS**"
+        v_cli = "🟢 UTILISER PLUS"
+    elif -8.0 <= delta <= 8.0:
+        v_md = "🟡 **RYTHME OPTIMAL**"
+        v_cli = "🟡 RYTHME OPTIMAL"
+    else:
+        v_md = "🟠 **UTILISER MOINS**"
+        v_cli = "🟠 UTILISER MOINS"
+    return target_used_pct, delta, v_md, v_cli
+
+
+def get_realtime_quota_indicators(force_refresh: bool = False) -> Tuple[List[str], List[str]]:
+    """
+    Récupère en direct depuis les APIs officielles (agy.exe et Anthropic OAuth via claude_subagent.py)
+    les 3 indicateurs de couleur de rythme de consommation de quota (ZÉRO estimation locale).
+    Retourne (lignes_markdown, lignes_console).
+    """
+    global _RUNTIME_QUOTA_CACHE, _RUNTIME_QUOTA_TIME
+    if not force_refresh and _RUNTIME_QUOTA_CACHE is not None and (time.time() - _RUNTIME_QUOTA_TIME) < 30.0:
+        return _RUNTIME_QUOTA_CACHE
+
+    now = datetime.now(timezone.utc)
+    agy_data = None
+    claude_data = None
+    agy_err = None
+    claude_err = None
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        f_agy = executor.submit(_fetch_agy_usage)
+        f_claude = executor.submit(_fetch_claude_usage)
+        try:
+            agy_data = f_agy.result()
+        except Exception as exc:
+            agy_err = str(exc)
+        try:
+            claude_data = f_claude.result()
+        except Exception as exc:
+            claude_err = str(exc)
+
+    if not agy_data and not claude_data:
+        raise RuntimeError(f"Échec direct APIs quotas : agy={agy_err}, claude={claude_err}")
+
+    md_lines = ["> ⚡ **Indicateurs de Quotas (Cible : tout utiliser pile en fin de semaine)** :"]
+    cli_lines = ["⚡ Indicateurs de Quotas (Cible : tout utiliser pile en fin de semaine) :"]
+
+    if agy_data:
+        groups = agy_data.get("command", {}).get("data", {}).get("groups", [])
+        gemini_group = next((g for g in groups if g.get("name") == "Gemini Models"), None)
+        claude_group = next((g for g in groups if g.get("name") == "Claude and GPT models"), None)
+
+        if gemini_group:
+            b_gem_w = next(b for b in gemini_group["buckets"] if b.get("window") == "weekly")
+            b_gem_5 = next(b for b in gemini_group["buckets"] if b.get("window") == "5h")
+
+            rem_7d = b_gem_w["remaining_fraction"] * 100.0
+            used_7d = 100.0 - rem_7d
+            rem_5h = b_gem_5["remaining_fraction"] * 100.0
+            used_5h = 100.0 - rem_5h
+
+            rst_7d_dt = datetime.fromisoformat(b_gem_w["reset_time"].replace("Z", "+00:00"))
+            rem_7d_sec = max(0.0, (rst_7d_dt - now).total_seconds())
+            rst_5h_dt = datetime.fromisoformat(b_gem_5["reset_time"].replace("Z", "+00:00"))
+            rem_5h_sec = max(0.0, (rst_5h_dt - now).total_seconds())
+
+            target_used, delta, v_md, v_cli = _eval_quota_bucket(used_5h, used_7d, rem_7d_sec / 3600.0)
+            s_7d = "s" if round(used_7d) > 1 else ""
+
+            gem_5h_rst_md = f" (reset `{_format_quota_duration_short(rem_5h_sec)}`)" if rem_5h < 99.9 else ""
+            gem_5h_rst_cli = f" (reset {_format_quota_duration_short(rem_5h_sec)})" if rem_5h < 99.9 else ""
+
+            md_lines.append(
+                f"> - **Antigravity Gemini** : {v_md} — 7j : **{rem_7d:.0f}% restants** (`{used_7d:.0f}%` utilisé{s_7d} vs cible `{target_used:.0f}%`, reset `{_format_quota_duration_short(rem_7d_sec)}`) · 5h : **{rem_5h:.0f}% restants**{gem_5h_rst_md}"
+            )
+            cli_lines.append(
+                f"- Antigravity Gemini : {v_cli} — 7j : {rem_7d:.0f}% restants ({used_7d:.0f}% utilisé{s_7d} vs cible {target_used:.0f}%, reset {_format_quota_duration_short(rem_7d_sec)}) · 5h : {rem_5h:.0f}% restants{gem_5h_rst_cli}"
+            )
+
+        if claude_group:
+            b_cl_w = next(b for b in claude_group["buckets"] if b.get("window") == "weekly")
+            b_cl_5 = next(b for b in claude_group["buckets"] if b.get("window") == "5h")
+
+            rem_7d = b_cl_w["remaining_fraction"] * 100.0
+            used_7d = 100.0 - rem_7d
+            rem_5h = b_cl_5["remaining_fraction"] * 100.0
+            used_5h = 100.0 - rem_5h
+
+            rst_7d_dt = datetime.fromisoformat(b_cl_w["reset_time"].replace("Z", "+00:00"))
+            rem_7d_sec = max(0.0, (rst_7d_dt - now).total_seconds())
+            rst_5h_dt = datetime.fromisoformat(b_cl_5["reset_time"].replace("Z", "+00:00"))
+            rem_5h_sec = max(0.0, (rst_5h_dt - now).total_seconds())
+
+            target_used, delta, v_md, v_cli = _eval_quota_bucket(used_5h, used_7d, rem_7d_sec / 3600.0)
+            s_7d = "s" if round(used_7d) > 1 else ""
+
+            cl_5h_rst_md = f" (reset `{_format_quota_duration_short(rem_5h_sec)}`)" if rem_5h < 99.9 else ""
+            cl_5h_rst_cli = f" (reset {_format_quota_duration_short(rem_5h_sec)})" if rem_5h < 99.9 else ""
+
+            md_lines.append(
+                f"> - **Antigravity Claude** : {v_md} — 7j : **{rem_7d:.0f}% restants** (`{used_7d:.0f}%` utilisé{s_7d}, reset `{_format_quota_duration_short(rem_7d_sec)}`) · 5h : **{rem_5h:.0f}% restants**{cl_5h_rst_md}"
+            )
+            cli_lines.append(
+                f"- Antigravity Claude : {v_cli} — 7j : {rem_7d:.0f}% restants ({used_7d:.0f}% utilisé{s_7d}, reset {_format_quota_duration_short(rem_7d_sec)}) · 5h : {rem_5h:.0f}% restants{cl_5h_rst_cli}"
+            )
+    else:
+        md_lines.append(f"> - **Antigravity** : ⚠️ *Indisponible ({agy_err})*")
+        cli_lines.append(f"- Antigravity : ⚠️ Indisponible ({agy_err})")
+
+    if claude_data:
+        fh = claude_data.get("five_hour", {})
+        sd = claude_data.get("seven_day", {})
+
+        used_5h = float(fh.get("utilization", 0.0))
+        used_7d = float(sd.get("utilization", 0.0))
+        rem_7d = 100.0 - used_7d
+        rem_5h = 100.0 - used_5h
+
+        rst_7d_dt = datetime.fromisoformat(sd["resets_at"].replace("Z", "+00:00"))
+        rem_7d_sec = max(0.0, (rst_7d_dt - now).total_seconds())
+        rst_5h_dt = datetime.fromisoformat(fh["resets_at"].replace("Z", "+00:00"))
+        rem_5h_sec = max(0.0, (rst_5h_dt - now).total_seconds())
+
+        target_used, delta, v_md, v_cli = _eval_quota_bucket(used_5h, used_7d, rem_7d_sec / 3600.0)
+        s_7d = "s" if round(used_7d) > 1 else ""
+        s_5h = "s" if round(used_5h) > 1 else ""
+
+        cc_5h_rst_md = f" (reset `{_format_quota_duration_short(rem_5h_sec)}`)" if used_5h > 0 else ""
+        cc_5h_rst_cli = f" (reset {_format_quota_duration_short(rem_5h_sec)})" if used_5h > 0 else ""
+
+        md_lines.append(
+            f"> - **Claude Code (Opus)** : {v_md} — 7j : **{used_7d:.0f}% utilisé{s_7d}** (`{rem_7d:.0f}%` restants vs cible `{target_used:.0f}%` utilisés, reset `{_format_quota_date_fr(sd['resets_at'])}`) · 5h : **{used_5h:.0f}% utilisé{s_5h}**{cc_5h_rst_md}"
+        )
+        cli_lines.append(
+            f"- Claude Code (Opus) : {v_cli} — 7j : {used_7d:.0f}% utilisé{s_7d} ({rem_7d:.0f}% restants vs cible {target_used:.0f}% utilisés, reset {_format_quota_date_fr(sd['resets_at'])}) · 5h : {used_5h:.0f}% utilisé{s_5h}{cc_5h_rst_cli}"
+        )
+    else:
+        md_lines.append(f"> - **Claude Code (Opus)** : ⚠️ *Indisponible ({claude_err})*")
+        cli_lines.append(f"- Claude Code (Opus) : ⚠️ Indisponible ({claude_err})")
+
+    _RUNTIME_QUOTA_CACHE = (md_lines, cli_lines)
+    _RUNTIME_QUOTA_TIME = time.time()
+    return _RUNTIME_QUOTA_CACHE
+
+
 def write_root_dashboard(vault_dir=VAULT_DIR, data=None, projects=None, show_progress: bool = False, quiet: Optional[bool] = None) -> str:
     """
     Construit et écrit le tableau de bord Markdown épuré 🎯 Projets.md
@@ -4619,12 +4831,17 @@ def write_root_dashboard(vault_dir=VAULT_DIR, data=None, projects=None, show_pro
     n_unrev = len(unreviewed)
     active_summary = f"{n_rev} révisés" + (f", {n_unrev} non révisés" if n_unrev > 0 else "")
 
+    md_quota_lines, _ = get_realtime_quota_indicators()
+
     lines = [
         "# 🎯 Tableau de Bord des Projets",
         "",
         f"> 🔄 **Dernière mise à jour** : {now_str} · **Projets actifs** : {active_summary}",
-        ""
     ]
+    if md_quota_lines:
+        lines.append(">")
+        lines.extend(md_quota_lines)
+    lines.append("")
 
     if unreviewed:
         lines.append("## 🆕 Projets non révisés")
@@ -4659,6 +4876,12 @@ def cmd_dashboard(args, data):
     elapsed = time.time() - t0
     if is_json:
         print(json.dumps({"status": "ok", "path": target_path, "active_projects": active_count, "elapsed_seconds": round(elapsed, 2)}))
+    else:
+        _, cli_quota_lines = get_realtime_quota_indicators()
+        if cli_quota_lines:
+            print()
+            for ql in cli_quota_lines:
+                print(ql)
 
 
 def clean_orphans(vault_dir=VAULT_DIR, data_path=DATA_JSON_PATH, cache_path=CACHE_PATH, dry_run=False):
@@ -4797,6 +5020,11 @@ def cmd_list(args, data):
     else:
         verbose = getattr(args, "verbose", False) or getattr(args, "debug", False)
         role_label = "🤖 Mode Autonome Agent : " if is_agent_mode else ""
+        _, cli_quota_lines = get_realtime_quota_indicators()
+        if cli_quota_lines:
+            for ql in cli_quota_lines:
+                print(ql)
+            print()
         if show_unreviewed_only:
             print(f"=== {role_label}🆕 Unreviewed Projects ({len(unreviewed)} projects awaiting initial evaluation) ===")
             print(format_project_table(unreviewed_disp, verbose=verbose) if unreviewed_disp else "  (No unreviewed projects)")
