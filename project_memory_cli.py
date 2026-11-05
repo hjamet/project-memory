@@ -5332,6 +5332,26 @@ def get_current_conversation_transcript_path() -> Optional[str]:
     return None
 
 
+def extract_conversation_id_from_transcript_path(transcript_path: Union[str, Path, None]) -> Optional[str]:
+    """
+    Extrait l'identifiant de conversation (conv_id) depuis transcript_path
+    (ex. .../brain/<conv_id>/.system_generated/logs/transcript.jsonl),
+    ou repli sur la variable d'environnement ANTIGRAVITY_CONVERSATION_ID.
+    """
+    if transcript_path:
+        p = Path(transcript_path).resolve()
+        parts = p.parts
+        if ".system_generated" in parts:
+            idx = parts.index(".system_generated")
+            if idx > 0:
+                return parts[idx - 1]
+        if "brain" in parts:
+            idx = parts.index("brain")
+            if idx + 1 < len(parts):
+                return parts[idx + 1]
+    return os.environ.get("ANTIGRAVITY_CONVERSATION_ID")
+
+
 class TranscriptParseResult(tuple):
     """
     Tuple enrichi (t_minutes, msg_count) rétrocompatible avec l'unpacking existant,
@@ -5340,19 +5360,23 @@ class TranscriptParseResult(tuple):
     - project_minutes : dictionnaire des minutes ventilées par projet suivi (clés de db_projects)
     - target_project : clé canonique du projet ciblé (ou None)
     - detected_projects_count : nombre de projets suivis distincts touchés au cours de la conversation
+    - max_step_index : step_index maximal rencontré dans le transcript (-1 si aucun)
     """
     total_conversation_minutes: float
     project_minutes: Dict[str, float]
     target_project: Optional[str]
     detected_projects_count: int
+    max_step_index: int
 
     def __new__(cls, t_minutes: float, msg_count: int, total_conv_min: float = 0.0,
-                proj_min: Optional[Dict[str, float]] = None, target_proj: Optional[str] = None):
+                proj_min: Optional[Dict[str, float]] = None, target_proj: Optional[str] = None,
+                max_step_index: int = -1):
         obj = super().__new__(cls, (t_minutes, msg_count))
         obj.total_conversation_minutes = total_conv_min
         obj.project_minutes = proj_min or {}
         obj.target_project = target_proj
         obj.detected_projects_count = len([p for p, m in (proj_min or {}).items() if m > 0])
+        obj.max_step_index = int(max_step_index)
         return obj
 
 
@@ -5391,7 +5415,8 @@ def parse_transcript_work_time(
     target_project: Optional[str] = None,
     db_projects: Optional[dict] = None,
     minutes_per_message: float = 6.0,
-    minutes_per_arrow: float = 2.0
+    minutes_per_arrow: float = 2.0,
+    min_step_index_by_project: Optional[Dict[str, int]] = None
 ) -> TranscriptParseResult:
     """
     Découpe le transcript en tours humains commençant à chaque USER_EXPLICIT (USER_INPUT).
@@ -5403,12 +5428,13 @@ def parse_transcript_work_time(
     Ventile le temps équitablement (turn_minutes / K) entre les projets touchés sur chaque tour.
     Si matched_projects est vide sur un tour court de suivi, il hérite du last_matched_projects précédent
     (ou suivant pour les premiers tours).
+    Si min_step_index_by_project est fourni, ignore pour chaque projet p les tours dont le step_index <= last_step.
     Si target_project est fourni, retourne max(1, round(project_minutes[target_project])) si du temps
     a été ventilé, 0.0 si d'autres projets ont été détectés sans toucher ce projet, ou le total de repli
     si aucun projet suivi n'a pu être détecté sur l'ensemble de la conversation.
     """
     if not transcript_path or not os.path.isfile(str(transcript_path)):
-        return TranscriptParseResult(0.0, 0, 0.0, {}, target_project)
+        return TranscriptParseResult(0.0, 0, 0.0, {}, target_project, max_step_index=-1)
 
     if db_projects is None:
         data = load_data()
@@ -5426,21 +5452,28 @@ def parse_transcript_work_time(
         project_index[urllib.parse.quote(title)] = p_key
 
     entries = []
+    max_step_seen = -1
     with open(str(transcript_path), "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             try:
-                entries.append(json.loads(line))
+                entry_obj = json.loads(line)
+                entries.append(entry_obj)
+                if isinstance(entry_obj, dict):
+                    s_idx = entry_obj.get("step_index")
+                    if isinstance(s_idx, int) and s_idx > max_step_seen:
+                        max_step_seen = s_idx
             except json.JSONDecodeError:
                 continue
 
     if not entries:
-        return TranscriptParseResult(0.0, 0, 0.0, {}, target_project)
+        return TranscriptParseResult(0.0, 0, 0.0, {}, target_project, max_step_index=-1)
 
     turns = []
     current_turn = None
+    turn_idx = 0
     for entry in entries:
         if isinstance(entry, dict):
             source = entry.get("source")
@@ -5448,7 +5481,17 @@ def parse_transcript_work_time(
             if source == "USER_EXPLICIT" and entry_type == "USER_INPUT":
                 if current_turn is not None:
                     turns.append(current_turn)
-                current_turn = {"user_entry": entry, "steps": [entry]}
+                s_idx = entry.get("step_index")
+                try:
+                    s_idx_int = int(s_idx) if s_idx is not None else turn_idx
+                except (ValueError, TypeError):
+                    s_idx_int = turn_idx
+                current_turn = {
+                    "user_entry": entry,
+                    "steps": [entry],
+                    "step_index": s_idx_int
+                }
+                turn_idx += 1
             else:
                 if current_turn is not None:
                     current_turn["steps"].append(entry)
@@ -5456,7 +5499,7 @@ def parse_transcript_work_time(
         turns.append(current_turn)
 
     if not turns:
-        return TranscriptParseResult(0.0, 0, 0.0, {}, target_project)
+        return TranscriptParseResult(0.0, 0, 0.0, {}, target_project, max_step_index=max_step_seen)
 
     user_messages = len(turns)
     turn_durations: List[float] = []
@@ -5635,22 +5678,46 @@ def parse_transcript_work_time(
     project_minutes: Dict[str, float] = {p: 0.0 for p in (db_projects or {}).keys()}
     total_detected_in_transcript = False
 
-    for m, t_min in zip(final_matched_per_turn, turn_durations):
+    for turn, m, t_min in zip(turns, final_matched_per_turn, turn_durations):
         if m:
             total_detected_in_transcript = True
             share = t_min / len(m)
             for p in m:
+                if min_step_index_by_project:
+                    last_step = min_step_index_by_project.get(p)
+                    if last_step is None:
+                        for k_min, v_step in min_step_index_by_project.items():
+                            if k_min == p or os.path.basename(k_min).lower() == os.path.basename(p).lower():
+                                last_step = v_step
+                                break
+                    if last_step is not None and turn.get("step_index", 0) <= last_step:
+                        continue
                 project_minutes[p] = project_minutes.get(p, 0.0) + share
 
     if target_project is not None:
         canon_target = resolve_project_canonical_key(target_project, db_projects or {})
         if not total_detected_in_transcript:
+            uncredited_conv = sum(
+                t_min for turn, t_min in zip(turns, turn_durations)
+                if not (
+                    min_step_index_by_project and (
+                        canon_target in min_step_index_by_project or any(
+                            os.path.basename(k).lower() == os.path.basename(canon_target or "").lower()
+                            for k in min_step_index_by_project
+                        )
+                    ) and turn.get("step_index", 0) <= (
+                        min_step_index_by_project.get(canon_target) or
+                        next((v for k, v in min_step_index_by_project.items() if os.path.basename(k).lower() == os.path.basename(canon_target or "").lower()), -1)
+                    )
+                )
+            )
             return TranscriptParseResult(
-                round(total_conversation_minutes, 2),
+                round(uncredited_conv, 2),
                 user_messages,
                 total_conversation_minutes,
                 project_minutes,
-                canon_target
+                canon_target,
+                max_step_index=max_step_seen
             )
 
         target_time = project_minutes.get(canon_target, 0.0)
@@ -5664,7 +5731,8 @@ def parse_transcript_work_time(
             user_messages,
             total_conversation_minutes,
             project_minutes,
-            canon_target
+            canon_target,
+            max_step_index=max_step_seen
         )
 
     return TranscriptParseResult(
@@ -5672,7 +5740,8 @@ def parse_transcript_work_time(
         user_messages,
         total_conversation_minutes,
         project_minutes,
-        None
+        None,
+        max_step_index=max_step_seen
     )
 
 
@@ -5700,7 +5769,7 @@ def compute_feedback_score(current_score, action, rf):
     return round(new_score, 3)
 
 
-def apply_feedback(project_path, action, worked, data, elapsed_minutes=None, is_agent=False):
+def apply_feedback(project_path, action, worked, data, elapsed_minutes=None, is_agent=False, conv_id=None, max_step_index=None):
     stats = data.setdefault("stats", {}).setdefault("projects", {})
     global_stats = data.setdefault("stats", {}).setdefault("globalStats", {"totalReviews": 0, "totalPomodoroTime": 0})
     settings = data.setdefault("settings", {})
@@ -5937,6 +6006,14 @@ def apply_feedback(project_path, action, worked, data, elapsed_minutes=None, is_
             agent_obj["rotationBonus"] = 0.0
             agent_obj["sessionsSinceHuman"] = 0
 
+    if worked and conv_id and max_step_index is not None and int(max_step_index) >= 0:
+        cred_dict = proj.setdefault("lastCreditedStepByConv", {})
+        cred_dict[conv_id] = int(max_step_index)
+        if len(cred_dict) > 20:
+            excess = len(cred_dict) - 20
+            for old_k in list(cred_dict.keys())[:excess]:
+                del cred_dict[old_k]
+
     data_path = os.path.join(VAULT_DIR, ".obsidian", "plugins", "project-memory", "data.json")
     cache_path = os.path.join(VAULT_DIR, ".obsidian", "plugins", "project-memory", ".project_cache.json")
     cache = load_cache(cache_path)
@@ -6014,6 +6091,8 @@ def cmd_feedback(args, data):
     is_agent = getattr(args, "agent", False)
     duration_arg = getattr(args, "duration", None)
     elapsed_minutes = None
+    transcript_conv_id = None
+    transcript_max_step = None
     if worked:
         if duration_arg is not None:
             elapsed_minutes = float(duration_arg)
@@ -6024,16 +6103,30 @@ def cmd_feedback(args, data):
                 transcript_path = transcript_arg if (transcript_arg and transcript_arg != "auto") else get_current_conversation_transcript_path()
                 if transcript_path and os.path.isfile(transcript_path):
                     stats_projects = data.get("stats", {}).get("projects", {})
+                    conv_id = extract_conversation_id_from_transcript_path(transcript_path)
+                    canon_target = resolve_project_canonical_key(args.project_path, stats_projects)
+                    min_step_by_proj = None
+                    had_prior_credit = False
+                    if conv_id and canon_target and canon_target in stats_projects:
+                        proj_entry = stats_projects[canon_target]
+                        last_step = proj_entry.get("lastCreditedStepByConv", {}).get(conv_id, -1)
+                        if last_step >= 0:
+                            min_step_by_proj = {canon_target: last_step}
+                            had_prior_credit = True
+
                     t_result = parse_transcript_work_time(
                         transcript_path,
                         target_project=args.project_path,
-                        db_projects=stats_projects
+                        db_projects=stats_projects,
+                        min_step_index_by_project=min_step_by_proj
                     )
+                    transcript_conv_id = conv_id
+                    transcript_max_step = getattr(t_result, "max_step_index", -1)
                     t_minutes, msg_count = t_result[0], t_result[1]
                     if msg_count > 0:
                         total_conv = getattr(t_result, "total_conversation_minutes", t_minutes)
                         # Plancher minimal de 2 min dans cmd_feedback si clôture explicite d'un projet qui a 0 min détectées
-                        if t_minutes == 0 and total_conv > 0:
+                        if t_minutes == 0 and total_conv > 0 and not had_prior_credit:
                             t_minutes = 2.0
                             print(f"⏱️ Temps auto-extrait du transcript pour '{args.project_path}' : {t_minutes:.1f} min (plancher minimal appliqué, non détecté dans les tours actifs sur {total_conv:.1f} min totales)")
                         elif total_conv > 0 and total_conv != t_minutes:
@@ -6048,7 +6141,16 @@ def cmd_feedback(args, data):
                     else:
                         elapsed_minutes = None
 
-    apply_feedback(args.project_path, action, worked, data, elapsed_minutes=elapsed_minutes, is_agent=is_agent)
+    apply_feedback(
+        args.project_path,
+        action,
+        worked,
+        data,
+        elapsed_minutes=elapsed_minutes,
+        is_agent=is_agent,
+        conv_id=transcript_conv_id,
+        max_step_index=transcript_max_step
+    )
 
 
 def cmd_set_score(args, data):
