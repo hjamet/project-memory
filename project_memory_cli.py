@@ -5697,19 +5697,18 @@ def parse_transcript_work_time(
     if target_project is not None:
         canon_target = resolve_project_canonical_key(target_project, db_projects or {})
         if not total_detected_in_transcript:
+            target_min_step = None
+            if min_step_index_by_project:
+                if canon_target in min_step_index_by_project:
+                    target_min_step = min_step_index_by_project[canon_target]
+                else:
+                    for k, v in min_step_index_by_project.items():
+                        if os.path.basename(k).lower() == os.path.basename(canon_target or "").lower():
+                            target_min_step = v
+                            break
             uncredited_conv = sum(
                 t_min for turn, t_min in zip(turns, turn_durations)
-                if not (
-                    min_step_index_by_project and (
-                        canon_target in min_step_index_by_project or any(
-                            os.path.basename(k).lower() == os.path.basename(canon_target or "").lower()
-                            for k in min_step_index_by_project
-                        )
-                    ) and turn.get("step_index", 0) <= (
-                        min_step_index_by_project.get(canon_target) or
-                        next((v for k, v in min_step_index_by_project.items() if os.path.basename(k).lower() == os.path.basename(canon_target or "").lower()), -1)
-                    )
-                )
+                if not (target_min_step is not None and turn.get("step_index", 0) <= target_min_step)
             )
             return TranscriptParseResult(
                 round(uncredited_conv, 2),
@@ -5829,6 +5828,20 @@ def apply_feedback(project_path, action, worked, data, elapsed_minutes=None, is_
     if not is_agent_only and proj.get("agent_only"):
         is_agent_only = True
 
+    target_work_dict = proj.setdefault("agent", {}) if is_agent else proj
+    existing_work = target_work_dict.get("recentWorkDates", [])
+    valid_dates = []
+    existing_entry_for_conv = None
+    for item in existing_work:
+        d_str = item.get("date") if isinstance(item, dict) else str(item)
+        d_dt = parse_iso_datetime(d_str)
+        if d_dt:
+            delta_h = (now_dt - d_dt).total_seconds() / 3600.0
+            if -0.05 <= delta_h < 6.0:
+                if isinstance(item, dict) and conv_id and item.get("conv_id") == conv_id:
+                    existing_entry_for_conv = item
+                valid_dates.append(item)
+
     if is_agent:
         agent_obj = proj.setdefault("agent", {})
         if is_numeric:
@@ -5837,24 +5850,26 @@ def apply_feedback(project_path, action, worked, data, elapsed_minutes=None, is_
             agent_obj["currentScore"] = new_score
             agent_obj["rotationBonus"] = 0.0
             agent_obj["lastReviewDate"] = now_iso
-            agent_obj["totalReviews"] = max(1, int(agent_obj.get("totalReviews", 0)) + 1)
-            if is_agent_only:
-                agent_obj["sessionsSinceHuman"] = 0
-                proj["baseScore"] = new_score
-                proj["currentScore"] = new_score
-                proj["totalReviews"] = max(1, int(proj.get("totalReviews", 0)))
-                proj["lastReviewDate"] = now_iso
-            else:
-                agent_obj["sessionsSinceHuman"] = int(agent_obj.get("sessionsSinceHuman", 0)) + 1
+            if not (worked and existing_entry_for_conv and effective_elapsed == 0.0):
+                agent_obj["totalReviews"] = max(1, int(agent_obj.get("totalReviews", 0)) + 1)
+                if is_agent_only:
+                    agent_obj["sessionsSinceHuman"] = 0
+                    proj["baseScore"] = new_score
+                    proj["currentScore"] = new_score
+                    proj["totalReviews"] = max(1, int(proj.get("totalReviews", 0)))
+                    proj["lastReviewDate"] = now_iso
+                else:
+                    agent_obj["sessionsSinceHuman"] = int(agent_obj.get("sessionsSinceHuman", 0)) + 1
 
-            agent_obj.setdefault("reviewHistory", []).append({
-                "date": now_iso,
-                "action": act,
-                "scoreAfter": new_score,
-                "duration_minutes": round(effective_elapsed, 2)
-            })
-            if len(agent_obj.get("reviewHistory", [])) > 100:
-                agent_obj["reviewHistory"] = agent_obj["reviewHistory"][-100:]
+                agent_obj.setdefault("reviewHistory", []).append({
+                    "date": now_iso,
+                    "action": act,
+                    "scoreAfter": new_score,
+                    "duration_minutes": round(effective_elapsed, 2)
+                })
+                if len(agent_obj.get("reviewHistory", [])) > 100:
+                    agent_obj["reviewHistory"] = agent_obj["reviewHistory"][-100:]
+                global_stats["totalAgentReviews"] = int(global_stats.get("totalAgentReviews", 0)) + 1
         else:
             raw_s = agent_obj.get("currentScore", proj.get("currentScore"))
             base_s = float(raw_s) if raw_s is not None else 50.0
@@ -5862,68 +5877,103 @@ def apply_feedback(project_path, action, worked, data, elapsed_minutes=None, is_
             agent_obj["baseScore"] = new_score
             agent_obj["currentScore"] = new_score
             agent_obj["lastReviewDate"] = now_iso
-            agent_obj["totalReviews"] = int(agent_obj.get("totalReviews", 0)) + 1
-            if is_agent_only:
-                agent_obj["sessionsSinceHuman"] = 0
-                proj["baseScore"] = new_score
-                proj["currentScore"] = new_score
-                proj["totalReviews"] = max(1, int(proj.get("totalReviews", 0)))
-                proj["lastReviewDate"] = now_iso
-            else:
-                agent_obj["sessionsSinceHuman"] = int(agent_obj.get("sessionsSinceHuman", 0)) + 1
+            if not (worked and existing_entry_for_conv and effective_elapsed == 0.0):
+                agent_obj["totalReviews"] = int(agent_obj.get("totalReviews", 0)) + 1
+                if is_agent_only:
+                    agent_obj["sessionsSinceHuman"] = 0
+                    proj["baseScore"] = new_score
+                    proj["currentScore"] = new_score
+                    proj["totalReviews"] = max(1, int(proj.get("totalReviews", 0)))
+                    proj["lastReviewDate"] = now_iso
+                else:
+                    agent_obj["sessionsSinceHuman"] = int(agent_obj.get("sessionsSinceHuman", 0)) + 1
 
-            agent_obj.setdefault("reviewHistory", []).append({
-                "date": now_iso,
-                "action": act,
-                "scoreAfter": new_score,
-                "duration_minutes": round(effective_elapsed, 2)
-            })
-            if len(agent_obj.get("reviewHistory", [])) > 100:
-                agent_obj["reviewHistory"] = agent_obj["reviewHistory"][-100:]
-
-        global_stats["totalAgentReviews"] = int(global_stats.get("totalAgentReviews", 0)) + 1
+                agent_obj.setdefault("reviewHistory", []).append({
+                    "date": now_iso,
+                    "action": act,
+                    "scoreAfter": new_score,
+                    "duration_minutes": round(effective_elapsed, 2)
+                })
+                if len(agent_obj.get("reviewHistory", [])) > 100:
+                    agent_obj["reviewHistory"] = agent_obj["reviewHistory"][-100:]
+                global_stats["totalAgentReviews"] = int(global_stats.get("totalAgentReviews", 0)) + 1
 
         ratio = 0.0
         if worked:
             elapsed_minutes = effective_elapsed
-            ratio = min(1.0, max(0.0, elapsed_minutes / target_minutes)) if target_minutes > 0 else 1.0
+            if existing_entry_for_conv:
+                if elapsed_minutes == 0.0:
+                    if max_step_index is not None and int(max_step_index) >= 0:
+                        existing_entry_for_conv["last_step"] = max(
+                            int(existing_entry_for_conv.get("last_step", -1)),
+                            int(max_step_index)
+                        )
+                    agent_obj["recentWorkDates"] = valid_dates
+                    ratio = float(existing_entry_for_conv.get("ratio", 0.0))
+                else:
+                    cumulated_duration = float(existing_entry_for_conv.get("duration_minutes", 0.0)) + elapsed_minutes
+                    ratio = min(1.0, max(0.0, cumulated_duration / target_minutes)) if target_minutes > 0 else 1.0
+                    existing_entry_for_conv["duration_minutes"] = round(cumulated_duration, 2)
+                    existing_entry_for_conv["ratio"] = round(ratio, 4)
+                    existing_entry_for_conv["interrupted"] = (ratio < 0.99)
+                    existing_entry_for_conv["date"] = now_iso
+                    if conv_id:
+                        existing_entry_for_conv["conv_id"] = conv_id
+                    if max_step_index is not None and int(max_step_index) >= 0:
+                        existing_entry_for_conv["last_step"] = max(
+                            int(existing_entry_for_conv.get("last_step", -1)),
+                            int(max_step_index)
+                        )
+                    agent_obj["recentWorkDates"] = valid_dates
 
-            existing_work = agent_obj.get("recentWorkDates", [])
-            valid_dates = []
-            for item in existing_work:
-                d_str = item.get("date") if isinstance(item, dict) else str(item)
-                d_dt = parse_iso_datetime(d_str)
-                if d_dt:
-                    delta_h = (now_dt - d_dt).total_seconds() / 3600.0
-                    if -0.05 <= delta_h < 6.0:
-                        valid_dates.append(item)
+                    if ratio >= 0.5:
+                        agent_obj["lastSatisfiedMilestoneDate"] = now_iso
+                        if is_agent_only:
+                            proj["lastSatisfiedMilestoneDate"] = now_iso
 
-            session_entry = {
-                "date": now_iso,
-                "ratio": round(ratio, 4),
-                "duration_minutes": round(elapsed_minutes, 2),
-                "target_minutes": round(target_minutes, 2),
-                "interrupted": (ratio < 0.99)
-            }
-            valid_dates.append(session_entry)
-            agent_obj["recentWorkDates"] = valid_dates
+                    current_bonus = float(agent_obj.get("rotationBonus", 0.0))
+                    s_base = float(agent_obj.get("currentScore", 50.0))
+                    s_base = min(100.0, max(1.0, s_base))
+                    current_bonus = min(max(0.0, 100.0 - s_base), max(0.0, current_bonus))
+                    if ratio >= 0.8:
+                        agent_obj["rotationBonus"] = 0.0
+                    else:
+                        agent_obj["rotationBonus"] = round(max(0.0, current_bonus * (1.0 - ratio)), 3)
 
-            if ratio >= 0.5:
-                agent_obj["lastSatisfiedMilestoneDate"] = now_iso
-                if is_agent_only:
-                    proj["lastSatisfiedMilestoneDate"] = now_iso
-
-            current_bonus = float(agent_obj.get("rotationBonus", 0.0))
-            s_base = float(agent_obj.get("currentScore", 50.0))
-            s_base = min(100.0, max(1.0, s_base))
-            current_bonus = min(max(0.0, 100.0 - s_base), max(0.0, current_bonus))
-            if ratio >= 0.8:
-                agent_obj["rotationBonus"] = 0.0
+                    update_achilles_rotation_bonuses(stats, matched_key, ratio=ratio, alpha=alpha, is_agent=True)
+                    global_stats["totalAgentPomodoroTime"] = round(float(global_stats.get("totalAgentPomodoroTime", 0.0)) + elapsed_minutes, 2)
             else:
-                agent_obj["rotationBonus"] = round(max(0.0, current_bonus * (1.0 - ratio)), 3)
+                ratio = min(1.0, max(0.0, elapsed_minutes / target_minutes)) if target_minutes > 0 else 1.0
+                session_entry = {
+                    "date": now_iso,
+                    "ratio": round(ratio, 4),
+                    "duration_minutes": round(elapsed_minutes, 2),
+                    "target_minutes": round(target_minutes, 2),
+                    "interrupted": (ratio < 0.99)
+                }
+                if conv_id:
+                    session_entry["conv_id"] = conv_id
+                if max_step_index is not None and int(max_step_index) >= 0:
+                    session_entry["last_step"] = int(max_step_index)
+                valid_dates.append(session_entry)
+                agent_obj["recentWorkDates"] = valid_dates
 
-            update_achilles_rotation_bonuses(stats, matched_key, ratio=ratio, alpha=alpha, is_agent=True)
-            global_stats["totalAgentPomodoroTime"] = round(float(global_stats.get("totalAgentPomodoroTime", 0.0)) + elapsed_minutes, 2)
+                if ratio >= 0.5:
+                    agent_obj["lastSatisfiedMilestoneDate"] = now_iso
+                    if is_agent_only:
+                        proj["lastSatisfiedMilestoneDate"] = now_iso
+
+                current_bonus = float(agent_obj.get("rotationBonus", 0.0))
+                s_base = float(agent_obj.get("currentScore", 50.0))
+                s_base = min(100.0, max(1.0, s_base))
+                current_bonus = min(max(0.0, 100.0 - s_base), max(0.0, current_bonus))
+                if ratio >= 0.8:
+                    agent_obj["rotationBonus"] = 0.0
+                else:
+                    agent_obj["rotationBonus"] = round(max(0.0, current_bonus * (1.0 - ratio)), 3)
+
+                update_achilles_rotation_bonuses(stats, matched_key, ratio=ratio, alpha=alpha, is_agent=True)
+                global_stats["totalAgentPomodoroTime"] = round(float(global_stats.get("totalAgentPomodoroTime", 0.0)) + elapsed_minutes, 2)
         else:
             agent_obj["rotationBonus"] = 0.0
     else:
@@ -5942,59 +5992,96 @@ def apply_feedback(project_path, action, worked, data, elapsed_minutes=None, is_
         proj["currentScore"] = new_score
         proj["baseScore"] = new_score
         proj["lastReviewDate"] = now_iso
-        proj.setdefault("reviewHistory", []).append({
-            "date": now_iso,
-            "action": act,
-            "scoreAfter": new_score,
-            "duration_minutes": round(effective_elapsed, 2)
-        })
-        if len(proj.get("reviewHistory", [])) > 100:
-            proj["reviewHistory"] = proj["reviewHistory"][-100:]
 
-        proj["totalReviews"] = total_reviews + 1
-        global_stats["totalReviews"] = global_stats.get("totalReviews", 0) + 1
+        if not (worked and existing_entry_for_conv and effective_elapsed == 0.0):
+            proj.setdefault("reviewHistory", []).append({
+                "date": now_iso,
+                "action": act,
+                "scoreAfter": new_score,
+                "duration_minutes": round(effective_elapsed, 2)
+            })
+            if len(proj.get("reviewHistory", [])) > 100:
+                proj["reviewHistory"] = proj["reviewHistory"][-100:]
+
+            proj["totalReviews"] = total_reviews + 1
+            global_stats["totalReviews"] = global_stats.get("totalReviews", 0) + 1
 
         ratio = 0.0
         if worked:
             elapsed_minutes = effective_elapsed
-            ratio = min(1.0, max(0.0, elapsed_minutes / target_minutes)) if target_minutes > 0 else 1.0
+            if existing_entry_for_conv:
+                if elapsed_minutes == 0.0:
+                    if max_step_index is not None and int(max_step_index) >= 0:
+                        existing_entry_for_conv["last_step"] = max(
+                            int(existing_entry_for_conv.get("last_step", -1)),
+                            int(max_step_index)
+                        )
+                    proj["recentWorkDates"] = valid_dates
+                    ratio = float(existing_entry_for_conv.get("ratio", 0.0))
+                else:
+                    cumulated_duration = float(existing_entry_for_conv.get("duration_minutes", 0.0)) + elapsed_minutes
+                    ratio = min(1.0, max(0.0, cumulated_duration / target_minutes)) if target_minutes > 0 else 1.0
+                    existing_entry_for_conv["duration_minutes"] = round(cumulated_duration, 2)
+                    existing_entry_for_conv["ratio"] = round(ratio, 4)
+                    existing_entry_for_conv["interrupted"] = (ratio < 0.99)
+                    existing_entry_for_conv["date"] = now_iso
+                    if conv_id:
+                        existing_entry_for_conv["conv_id"] = conv_id
+                    if max_step_index is not None and int(max_step_index) >= 0:
+                        existing_entry_for_conv["last_step"] = max(
+                            int(existing_entry_for_conv.get("last_step", -1)),
+                            int(max_step_index)
+                        )
+                    proj["recentWorkDates"] = valid_dates
 
-            existing_work = proj.get("recentWorkDates", [])
-            valid_dates = []
-            for item in existing_work:
-                d_str = item.get("date") if isinstance(item, dict) else str(item)
-                d_dt = parse_iso_datetime(d_str)
-                if d_dt:
-                    delta_h = (now_dt - d_dt).total_seconds() / 3600.0
-                    if -0.05 <= delta_h < 6.0:
-                        valid_dates.append(item)
+                    if ratio >= 0.5:
+                        proj["lastSatisfiedMilestoneDate"] = now_iso
 
-            session_entry = {
-                "date": now_iso,
-                "ratio": round(ratio, 4),
-                "duration_minutes": round(elapsed_minutes, 2),
-                "target_minutes": round(target_minutes, 2),
-                "interrupted": (ratio < 0.99)
-            }
-            valid_dates.append(session_entry)
-            proj["recentWorkDates"] = valid_dates
+                    current_bonus = float(proj.get("rotationBonus", 0.0))
+                    raw_s_base = proj.get("currentScore")
+                    s_base = float(raw_s_base) if raw_s_base is not None else 50.0
+                    s_base = min(100.0, max(1.0, s_base))
+                    current_bonus = min(max(0.0, 100.0 - s_base), max(0.0, current_bonus))
 
-            if ratio >= 0.5:
-                proj["lastSatisfiedMilestoneDate"] = now_iso
+                    if ratio >= 0.8:
+                        proj["rotationBonus"] = 0.0
+                    else:
+                        proj["rotationBonus"] = round(max(0.0, current_bonus * (1.0 - ratio)), 3)
 
-            current_bonus = float(proj.get("rotationBonus", 0.0))
-            raw_s_base = proj.get("currentScore")
-            s_base = float(raw_s_base) if raw_s_base is not None else 50.0
-            s_base = min(100.0, max(1.0, s_base))
-            current_bonus = min(max(0.0, 100.0 - s_base), max(0.0, current_bonus))
-
-            if ratio >= 0.8:
-                proj["rotationBonus"] = 0.0
+                    update_achilles_rotation_bonuses(stats, matched_key, ratio=ratio, alpha=alpha, is_agent=False)
+                    global_stats["totalPomodoroTime"] = round(float(global_stats.get("totalPomodoroTime", 0)) + elapsed_minutes, 2)
             else:
-                proj["rotationBonus"] = round(max(0.0, current_bonus * (1.0 - ratio)), 3)
+                ratio = min(1.0, max(0.0, elapsed_minutes / target_minutes)) if target_minutes > 0 else 1.0
+                session_entry = {
+                    "date": now_iso,
+                    "ratio": round(ratio, 4),
+                    "duration_minutes": round(elapsed_minutes, 2),
+                    "target_minutes": round(target_minutes, 2),
+                    "interrupted": (ratio < 0.99)
+                }
+                if conv_id:
+                    session_entry["conv_id"] = conv_id
+                if max_step_index is not None and int(max_step_index) >= 0:
+                    session_entry["last_step"] = int(max_step_index)
+                valid_dates.append(session_entry)
+                proj["recentWorkDates"] = valid_dates
 
-            update_achilles_rotation_bonuses(stats, matched_key, ratio=ratio, alpha=alpha, is_agent=False)
-            global_stats["totalPomodoroTime"] = round(float(global_stats.get("totalPomodoroTime", 0)) + elapsed_minutes, 2)
+                if ratio >= 0.5:
+                    proj["lastSatisfiedMilestoneDate"] = now_iso
+
+                current_bonus = float(proj.get("rotationBonus", 0.0))
+                raw_s_base = proj.get("currentScore")
+                s_base = float(raw_s_base) if raw_s_base is not None else 50.0
+                s_base = min(100.0, max(1.0, s_base))
+                current_bonus = min(max(0.0, 100.0 - s_base), max(0.0, current_bonus))
+
+                if ratio >= 0.8:
+                    proj["rotationBonus"] = 0.0
+                else:
+                    proj["rotationBonus"] = round(max(0.0, current_bonus * (1.0 - ratio)), 3)
+
+                update_achilles_rotation_bonuses(stats, matched_key, ratio=ratio, alpha=alpha, is_agent=False)
+                global_stats["totalPomodoroTime"] = round(float(global_stats.get("totalPomodoroTime", 0)) + elapsed_minutes, 2)
         else:
             proj["rotationBonus"] = 0.0
 
@@ -6005,14 +6092,6 @@ def apply_feedback(project_path, action, worked, data, elapsed_minutes=None, is_
             agent_obj["currentScore"] = new_score
             agent_obj["rotationBonus"] = 0.0
             agent_obj["sessionsSinceHuman"] = 0
-
-    if worked and conv_id and max_step_index is not None and int(max_step_index) >= 0:
-        cred_dict = proj.setdefault("lastCreditedStepByConv", {})
-        cred_dict[conv_id] = int(max_step_index)
-        if len(cred_dict) > 20:
-            excess = len(cred_dict) - 20
-            for old_k in list(cred_dict.keys())[:excess]:
-                del cred_dict[old_k]
 
     data_path = os.path.join(VAULT_DIR, ".obsidian", "plugins", "project-memory", "data.json")
     cache_path = os.path.join(VAULT_DIR, ".obsidian", "plugins", "project-memory", ".project_cache.json")
@@ -6109,8 +6188,18 @@ def cmd_feedback(args, data):
                     had_prior_credit = False
                     if conv_id and canon_target and canon_target in stats_projects:
                         proj_entry = stats_projects[canon_target]
-                        last_step = proj_entry.get("lastCreditedStepByConv", {}).get(conv_id, -1)
-                        if last_step >= 0:
+                        now_dt_check = datetime.now(timezone.utc)
+                        active_steps = []
+                        target_dict = proj_entry.get("agent", {}) if is_agent else proj_entry
+                        for item in target_dict.get("recentWorkDates", []):
+                            if isinstance(item, dict) and item.get("conv_id") == conv_id:
+                                d_dt = parse_iso_datetime(item.get("date", ""))
+                                if d_dt and (-0.05 <= (now_dt_check - d_dt).total_seconds() / 3600.0 < 6.0):
+                                    step_val = item.get("last_step")
+                                    if step_val is not None and int(step_val) >= 0:
+                                        active_steps.append(int(step_val))
+                        if active_steps:
+                            last_step = max(active_steps)
                             min_step_by_proj = {canon_target: last_step}
                             had_prior_credit = True
 
