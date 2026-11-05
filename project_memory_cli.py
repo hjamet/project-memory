@@ -5411,11 +5411,8 @@ def parse_transcript_work_time(
         return TranscriptParseResult(0.0, 0, 0.0, {}, target_project)
 
     if db_projects is None:
-        try:
-            data = load_data()
-            db_projects = data.get("stats", {}).get("projects", {})
-        except Exception:
-            db_projects = {}
+        data = load_data()
+        db_projects = data.get("stats", {}).get("projects", {})
 
     project_index: Dict[str, str] = {}
     for p_key in (db_projects or {}).keys():
@@ -5429,18 +5426,15 @@ def parse_transcript_work_time(
         project_index[urllib.parse.quote(title)] = p_key
 
     entries = []
-    try:
-        with open(str(transcript_path), "r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entries.append(json.loads(line))
-                except Exception:
-                    continue
-    except Exception:
-        return TranscriptParseResult(0.0, 0, 0.0, {}, target_project)
+    with open(str(transcript_path), "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
 
     if not entries:
         return TranscriptParseResult(0.0, 0, 0.0, {}, target_project)
@@ -5468,36 +5462,56 @@ def parse_transcript_work_time(
     turn_durations: List[float] = []
     matched_per_turn: List[Set[str]] = []
 
-    def extract_candidates_from_text(text: str) -> Set[str]:
-        candidates = set()
-        md_matches = re.findall(r'[\w\-_\. %/\\\u0080-\uffff]+\.md', text, re.IGNORECASE)
-        for m in md_matches:
-            clean = m.strip().replace("\\", "/").split("/")[-1]
-            clean_unquote = urllib.parse.unquote(clean).strip()
-            if clean_unquote.startswith("🤖 "):
-                clean_unquote = clean_unquote[2:].strip()
-            candidates.add(clean_unquote.lower())
-            candidates.add(os.path.splitext(clean_unquote)[0].lower())
-            if "notes/" in m.lower():
-                part = m[m.lower().index("notes/"):].strip()
-                part = urllib.parse.unquote(part)
-                candidates.add(part.lower())
+    def resolve_to_project(raw_candidate: str) -> Optional[str]:
+        if not raw_candidate:
+            return None
+        clean = raw_candidate.strip().replace("\\", "/")
+        clean_base = os.path.basename(clean)
+        clean_unquote = urllib.parse.unquote(clean_base).strip()
+        if clean_unquote.startswith("🤖 "):
+            clean_unquote = clean_unquote[2:].strip()
+        for cand in [clean_unquote.lower(), os.path.splitext(clean_unquote)[0].lower()]:
+            if cand in project_index:
+                return project_index[cand]
+        if "notes/" in clean.lower():
+            part = clean[clean.lower().index("notes/"):].strip()
+            part = urllib.parse.unquote(part).lower()
+            if part in project_index:
+                return project_index[part]
+        return None
 
-        brief_matches = re.findall(r'Projet\s*:\s*([^\r\n]+)', text, re.IGNORECASE)
-        for b in brief_matches:
-            b_clean = b.strip().replace("\\", "/").split("/")[-1]
-            b_clean = urllib.parse.unquote(b_clean)
-            candidates.add(b_clean.lower())
-            candidates.add(os.path.splitext(b_clean)[0].lower())
+    def is_vault_project_note(path_str: str) -> Optional[str]:
+        if not isinstance(path_str, str):
+            return None
+        norm = path_str.replace("\\", "/").strip()
+        if not norm.lower().endswith(".md"):
+            return None
+        norm_lower = norm.lower()
+        if any(excl in norm_lower for excl in ["/_agents/", "\\_agents\\", "/brain/", "\\brain\\", "/scratch/", "\\scratch\\", "sources_"]):
+            return None
+        return resolve_to_project(norm)
 
-        main_proj_matches = re.findall(r'["\']main_project_file["\']\s*:\s*["\']([^"\']+)["\']', text)
-        for mp in main_proj_matches:
-            mp_clean = mp.strip().replace("\\", "/").split("/")[-1]
-            mp_clean = urllib.parse.unquote(mp_clean)
-            candidates.add(mp_clean.lower())
-            candidates.add(os.path.splitext(mp_clean)[0].lower())
+    def extract_strings_recursive(val: Any) -> List[str]:
+        res = []
+        if isinstance(val, str):
+            stripped = val.strip()
+            if (stripped.startswith("{") and stripped.endswith("}")) or (stripped.startswith("[") and stripped.endswith("]")):
+                try:
+                    nested = json.loads(stripped)
+                    res.extend(extract_strings_recursive(nested))
+                except (json.JSONDecodeError, ValueError):
+                    res.append(val)
+            else:
+                res.append(val)
+        elif isinstance(val, dict):
+            for v in val.values():
+                res.extend(extract_strings_recursive(v))
+        elif isinstance(val, (list, tuple, set)):
+            for item in val:
+                res.extend(extract_strings_recursive(item))
+        return res
 
-        return candidates
+    path_arg_keys = {"path", "filepath", "file_path", "targetfile", "absolutepath"}
 
     for turn in turns:
         user_entry = turn["user_entry"]
@@ -5519,31 +5533,83 @@ def parse_transcript_work_time(
             msg_minutes = float(minutes_per_message)
         turn_durations.append(msg_minutes)
 
-        turn_text_parts = [user_part]
-        for step in turn["steps"]:
-            stype = step.get("type")
-            if stype == "PLANNER_RESPONSE" and step.get("content"):
-                turn_text_parts.append(str(step["content"]))
-            for tc in step.get("tool_calls", []):
-                args = tc.get("args", {})
-                if isinstance(args, dict):
-                    turn_text_parts.append(json.dumps(args, ensure_ascii=False))
-                elif isinstance(args, str):
-                    turn_text_parts.append(args)
-
-        full_turn_text = "\n".join(turn_text_parts)
-        candidates = extract_candidates_from_text(full_turn_text)
-
         matched: Set[str] = set()
-        for cand in candidates:
-            if cand in project_index:
-                matched.add(project_index[cand])
+
+        # Marqueur D (USER_INPUT) : annotations @[...]
+        user_at_matches = re.findall(r'@\[([a-zA-Z0-9_\- \u0080-\uffff]+?\.md)\]', user_part)
+        for uam in user_at_matches:
+            p = resolve_to_project(uam)
+            if p:
+                matched.add(p)
 
         user_text = user_part.lower()
         for p_key in (db_projects or {}).keys():
             title = os.path.splitext(os.path.basename(p_key))[0]
             if len(title) >= 6 and title.lower() in user_text:
                 matched.add(p_key)
+
+        for step in turn["steps"]:
+            stype = step.get("type")
+            scontent = str(step.get("content") or "")
+
+            # Marqueur D (PLANNER_RESPONSE) : 5 premières lignes uniquement
+            if stype == "PLANNER_RESPONSE" and scontent:
+                first_lines = "\n".join(scontent.splitlines()[:5])
+                md_links = re.findall(r'\[[^\]]*\]\(((?:file:///[^\)]*?/)?([^/\\)]+?\.md))\)', first_lines, re.IGNORECASE)
+                for full_url, fname in md_links:
+                    p = resolve_to_project(fname)
+                    if p:
+                        matched.add(p)
+                direct_file_links = re.findall(r'file:///[^\)\s"\']+?\.md', first_lines, re.IGNORECASE)
+                for dfl in direct_file_links:
+                    p = resolve_to_project(dfl)
+                    if p:
+                        matched.add(p)
+                robot_links = re.findall(r'🤖\s*([a-zA-Z0-9_\- \u0080-\uffff]+?\.md)', first_lines, re.IGNORECASE)
+                for rl in robot_links:
+                    p = resolve_to_project(rl)
+                    if p:
+                        matched.add(p)
+
+            # Inspection des tool_calls
+            for tc in step.get("tool_calls", []):
+                raw_args = tc.get("args", {})
+                if isinstance(raw_args, str):
+                    stripped_args = raw_args.strip()
+                    if (stripped_args.startswith("{") and stripped_args.endswith("}")) or (stripped_args.startswith("[") and stripped_args.endswith("]")):
+                        try:
+                            args_obj = json.loads(stripped_args)
+                        except (json.JSONDecodeError, ValueError):
+                            args_obj = raw_args
+                    else:
+                        args_obj = raw_args
+                else:
+                    args_obj = raw_args
+
+                # Marqueur C : Path direct d'un outil fichier pointant vers une note .md du coffre
+                if isinstance(args_obj, dict):
+                    for k, v in args_obj.items():
+                        if k.lower() in path_arg_keys and isinstance(v, str):
+                            p = is_vault_project_note(v)
+                            if p:
+                                matched.add(p)
+
+                # Extraction récursive des chaînes (déséchappées)
+                strings = extract_strings_recursive(args_obj)
+                for s in strings:
+                    # Marqueur A : Projet : <chemin>.md dans un brief
+                    brief_matches = re.findall(r'Projet\s*:\s*([^\r\n"\']+?\.md)', s, re.IGNORECASE)
+                    for bm in brief_matches:
+                        p = resolve_to_project(bm)
+                        if p:
+                            matched.add(p)
+
+                    # Marqueur B : main_project_file AIVC
+                    main_proj_matches = re.findall(r'main_project_file["\']?\s*:\s*["\']+([^"\'\r\n]+?\.md)', s, re.IGNORECASE)
+                    for mpm in main_proj_matches:
+                        p = resolve_to_project(mpm)
+                        if p:
+                            matched.add(p)
 
         matched_per_turn.append(matched)
 
