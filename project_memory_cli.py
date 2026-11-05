@@ -4595,7 +4595,7 @@ def _eval_quota_bucket(used_5h: float, used_7d: float, rem_hours_7d: float) -> T
     if used_5h >= 85.0 or used_7d >= 96.0:
         v_md = "🔴 **PAUSE (Quota 5h ou 7j presque épuisé)**"
         v_cli = "🔴 PAUSE (Quota 5h ou 7j presque épuisé)"
-    elif delta < -8.0:
+    elif used_7d == 0.0 or delta < -8.0:
         v_md = "🟢 **UTILISER PLUS**"
         v_cli = "🟢 UTILISER PLUS"
     elif -8.0 <= delta <= 8.0:
@@ -4618,25 +4618,12 @@ def get_realtime_quota_indicators(force_refresh: bool = False) -> Tuple[List[str
         return _RUNTIME_QUOTA_CACHE
 
     now = datetime.now(timezone.utc)
-    agy_data = None
-    claude_data = None
-    agy_err = None
-    claude_err = None
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         f_agy = executor.submit(_fetch_agy_usage)
         f_claude = executor.submit(_fetch_claude_usage)
-        try:
-            agy_data = f_agy.result()
-        except Exception as exc:
-            agy_err = str(exc)
-        try:
-            claude_data = f_claude.result()
-        except Exception as exc:
-            claude_err = str(exc)
-
-    if not agy_data and not claude_data:
-        raise RuntimeError(f"Échec direct APIs quotas : agy={agy_err}, claude={claude_err}")
+        agy_data = f_agy.result()
+        claude_data = f_claude.result()
 
     md_lines = ["> ⚡ **Indicateurs de Quotas (Cible : tout utiliser pile en fin de semaine)** :"]
     cli_lines = ["⚡ Indicateurs de Quotas (Cible : tout utiliser pile en fin de semaine) :"]
@@ -4699,9 +4686,6 @@ def get_realtime_quota_indicators(force_refresh: bool = False) -> Tuple[List[str
             cli_lines.append(
                 f"- Antigravity Claude : {v_cli} — 7j : {rem_7d:.0f}% restants ({used_7d:.0f}% utilisé{s_7d}, reset {_format_quota_duration_short(rem_7d_sec)}) · 5h : {rem_5h:.0f}% restants{cl_5h_rst_cli}"
             )
-    else:
-        md_lines.append(f"> - **Antigravity** : ⚠️ *Indisponible ({agy_err})*")
-        cli_lines.append(f"- Antigravity : ⚠️ Indisponible ({agy_err})")
 
     if claude_data:
         fh = claude_data.get("five_hour", {})
@@ -4730,9 +4714,6 @@ def get_realtime_quota_indicators(force_refresh: bool = False) -> Tuple[List[str
         cli_lines.append(
             f"- Claude Code (Opus) : {v_cli} — 7j : {used_7d:.0f}% utilisé{s_7d} ({rem_7d:.0f}% restants vs cible {target_used:.0f}% utilisés, reset {_format_quota_date_fr(sd['resets_at'])}) · 5h : {used_5h:.0f}% utilisé{s_5h}{cc_5h_rst_cli}"
         )
-    else:
-        md_lines.append(f"> - **Claude Code (Opus)** : ⚠️ *Indisponible ({claude_err})*")
-        cli_lines.append(f"- Claude Code (Opus) : ⚠️ Indisponible ({claude_err})")
 
     _RUNTIME_QUOTA_CACHE = (md_lines, cli_lines)
     _RUNTIME_QUOTA_TIME = time.time()
@@ -4953,10 +4934,7 @@ def cmd_clean_orphans(args, data_path=DATA_JSON_PATH, cache_path=CACHE_PATH):
                 print(f"💾 Backup de sécurité créé : {data_path}.bak_clean_orphans")
 
     if not dry_run:
-        try:
-            write_root_dashboard(vault_dir=VAULT_DIR)
-        except Exception:
-            pass
+        write_root_dashboard(vault_dir=VAULT_DIR)
 
 
 def cmd_list(args, data):
@@ -5039,10 +5017,7 @@ def cmd_list(args, data):
             print(format_project_table(reviewed_disp, verbose=verbose) if reviewed_disp else "  (No reviewed projects)")
 
     if not is_agent_mode:
-        try:
-            write_root_dashboard(vault_dir=VAULT_DIR, data=data, projects=projects)
-        except Exception:
-            pass
+        write_root_dashboard(vault_dir=VAULT_DIR, data=data, projects=projects)
 
 
 def cmd_next_autonomous(args, data):
