@@ -4820,8 +4820,8 @@ def cmd_list(args, data):
 def cmd_next_autonomous(args, data):
     """
     Sélectionne le prochain projet autonome éligible sans seuil de priorité minimum
-    selon l'ordre exact de `list --agent`, à condition qu'il n'ait aucune tâche en attente
-    de validation humaine (await_validation_count == 0).
+    selon l'ordre exact de `list --agent`, à condition qu'il possède au moins une
+    tâche à faire (todo/new) dans sa Roadmap (len(roadmap) > 0).
     """
     fast_mode = getattr(args, "fast", False)
     projects = scan_projects(VAULT_DIR, data, fast_mode=fast_mode, persist=True, is_agent=True)
@@ -4839,7 +4839,6 @@ def cmd_next_autonomous(args, data):
 
     # Inspecter les projets un à un dans l'ordre exact de priorité
     selected_tuple = None
-    first_empty_await_tuple = None
 
     for p in candidate_projects:
         clean_title = re.sub(r"^(?:🤖\s*)+", "", p.get("title", "")).strip()
@@ -4853,15 +4852,9 @@ def cmd_next_autonomous(args, data):
         deliv = p.get("deliverable_items") or []
         roadmap = p.get("roadmap_items") or []
 
-        if len(deliv) == 0:
-            if len(roadmap) > 0:
-                selected_tuple = (p, clean_title, tldr_path, deliv, roadmap)
-                break
-            elif first_empty_await_tuple is None:
-                first_empty_await_tuple = (p, clean_title, tldr_path, deliv, roadmap)
-
-    if selected_tuple is None and first_empty_await_tuple is not None:
-        selected_tuple = first_empty_await_tuple
+        if len(roadmap) > 0:
+            selected_tuple = (p, clean_title, tldr_path, deliv, roadmap)
+            break
 
     as_json = getattr(args, "json", False)
 
@@ -4869,10 +4862,10 @@ def cmd_next_autonomous(args, data):
         if as_json:
             print(json.dumps({
                 "selected": False,
-                "reason": "all_projects_awaiting_validation"
+                "reason": "no_todo_tasks_remaining"
             }, indent=2, ensure_ascii=False))
         else:
-            print("⏸️ Aucun projet éligible : tous les projets actifs ont au moins une tâche en attente de validation (await_validation).")
+            print("⏸️ Aucun projet éligible : aucun projet actif n'a de tâche à faire (todo/new) dans sa Roadmap.")
         return
 
     p, clean_title, tldr_path, deliv, roadmap = selected_tuple
@@ -5339,59 +5332,282 @@ def get_current_conversation_transcript_path() -> Optional[str]:
     return None
 
 
+class TranscriptParseResult(tuple):
+    """
+    Tuple enrichi (t_minutes, msg_count) rétrocompatible avec l'unpacking existant,
+    fournissant des métadonnées de ventilation multi-projets :
+    - total_conversation_minutes : durée brute cumulée sur tous les tours de la conversation
+    - project_minutes : dictionnaire des minutes ventilées par projet suivi (clés de db_projects)
+    - target_project : clé canonique du projet ciblé (ou None)
+    - detected_projects_count : nombre de projets suivis distincts touchés au cours de la conversation
+    """
+    total_conversation_minutes: float
+    project_minutes: Dict[str, float]
+    target_project: Optional[str]
+    detected_projects_count: int
+
+    def __new__(cls, t_minutes: float, msg_count: int, total_conv_min: float = 0.0,
+                proj_min: Optional[Dict[str, float]] = None, target_proj: Optional[str] = None):
+        obj = super().__new__(cls, (t_minutes, msg_count))
+        obj.total_conversation_minutes = total_conv_min
+        obj.project_minutes = proj_min or {}
+        obj.target_project = target_proj
+        obj.detected_projects_count = len([p for p, m in (proj_min or {}).items() if m > 0])
+        return obj
+
+
+def resolve_project_canonical_key(target: Optional[str], db_projects: Dict[str, Any]) -> Optional[str]:
+    """
+    Résout une chaîne cible (titre, nom de fichier ou chemin relatif/absolu)
+    vers la clé canonique exacte dans le dictionnaire db_projects.
+    """
+    if not target or not db_projects:
+        return target
+    clean = target.strip().replace("\\", "/")
+    if clean in db_projects:
+        return clean
+    clean_lower = clean.lower()
+    for k in db_projects.keys():
+        if k.lower() == clean_lower:
+            return k
+
+    target_base = os.path.basename(clean).lower()
+    target_title = os.path.splitext(target_base)[0]
+    for k in db_projects.keys():
+        k_base = os.path.basename(k).lower()
+        k_title = os.path.splitext(k_base)[0]
+        if k_base == target_base or k_title == target_title:
+            return k
+
+    for k in db_projects.keys():
+        k_lower = k.lower()
+        if target_title in k_lower or clean_lower in k_lower:
+            return k
+    return target
+
+
 def parse_transcript_work_time(
-    transcript_path: str,
+    transcript_path: Union[str, Path],
+    target_project: Optional[str] = None,
+    db_projects: Optional[dict] = None,
     minutes_per_message: float = 6.0,
     minutes_per_arrow: float = 2.0
-) -> Tuple[float, int]:
+) -> TranscriptParseResult:
     """
-    Compte strictement les messages humains explicites où source == "USER_EXPLICIT" et type == "USER_INPUT".
-    Garantit qu'un message avec sélections ou commentaires d'artéfacts multiples (encapsulé dans une seule ligne JSON)
-    compte pour 6 min par défaut, ou max(6 min, nb_arguments * 2 min) si des arguments d'Henri (flèches -> ou →,
-    ou commentaires d'artéfacts Comment: "...") sont présents (> 1), isolés avant <ADDITIONAL_METADATA> et hors blocs <mail> ou ```.
-    Retourne (round(total_minutes, 2), user_messages).
-    Si aucun message trouvé ou fichier absent, renvoie (0.0, 0).
+    Découpe le transcript en tours humains commençant à chaque USER_EXPLICIT (USER_INPUT).
+    Pour chaque tour, calcule la durée brute selon la règle canonique (6 min de base, ou 2 min par
+    argument/flèche '->'/'→' et commentaire d'artéfact si > 1), et identifie l'ensemble des
+    projets suivis (clés de db_projects) touchés durant ce tour via USER_INPUT, les arguments
+    des tool_calls (chemins de notes maîtresses, Projet : <chemin> dans les briefs, main_project_file)
+    et les liens du PLANNER_RESPONSE ([Nom](file:///.../Nom.md) ou 🤖 <Titre>.md).
+    Ventile le temps équitablement (turn_minutes / K) entre les projets touchés sur chaque tour.
+    Si matched_projects est vide sur un tour court de suivi, il hérite du last_matched_projects précédent
+    (ou suivant pour les premiers tours).
+    Si target_project est fourni, retourne max(1, round(project_minutes[target_project])) si du temps
+    a été ventilé, 0.0 si d'autres projets ont été détectés sans toucher ce projet, ou le total de repli
+    si aucun projet suivi n'a pu être détecté sur l'ensemble de la conversation.
     """
-    if not transcript_path or not os.path.isfile(transcript_path):
-        return 0.0, 0
+    if not transcript_path or not os.path.isfile(str(transcript_path)):
+        return TranscriptParseResult(0.0, 0, 0.0, {}, target_project)
 
-    user_messages = 0
-    total_minutes = 0.0
+    if db_projects is None:
+        try:
+            data = load_data()
+            db_projects = data.get("stats", {}).get("projects", {})
+        except Exception:
+            db_projects = {}
+
+    project_index: Dict[str, str] = {}
+    for p_key in (db_projects or {}).keys():
+        norm_key = p_key.replace("\\", "/").lower()
+        project_index[norm_key] = p_key
+        base_name = os.path.basename(p_key).lower()
+        project_index[base_name] = p_key
+        title = os.path.splitext(base_name)[0].lower()
+        project_index[title] = p_key
+        project_index[urllib.parse.quote(base_name)] = p_key
+        project_index[urllib.parse.quote(title)] = p_key
+
+    entries = []
     try:
-        with open(transcript_path, "r", encoding="utf-8", errors="ignore") as f:
+        with open(str(transcript_path), "r", encoding="utf-8", errors="ignore") as f:
             for line in f:
                 line = line.strip()
                 if not line:
                     continue
                 try:
-                    entry = json.loads(line)
-                    if isinstance(entry, dict):
-                        if entry.get("source") == "USER_EXPLICIT" and entry.get("type") == "USER_INPUT":
-                            raw_content = str(entry.get("content") or "")
-                            user_part = raw_content.split("<ADDITIONAL_METADATA>")[0]
-                            comment_count = len(re.findall(r'(?:^|\n)Comment:\s*"', user_part))
-                            clean_part = re.sub(r'```.*?```', '', user_part, flags=re.DOTALL)
-                            clean_part = re.sub(r'<mail>.*?</mail>', '', clean_part, flags=re.DOTALL)
-                            if "<USER_REQUEST>" in clean_part:
-                                body_part = clean_part.split("<USER_REQUEST>")[1].split("</USER_REQUEST>")[0]
-                                arrow_count = len(re.findall(r"(?:->|→)", body_part))
-                            else:
-                                arrow_count = len(re.findall(r"(?:->|→)", clean_part))
-
-                            arg_count = arrow_count + comment_count
-                            if arg_count > 1:
-                                msg_minutes = max(float(minutes_per_message), arg_count * float(minutes_per_arrow))
-                            else:
-                                msg_minutes = float(minutes_per_message)
-
-                            total_minutes += msg_minutes
-                            user_messages += 1
+                    entries.append(json.loads(line))
                 except Exception:
                     continue
     except Exception:
-        return 0.0, 0
+        return TranscriptParseResult(0.0, 0, 0.0, {}, target_project)
 
-    return round(total_minutes, 2), user_messages
+    if not entries:
+        return TranscriptParseResult(0.0, 0, 0.0, {}, target_project)
+
+    turns = []
+    current_turn = None
+    for entry in entries:
+        if isinstance(entry, dict):
+            source = entry.get("source")
+            entry_type = entry.get("type")
+            if source == "USER_EXPLICIT" and entry_type == "USER_INPUT":
+                if current_turn is not None:
+                    turns.append(current_turn)
+                current_turn = {"user_entry": entry, "steps": [entry]}
+            else:
+                if current_turn is not None:
+                    current_turn["steps"].append(entry)
+    if current_turn is not None:
+        turns.append(current_turn)
+
+    if not turns:
+        return TranscriptParseResult(0.0, 0, 0.0, {}, target_project)
+
+    user_messages = len(turns)
+    turn_durations: List[float] = []
+    matched_per_turn: List[Set[str]] = []
+
+    def extract_candidates_from_text(text: str) -> Set[str]:
+        candidates = set()
+        md_matches = re.findall(r'[\w\-_\. %/\\\u0080-\uffff]+\.md', text, re.IGNORECASE)
+        for m in md_matches:
+            clean = m.strip().replace("\\", "/").split("/")[-1]
+            clean_unquote = urllib.parse.unquote(clean).strip()
+            if clean_unquote.startswith("🤖 "):
+                clean_unquote = clean_unquote[2:].strip()
+            candidates.add(clean_unquote.lower())
+            candidates.add(os.path.splitext(clean_unquote)[0].lower())
+            if "notes/" in m.lower():
+                part = m[m.lower().index("notes/"):].strip()
+                part = urllib.parse.unquote(part)
+                candidates.add(part.lower())
+
+        brief_matches = re.findall(r'Projet\s*:\s*([^\r\n]+)', text, re.IGNORECASE)
+        for b in brief_matches:
+            b_clean = b.strip().replace("\\", "/").split("/")[-1]
+            b_clean = urllib.parse.unquote(b_clean)
+            candidates.add(b_clean.lower())
+            candidates.add(os.path.splitext(b_clean)[0].lower())
+
+        main_proj_matches = re.findall(r'["\']main_project_file["\']\s*:\s*["\']([^"\']+)["\']', text)
+        for mp in main_proj_matches:
+            mp_clean = mp.strip().replace("\\", "/").split("/")[-1]
+            mp_clean = urllib.parse.unquote(mp_clean)
+            candidates.add(mp_clean.lower())
+            candidates.add(os.path.splitext(mp_clean)[0].lower())
+
+        return candidates
+
+    for turn in turns:
+        user_entry = turn["user_entry"]
+        raw_content = str(user_entry.get("content") or "")
+        user_part = raw_content.split("<ADDITIONAL_METADATA>")[0]
+        comment_count = len(re.findall(r'(?:^|\n)Comment:\s*"', user_part))
+        clean_part = re.sub(r'```.*?```', '', user_part, flags=re.DOTALL)
+        clean_part = re.sub(r'<mail>.*?</mail>', '', clean_part, flags=re.DOTALL)
+        if "<USER_REQUEST>" in clean_part:
+            body_part = clean_part.split("<USER_REQUEST>")[1].split("</USER_REQUEST>")[0]
+            arrow_count = len(re.findall(r"(?:->|→)", body_part))
+        else:
+            arrow_count = len(re.findall(r"(?:->|→)", clean_part))
+
+        arg_count = arrow_count + comment_count
+        if arg_count > 1:
+            msg_minutes = max(float(minutes_per_message), arg_count * float(minutes_per_arrow))
+        else:
+            msg_minutes = float(minutes_per_message)
+        turn_durations.append(msg_minutes)
+
+        turn_text_parts = [user_part]
+        for step in turn["steps"]:
+            stype = step.get("type")
+            if stype == "PLANNER_RESPONSE" and step.get("content"):
+                turn_text_parts.append(str(step["content"]))
+            for tc in step.get("tool_calls", []):
+                args = tc.get("args", {})
+                if isinstance(args, dict):
+                    turn_text_parts.append(json.dumps(args, ensure_ascii=False))
+                elif isinstance(args, str):
+                    turn_text_parts.append(args)
+
+        full_turn_text = "\n".join(turn_text_parts)
+        candidates = extract_candidates_from_text(full_turn_text)
+
+        matched: Set[str] = set()
+        for cand in candidates:
+            if cand in project_index:
+                matched.add(project_index[cand])
+
+        user_text = user_part.lower()
+        for p_key in (db_projects or {}).keys():
+            title = os.path.splitext(os.path.basename(p_key))[0]
+            if len(title) >= 6 and title.lower() in user_text:
+                matched.add(p_key)
+
+        matched_per_turn.append(matched)
+
+    last_matched: Set[str] = set()
+    final_matched_per_turn: List[Set[str]] = []
+    for m in matched_per_turn:
+        if not m and last_matched:
+            final_matched_per_turn.append(set(last_matched))
+        else:
+            if m:
+                last_matched = m
+            final_matched_per_turn.append(set(m))
+
+    if final_matched_per_turn and not final_matched_per_turn[0]:
+        first_non_empty = next((s for s in final_matched_per_turn if s), set())
+        for i in range(len(final_matched_per_turn)):
+            if not final_matched_per_turn[i]:
+                final_matched_per_turn[i] = set(first_non_empty)
+            else:
+                break
+
+    total_conversation_minutes = sum(turn_durations)
+    project_minutes: Dict[str, float] = {p: 0.0 for p in (db_projects or {}).keys()}
+    total_detected_in_transcript = False
+
+    for m, t_min in zip(final_matched_per_turn, turn_durations):
+        if m:
+            total_detected_in_transcript = True
+            share = t_min / len(m)
+            for p in m:
+                project_minutes[p] = project_minutes.get(p, 0.0) + share
+
+    if target_project is not None:
+        canon_target = resolve_project_canonical_key(target_project, db_projects or {})
+        if not total_detected_in_transcript:
+            return TranscriptParseResult(
+                round(total_conversation_minutes, 2),
+                user_messages,
+                total_conversation_minutes,
+                project_minutes,
+                canon_target
+            )
+
+        target_time = project_minutes.get(canon_target, 0.0)
+        if target_time > 0:
+            final_minutes = float(max(1, round(target_time)))
+        else:
+            final_minutes = 0.0
+
+        return TranscriptParseResult(
+            final_minutes,
+            user_messages,
+            total_conversation_minutes,
+            project_minutes,
+            canon_target
+        )
+
+    return TranscriptParseResult(
+        round(total_conversation_minutes, 2),
+        user_messages,
+        total_conversation_minutes,
+        project_minutes,
+        None
+    )
 
 
 def compute_feedback_score(current_score, action, rf):
@@ -5741,13 +5957,27 @@ def cmd_feedback(args, data):
             if transcript_arg is not None or (has_antigravity and not is_agent):
                 transcript_path = transcript_arg if (transcript_arg and transcript_arg != "auto") else get_current_conversation_transcript_path()
                 if transcript_path and os.path.isfile(transcript_path):
-                    t_minutes, msg_count = parse_transcript_work_time(transcript_path)
+                    stats_projects = data.get("stats", {}).get("projects", {})
+                    t_result = parse_transcript_work_time(
+                        transcript_path,
+                        target_project=args.project_path,
+                        db_projects=stats_projects
+                    )
+                    t_minutes, msg_count = t_result[0], t_result[1]
                     if msg_count > 0:
-                        base_calc = round(msg_count * 6.0, 2)
-                        if t_minutes > base_calc:
-                            print(f"[Transcript] Détecté {msg_count} interaction(s) utilisateur (avec flèches/commentaires d'artéfacts) -> Durée calculée : {t_minutes} min (base {base_calc:.1f}m + flèches/commentaires {t_minutes - base_calc:.1f}m)")
+                        total_conv = getattr(t_result, "total_conversation_minutes", t_minutes)
+                        # Plancher minimal de 2 min dans cmd_feedback si clôture explicite d'un projet qui a 0 min détectées
+                        if t_minutes == 0 and total_conv > 0:
+                            t_minutes = 2.0
+                            print(f"⏱️ Temps auto-extrait du transcript pour '{args.project_path}' : {t_minutes:.1f} min (plancher minimal appliqué, non détecté dans les tours actifs sur {total_conv:.1f} min totales)")
+                        elif total_conv > 0 and total_conv != t_minutes:
+                            print(f"⏱️ Temps auto-extrait du transcript pour '{args.project_path}' : {t_minutes:.1f} min (sur {total_conv:.1f} min totales de conversation, {msg_count} interaction(s))")
                         else:
-                            print(f"[Transcript] Détecté {msg_count} interaction(s) utilisateur -> Durée calculée : {t_minutes} min")
+                            base_calc = round(msg_count * 6.0, 2)
+                            if t_minutes > base_calc:
+                                print(f"[Transcript] Détecté {msg_count} interaction(s) utilisateur (avec flèches/commentaires d'artéfacts) -> Durée calculée : {t_minutes} min (base {base_calc:.1f}m + flèches/commentaires {t_minutes - base_calc:.1f}m)")
+                            else:
+                                print(f"[Transcript] Détecté {msg_count} interaction(s) utilisateur -> Durée calculée : {t_minutes} min")
                         elapsed_minutes = t_minutes
                     else:
                         elapsed_minutes = None
