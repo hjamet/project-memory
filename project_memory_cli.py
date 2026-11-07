@@ -2241,30 +2241,39 @@ def _convert_wikilinks_to_markdown_links(text: str, vault_dir: Optional[str] = N
         target = m.group(1).strip()
         label = m.group(2).strip() if m.group(2) else None
 
+        generic_examples = {"...", "wikilinks", "Note", "Sous-Note.md", "Nom Image.png", "Cible", "target", "chemin"}
+        if target in generic_examples:
+            return m.group(0)
+
         if target.lower().startswith("file:///"):
             t_url = target.replace("\\", "/")
+            posix_part = t_url[8:]
+            t_url = "file:///" + urllib.parse.quote(urllib.parse.unquote(posix_part), safe="/:#?&=")
             lbl = label or Path(t_url).name
             return f"[{lbl}]({t_url})"
 
         if re.match(r"^[A-Za-z]:[\\/]", target):
-            posix_path = target.replace("\\", "/").rstrip("/")
+            posix_path = target.replace("\\", "/").rstrip("/").lstrip("/")
             lbl = label or Path(target).name
-            return f"[{lbl}](file:///{posix_path})"
+            encoded_url = "file:///" + urllib.parse.quote(posix_path, safe="/:#")
+            return f"[{lbl}]({encoded_url})"
 
         if target.startswith("~/") or target.startswith("~\\"):
-            posix_home = Path.home().as_posix()
+            posix_home = Path.home().as_posix().lstrip("/")
             sub = target[2:].replace("\\", "/").lstrip("/")
             lbl = label or Path(target).name
-            return f"[{lbl}](file:///{posix_home}/{sub})"
+            encoded_url = "file:///" + urllib.parse.quote(f"{posix_home}/{sub}", safe="/:#")
+            return f"[{lbl}]({encoded_url})"
 
         if target.lower().startswith(("http://", "https://")):
             lbl = label or target
             return f"[{lbl}]({target})"
 
         if target.startswith("/"):
-            posix_path = target.replace("\\", "/").rstrip("/")
+            posix_path = target.replace("\\", "/").rstrip("/").lstrip("/")
             lbl = label or Path(target).name
-            return f"[{lbl}](file://{posix_path})"
+            encoded_url = "file:///" + urllib.parse.quote(posix_path, safe="/:#")
+            return f"[{lbl}]({encoded_url})"
 
         v_dir = Path(vault_dir) if vault_dir else Path(VAULT_DIR)
         matched_file = None
@@ -2280,12 +2289,14 @@ def _convert_wikilinks_to_markdown_links(text: str, vault_dir: Optional[str] = N
 
         if matched_file is not None:
             lbl = label or target
-            return f"[{lbl}](file:///{matched_file.as_posix()})"
+            encoded_url = "file:///" + urllib.parse.quote(matched_file.as_posix().lstrip("/"), safe="/:#")
+            return f"[{lbl}]({encoded_url})"
 
         if any(sep in target for sep in ("/", "\\", ".")):
-            posix_target = target.replace("\\", "/")
+            posix_target = target.replace("\\", "/").lstrip("/")
             lbl = label or target
-            return f"[{lbl}](file:///{posix_target})"
+            encoded_url = "file:///" + urllib.parse.quote(posix_target, safe="/:#")
+            return f"[{lbl}]({encoded_url})"
 
         lbl = label or target
         return f"[{lbl}]"
@@ -2704,6 +2715,20 @@ def _rewrite_paths_for_current_pc(text: str) -> str:
 
     # Final pass on any residual wikilinks
     text = _convert_wikilinks_to_markdown_links(text)
+
+    # Final pass on any Markdown file:/// URLs to ensure strict URI encoding (zero unencoded spaces)
+    def _quote_file_url(m):
+        prefix = m.group(1)
+        url = m.group(2)
+        suffix = m.group(3)
+        if " " in url:
+            scheme = "file:///"
+            rest = url[len(scheme):] if url.startswith(scheme) else url.split("file://")[-1].lstrip("/")
+            quoted_rest = urllib.parse.quote(urllib.parse.unquote(rest), safe="/:#?&=")
+            return f"{prefix}{scheme}{quoted_rest}{suffix}"
+        return m.group(0)
+
+    text = re.sub(r'(!?\[[^\]]*\]\()(file:///[^)\n]+)(\))', _quote_file_url, text)
 
     return text
 
