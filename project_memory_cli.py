@@ -70,10 +70,9 @@ ACTIVE_POMODORO_AGENT_PATH = os.path.join(VAULT_DIR, ".obsidian", "plugins", "pr
 
 PROJECT_DIFFS_DIR = Path(VAULT_DIR) / "_agents" / "project_diffs"
 DOC_VERSION_CAS_DIR = Path(VAULT_DIR) / "_agents" / "doc_version_cas"
-AIVC_TLDR_DIR = PROJECT_DIFFS_DIR
-ADVANCE_TLDR_DIR = str(PROJECT_DIFFS_DIR)
-
 AIVC_USER_TEMP_DIR = Path(tempfile.gettempdir()) / "aivc"
+AIVC_TLDR_DIR = AIVC_USER_TEMP_DIR / "advance_tldr"
+ADVANCE_TLDR_DIR = str(AIVC_TLDR_DIR)
 if os.name == "nt":
     AIVC_TEMP_DIR = Path(os.environ.get("AIVC_TEMP_DIR") or (Path(os.environ.get("PUBLIC", r"C:\Users\Public")) / "aivc"))
 else:
