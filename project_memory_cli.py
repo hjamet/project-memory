@@ -4598,11 +4598,13 @@ def enrich_project_auto_fields(p, vault_dir=VAULT_DIR):
 
     master_path = Path(vault_dir) / rel_path if rel_path else None
     if master_path and master_path.is_file():
-        stem = master_path.stem
-        clean_stem = re.sub(r'^(?:🤖\s*)+', '', stem).strip()
         diff_count, diff_file = _get_or_update_project_diff(master_path, vault_dir=vault_dir)
-        stem_encoded = urllib.parse.quote(clean_stem)
-        link = f"_agents/project_diffs/🤖%20{stem_encoded}.md"
+        try:
+            rel_diff = os.path.relpath(diff_file, vault_dir)
+        except ValueError:
+            rel_diff = f"_agents/project_diffs/{diff_file.name}"
+        rel_diff_forward = str(rel_diff).replace("\\", "/")
+        link = urllib.parse.quote(rel_diff_forward, safe="/:")
         auto_disp = f"[🤖 {diff_count}]({link})"
         p["auto_disp"] = auto_disp
         p["auto_diff_count"] = diff_count
@@ -4641,9 +4643,9 @@ def format_project_table(projects, verbose=False):
         auto_disps.append(p["_cached_auto_disp"] if "_cached_auto_disp" in p else enrich_project_auto_fields(p, vault_dir=VAULT_DIR))
 
     if verbose:
-        lines.append("| Rank | Title | Eff.Score | Base | Rot. | Dead.Urg | Milest.Urg | Malus(K) | Deadline | Milestone | Reviews |")
-        lines.append("| :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
-        for idx, (p, title_link) in enumerate(zip(projects, title_links), 1):
+        lines.append("| Title | Eff.Score | Base | Rot. | Dead.Urg | Milest.Urg | Malus(K) | Deadline | Milestone | Reviews |")
+        lines.append("| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |")
+        for p, title_link in zip(projects, title_links):
             rev_str = "NEW" if p["total_reviews"] == 0 else str(p["total_reviews"])
             eff_str = f"{p['effective_score']:.2f}" if p['effective_score'] is not None else "N/A"
             base_str = f"{p['base_score']:.1f}" if p['base_score'] is not None else "N/A"
@@ -4664,12 +4666,12 @@ def format_project_table(projects, verbose=False):
             if len(milestone_disp) > 13:
                 milestone_disp = milestone_disp[:11] + ".."
 
-            lines.append(f"| {idx} | {title_link} | {eff_str} | {base_str} | {rot_str} | {dead_urg_str} | {mile_urg_str} | {malus_str} | {deadline_disp} | {milestone_disp} | {rev_str} |")
+            lines.append(f"| {title_link} | {eff_str} | {base_str} | {rot_str} | {dead_urg_str} | {mile_urg_str} | {malus_str} | {deadline_disp} | {milestone_disp} | {rev_str} |")
     else:
-        # Affichage épuré par défaut : Rank, Title, Score, Auto, Deadline, Milestone
-        lines.append("| Rank | Title | Score | Auto | Deadline | Milestone |")
-        lines.append("| :---: | :--- | :---: | :---: | :---: | :---: |")
-        for idx, (p, title_link, auto_disp) in enumerate(zip(projects, title_links, auto_disps), 1):
+        # Affichage épuré par défaut : Title, Score, Diff, Deadline, Milestone
+        lines.append("| Title | Score | Diff | Deadline | Milestone |")
+        lines.append("| :--- | :---: | :---: | :---: | :---: |")
+        for p, title_link, auto_disp in zip(projects, title_links, auto_disps):
             arrow = p.get('trend_arrow')
             if not arrow and p.get('effective_score') is not None:
                 arrow = '➖'
@@ -4683,7 +4685,7 @@ def format_project_table(projects, verbose=False):
             if len(milestone_disp) > 15:
                 milestone_disp = milestone_disp[:13] + ".."
 
-            lines.append(f"| {idx} | {title_link} | {eff_str} | {auto_disp} | {deadline_disp} | {milestone_disp} |")
+            lines.append(f"| {title_link} | {eff_str} | {auto_disp} | {deadline_disp} | {milestone_disp} |")
 
     return "\n".join(lines)
 
@@ -7928,7 +7930,7 @@ def main():
     list_parser.add_argument("--fast", action="store_true", help="Fast mode using existing cache without filesystem scan")
     list_parser.add_argument("--clean-orphans", action="store_true", help="Nettoie d'abord les notes orphelines de data.json avant de lister")
     list_parser.add_argument("--no-persist", action="store_true", help="Ne persiste pas les scores effectifs calculés dans data.json")
-    list_parser.add_argument("--verbose", "-v", "--debug", action="store_true", help="Affichage détaillé avec toutes les composantes de calcul (11 colonnes)")
+    list_parser.add_argument("--verbose", "-v", "--debug", action="store_true", help="Affichage détaillé avec toutes les composantes de calcul (10 colonnes)")
     list_parser.add_argument("--agent", action="store_true", help="Bascule en mode agent autonome (classement, scores et historique propres à l'agent)")
 
     # clean-orphans
