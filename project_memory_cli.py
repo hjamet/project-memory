@@ -4908,14 +4908,11 @@ def sync_project_diff_paths_for_current_host(vault_dir: str = VAULT_DIR) -> int:
         return 0
     updated = 0
     for diff_file in diff_dir.glob("🤖 *.md"):
-        try:
-            raw = diff_file.read_text(encoding="utf-8", errors="replace")
-            rewritten = _rewrite_paths_for_current_pc(raw)
-            if rewritten != raw:
-                diff_file.write_text(rewritten, encoding="utf-8")
-                updated += 1
-        except Exception:
-            pass
+        raw = diff_file.read_text(encoding="utf-8", errors="replace")
+        rewritten = _rewrite_paths_for_current_pc(raw)
+        if rewritten != raw:
+            diff_file.write_text(rewritten, encoding="utf-8")
+            updated += 1
     return updated
 
 
