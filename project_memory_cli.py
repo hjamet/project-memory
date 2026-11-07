@@ -68,40 +68,42 @@ CACHE_PATH = os.path.join(VAULT_DIR, ".obsidian", "plugins", "project-memory", "
 ACTIVE_POMODORO_PATH = os.path.join(VAULT_DIR, ".obsidian", "plugins", "project-memory", ".active_pomodoro.json")
 ACTIVE_POMODORO_AGENT_PATH = os.path.join(VAULT_DIR, ".obsidian", "plugins", "project-memory", ".active_pomodoro_agent.json")
 
-_aivc_src = Path.home() / "Documents" / "code" / "aivc" / "src"
-if _aivc_src.is_dir() and str(_aivc_src) not in sys.path:
-    sys.path.insert(0, str(_aivc_src))
+PROJECT_DIFFS_DIR = Path(VAULT_DIR) / "_agents" / "project_diffs"
+DOC_VERSION_CAS_DIR = Path(VAULT_DIR) / "_agents" / "doc_version_cas"
+AIVC_TLDR_DIR = PROJECT_DIFFS_DIR
+ADVANCE_TLDR_DIR = str(PROJECT_DIFFS_DIR)
 
 AIVC_USER_TEMP_DIR = Path(tempfile.gettempdir()) / "aivc"
 if os.name == "nt":
     AIVC_TEMP_DIR = Path(os.environ.get("AIVC_TEMP_DIR") or (Path(os.environ.get("PUBLIC", r"C:\Users\Public")) / "aivc"))
 else:
     AIVC_TEMP_DIR = Path(os.environ.get("AIVC_TEMP_DIR") or (Path(tempfile.gettempdir()) / "aivc"))
-AIVC_TLDR_DIR = AIVC_TEMP_DIR / "advance_tldr"
 AIVC_ARTIFACTS_DIR = AIVC_TEMP_DIR / "artifacts"
-ADVANCE_TLDR_DIR = str(AIVC_TLDR_DIR)
 DASHBOARD_FILENAME = "🎯 Projets.md"
 DASHBOARD_PATH = os.path.join(VAULT_DIR, DASHBOARD_FILENAME)
 
+PROJECT_DIFFS_DIR.mkdir(parents=True, exist_ok=True)
+DOC_VERSION_CAS_DIR.mkdir(parents=True, exist_ok=True)
+os.environ["DOC_VERSION_COMMITS_DIR"] = str(DOC_VERSION_CAS_DIR)
+os.environ["DOC_VERSION_DISABLE_STYLE_GUARD"] = "1"
+
+# Import dynamique doc-version
+_doc_version_venv = Path.home() / "Documents" / "code" / "doc-version-mcp" / ".venv" / "Lib" / "site-packages"
+if _doc_version_venv.is_dir() and str(_doc_version_venv) not in sys.path:
+    sys.path.insert(0, str(_doc_version_venv))
+_doc_version_src = Path.home() / "Documents" / "code" / "doc-version-mcp" / "src"
+if _doc_version_src.is_dir() and str(_doc_version_src) not in sys.path:
+    sys.path.insert(0, str(_doc_version_src))
+
+_aivc_src = Path.home() / "Documents" / "code" / "aivc" / "src"
+if _aivc_src.is_dir() and str(_aivc_src) not in sys.path:
+    sys.path.insert(0, str(_aivc_src))
+
 
 def _ensure_aivc_tldr_bootstrap() -> None:
-    """Bootstraps universal and user temp aivc directories.
-    If advance_tldr is empty, seeds it from legacy ~/.gemini/antigravity/brain/advance_tldr if present.
-    """
     try:
-        AIVC_TLDR_DIR.mkdir(parents=True, exist_ok=True)
-        AIVC_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
-        (AIVC_USER_TEMP_DIR / "advance_tldr").mkdir(parents=True, exist_ok=True)
-        (AIVC_USER_TEMP_DIR / "artifacts").mkdir(parents=True, exist_ok=True)
-        legacy_dir = Path.home() / ".gemini" / "antigravity" / "brain" / "advance_tldr"
-        if legacy_dir.is_dir() and not any(AIVC_TLDR_DIR.glob("🤖 *.md")):
-            for p in legacy_dir.glob("🤖 *.md"):
-                target = AIVC_TLDR_DIR / p.name
-                if not target.exists():
-                    shutil.copy2(p, target)
-                target_user = (AIVC_USER_TEMP_DIR / "advance_tldr") / p.name
-                if not target_user.exists():
-                    shutil.copy2(p, target_user)
+        PROJECT_DIFFS_DIR.mkdir(parents=True, exist_ok=True)
+        DOC_VERSION_CAS_DIR.mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
 
@@ -4424,41 +4426,196 @@ def sync_advance_tldr_for_memory(memory: Any, vault_dir: Optional[str] = None) -
     return synced
 
 
+_CAS_ENGINE_INSTANCE = None
+
+
+def _get_cas_engine(vault_dir: str = VAULT_DIR):
+    global _CAS_ENGINE_INSTANCE
+    if _CAS_ENGINE_INSTANCE is not None:
+        return _CAS_ENGINE_INSTANCE
+
+    doc_version_venv = Path.home() / "Documents" / "code" / "doc-version-mcp" / ".venv" / "Lib" / "site-packages"
+    if doc_version_venv.is_dir() and str(doc_version_venv) not in sys.path:
+        sys.path.insert(0, str(doc_version_venv))
+    doc_version_src = Path.home() / "Documents" / "code" / "doc-version-mcp" / "src"
+    if doc_version_src.is_dir() and str(doc_version_src) not in sys.path:
+        sys.path.insert(0, str(doc_version_src))
+
+    cas_dir = Path(vault_dir) / "_agents" / "doc_version_cas"
+    cas_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["DOC_VERSION_COMMITS_DIR"] = str(cas_dir)
+    os.environ["DOC_VERSION_DISABLE_STYLE_GUARD"] = "1"
+
+    from doc_version_mcp.cas_engine import CASEngine
+    import doc_version_mcp.server as dv_server
+    engine = CASEngine(storage_dir=cas_dir)
+    dv_server.cas = engine
+
+    if not hasattr(engine, "prune_stale_targets"):
+        def _prune_stale(max_age_days: int = 14, protected_targets: Optional[Set[str]] = None):
+            return engine.prune_expired(ttl_days=max_age_days, keep_baselines=True)
+        setattr(engine, "prune_stale_targets", _prune_stale)
+
+    _CAS_ENGINE_INSTANCE = engine
+    return _CAS_ENGINE_INSTANCE
+
+
+def _get_or_update_project_diff(master_note_path: Path, vault_dir: str = VAULT_DIR) -> Tuple[int, Path]:
+    cas = _get_cas_engine(vault_dir)
+    stem = master_note_path.stem
+    diff_dir = Path(vault_dir) / "_agents" / "project_diffs"
+    diff_dir.mkdir(parents=True, exist_ok=True)
+    diff_file = diff_dir / f"🤖 {stem}.md"
+
+    try:
+        rel_posix = master_note_path.relative_to(Path(vault_dir)).as_posix()
+    except ValueError:
+        rel_posix = master_note_path.name
+    abs_posix = master_note_path.resolve().as_posix()
+
+    snaps = cas.list_snapshots(target=abs_posix, limit=50)
+    if not snaps:
+        snaps = cas.list_snapshots(target=rel_posix, limit=50)
+
+    has_henri = any(str(s.get("author", "")).lower() == "henri" for s in snaps)
+    if not has_henri:
+        cas.create_snapshot(
+            target=abs_posix,
+            message="Baseline initiale Henri Jamet",
+            author="henri",
+            is_pinned=True,
+            mode="draft"
+        )
+        snaps = cas.list_snapshots(target=abs_posix, limit=50)
+
+    needs_update = False
+    if not diff_file.exists():
+        needs_update = True
+    else:
+        try:
+            needs_update = master_note_path.stat().st_mtime > diff_file.stat().st_mtime
+        except Exception:
+            needs_update = True
+
+    from doc_version_mcp.server import get_diff_artifact
+    import doc_version_mcp.server as dv_server
+    dv_server.cas = cas
+
+    if needs_update:
+        res_raw = get_diff_artifact(
+            target=str(master_note_path),
+            mode="draft",
+            language="fr",
+            return_content=True
+        )
+        res_data = json.loads(res_raw)
+        diff_count = int(res_data.get("diff_count", 0))
+        content = res_data.get("artifact_content")
+        if content:
+            diff_file.write_text(content, encoding="utf-8")
+        elif res_data.get("saved_artifact_path"):
+            shutil.copy2(res_data["saved_artifact_path"], diff_file)
+    else:
+        henri_snaps = [s for s in snaps if str(s.get("author", "")).lower() == "henri"]
+        is_identical_to_henri = False
+        if henri_snaps:
+            latest_henri_id = henri_snaps[0]["commit_id"]
+            try:
+                henri_text = cas.restore_snapshot(latest_henri_id)
+                current_text = master_note_path.read_text(encoding="utf-8", errors="replace")
+                if current_text.strip() == henri_text.strip():
+                    is_identical_to_henri = True
+            except Exception:
+                pass
+
+        if is_identical_to_henri:
+            diff_count = 0
+        else:
+            diff_text = diff_file.read_text(encoding="utf-8", errors="replace")
+            m = re.search(r"Arborescence des Modifications Détectées \((\d+) deltas\)", diff_text)
+            if m:
+                diff_count = int(m.group(1))
+            else:
+                ins_count = len(re.findall(r"<ins\b", diff_text))
+                del_count = len(re.findall(r"<del\b", diff_text))
+                diff_count = max(0, ins_count + del_count - 2) if (ins_count + del_count > 2) else 0
+
+    return diff_count, diff_file
+
+
+def _seal_henri_baseline_and_update_diff(master_note_path: Path, vault_dir: str = VAULT_DIR, message: str = "Validation Henri") -> int:
+    cas = _get_cas_engine(vault_dir)
+    abs_posix = master_note_path.resolve().as_posix()
+    cas.create_snapshot(
+        target=abs_posix,
+        message=message,
+        author="henri",
+        is_pinned=True,
+        mode="draft"
+    )
+
+    from doc_version_mcp.server import get_diff_artifact
+    import doc_version_mcp.server as dv_server
+    dv_server.cas = cas
+
+    res_raw = get_diff_artifact(
+        target=str(master_note_path),
+        mode="draft",
+        language="fr",
+        return_content=True
+    )
+    res_data = json.loads(res_raw)
+    content = res_data.get("artifact_content")
+    diff_dir = Path(vault_dir) / "_agents" / "project_diffs"
+    diff_dir.mkdir(parents=True, exist_ok=True)
+    diff_file = diff_dir / f"🤖 {master_note_path.stem}.md"
+    if content:
+        diff_file.write_text(content, encoding="utf-8")
+    elif res_data.get("saved_artifact_path"):
+        shutil.copy2(res_data["saved_artifact_path"], diff_file)
+
+    return int(res_data.get("diff_count", 0))
+
+
 def enrich_project_auto_fields(p, vault_dir=VAULT_DIR):
     """
-    Computes autonomous session display string and links (TLDR or Journal) for a project.
-    Sets p['auto_note_path'] and p['auto_link'].
+    Computes autonomous session display string and links (_agents/project_diffs/🤖 <stem>.md) for a project.
+    Sets p['auto_note_path'], p['auto_link'] and p['auto_disp'].
     Returns auto_disp.
     """
     if "auto_disp" in p:
         return p["auto_disp"]
 
-    n = p.get("agent_sessions_since_human", 0)
     rel_path = p.get("rel_path", "")
-    title = p.get("title", "")
+    if not rel_path:
+        fp = p.get("file_path") or p.get("full_path")
+        if fp:
+            try:
+                rel_path = os.path.relpath(fp, vault_dir).replace("\\", "/")
+            except ValueError:
+                rel_path = os.path.basename(fp)
 
-    tldr_path, item_count = _sync_and_render_aivc_tldr(
-        vault_root=vault_dir,
-        rel_path=rel_path,
-        title=title,
-        sessions_since_human=n,
-        project_dict=p
-    )
-
-    if tldr_path and item_count > 0:
-        target_path = os.path.abspath(tldr_path)
-        target_forward = target_path.replace("\\", "/").lstrip("/")
-        auto_uri = f"file:///{target_forward}"
-        auto_disp = f"[🤖 {item_count}]({auto_uri})"
-        p["auto_note_path"] = target_path
-        p["auto_link"] = auto_uri
+    master_path = Path(vault_dir) / rel_path if rel_path else None
+    if master_path and master_path.is_file():
+        stem = master_path.stem
+        diff_count, diff_file = _get_or_update_project_diff(master_path, vault_dir=vault_dir)
+        stem_encoded = urllib.parse.quote(stem)
+        link = f"_agents/project_diffs/🤖%20{stem_encoded}.md"
+        auto_disp = f"[🤖 {diff_count}]({link})"
+        p["auto_disp"] = auto_disp
+        p["auto_diff_count"] = diff_count
+        p["auto_await_count"] = diff_count
+        p["auto_note_path"] = str(diff_file)
+        p["auto_link"] = link
+        return auto_disp
     else:
         auto_disp = "-"
+        p["auto_disp"] = auto_disp
+        p["auto_diff_count"] = 0
+        p["auto_await_count"] = 0
         p["auto_note_path"] = None
         p["auto_link"] = None
-
-    p["auto_disp"] = auto_disp
-    return auto_disp
+        return auto_disp
 
 
 def format_project_table(projects, verbose=False):
@@ -4741,9 +4898,6 @@ def write_root_dashboard(vault_dir=VAULT_DIR, data=None, projects=None, show_pro
     if projects is None:
         projects = scan_projects(vault_dir, data, fast_mode=True, persist=False, is_agent=False)
 
-    # Préchargement unique du cache AIVC pour éviter les lectures O(N) disque
-    _get_aivc_memories()
-
     total_projs = len(projects)
     bar_width = 24
     projects_with_await = []
@@ -4770,42 +4924,26 @@ def write_root_dashboard(vault_dir=VAULT_DIR, data=None, projects=None, show_pro
             filled = int(bar_width * idx / total_projs)
             disp_title = (p_title[:24] + "...") if len(p_title) > 27 else p_title
             bar = "█" * filled + "░" * (bar_width - filled)
-            sys.stdout.write(f"\r⏳ [{bar}] {idx}/{total_projs} ({pct}%) | Sync: {disp_title:<27}")
+            sys.stdout.write(f"\r⏳ [{bar}] {idx}/{total_projs} ({pct}%) | Diff: {disp_title:<27}")
             sys.stdout.flush()
 
-    # Synchroniser également tous les projets ayant des mémoires AIVC mais non indexés dans scan_projects
-    known_rel_paths = {p.get("rel_path") for p in projects if p.get("rel_path")}
-    for _ts, mem in _get_aivc_memories():
-        if not mem.get("user_items"):
-            continue
-        cand_notes = _extract_project_notes_from_mem(mem)
-        for tn in cand_notes:
-            tn_expanded = os.path.expanduser(tn)
-            if os.path.isabs(tn_expanded):
-                try:
-                    rel_p = os.path.relpath(tn_expanded, vault_dir).replace("\\", "/")
-                except ValueError:
-                    rel_p = os.path.basename(tn_expanded)
-            else:
-                rel_p = tn.replace("\\", "/")
-                if rel_p.startswith("Documents/VoiceNotes/"):
-                    rel_p = rel_p[len("Documents/VoiceNotes/"):]
-                elif rel_p.startswith("~/Documents/VoiceNotes/"):
-                    rel_p = rel_p[len("~/Documents/VoiceNotes/"):]
-            if rel_p not in known_rel_paths:
-                known_rel_paths.add(rel_p)
-                p_title = Path(rel_p).stem.lstrip("🤖").strip()
-                _sync_and_render_aivc_tldr(
-                    vault_root=vault_dir,
-                    rel_path=rel_p,
-                    title=p_title
-                )
+    # Nettoyage TTL 14 jours des brouillons temporaires expirés
+    try:
+        cas_eng = _get_cas_engine(vault_dir)
+        active_project_targets = {
+            str(Path(vault_dir) / p["rel_path"])
+            for p in projects
+            if p.get("rel_path")
+        }
+        cas_eng.prune_stale_targets(max_age_days=14, protected_targets=active_project_targets)
+    except Exception:
+        pass
 
     if show_progress and total_projs > 0:
         bar_full = "█" * bar_width
         if projects_with_await:
             compact_items = ", ".join(f"{item['title']} (🤖 {item['n_await']})" for item in projects_with_await)
-            sys.stdout.write(f"\r📊 [{bar_full}] 100% — {len(projects_with_await)} projet(s) avec livrables prêts : {compact_items}\n")
+            sys.stdout.write(f"\r📊 [{bar_full}] 100% — {len(projects_with_await)} projet(s) avec modifications en attente : {compact_items}\n")
         else:
             sys.stdout.write(f"\r📊 [{bar_full}] 100% — Synchronisation terminée{' ' * 30}\n")
         sys.stdout.flush()
@@ -5659,6 +5797,13 @@ def parse_transcript_work_time(
         project_index[title] = p_key
         project_index[urllib.parse.quote(base_name)] = p_key
         project_index[urllib.parse.quote(title)] = p_key
+        if base_name.startswith("🤖 "):
+            b_no_robot = base_name[2:].strip()
+            t_no_robot = os.path.splitext(b_no_robot)[0].lower()
+            project_index[b_no_robot] = p_key
+            project_index[t_no_robot] = p_key
+            project_index[urllib.parse.quote(b_no_robot)] = p_key
+            project_index[urllib.parse.quote(t_no_robot)] = p_key
 
     entries = []
     max_step_seen = -1
@@ -5717,12 +5862,14 @@ def parse_transcript_work_time(
     def resolve_to_project(raw_candidate: str) -> Optional[str]:
         if not raw_candidate:
             return None
-        clean = raw_candidate.strip().replace("\\", "/")
+        clean = re.sub(r'[/\\]+', '/', raw_candidate.strip().strip('"\' '))
         clean_base = os.path.basename(clean)
         clean_unquote = urllib.parse.unquote(clean_base).strip()
+        candidates = [clean_unquote.lower(), os.path.splitext(clean_unquote)[0].lower()]
         if clean_unquote.startswith("🤖 "):
-            clean_unquote = clean_unquote[2:].strip()
-        for cand in [clean_unquote.lower(), os.path.splitext(clean_unquote)[0].lower()]:
+            stripped_robot = clean_unquote[2:].strip()
+            candidates.extend([stripped_robot.lower(), os.path.splitext(stripped_robot)[0].lower()])
+        for cand in candidates:
             if cand in project_index:
                 return project_index[cand]
         if "notes/" in clean.lower():
@@ -5732,30 +5879,51 @@ def parse_transcript_work_time(
                 return project_index[part]
         return None
 
-    def is_vault_project_note(path_str: str) -> Optional[str]:
+    def is_vault_project_note(path_str: str, tool_name: str = "") -> Optional[str]:
         if not isinstance(path_str, str):
             return None
-        norm = path_str.replace("\\", "/").strip()
-        if not norm.lower().endswith(".md"):
-            return None
+        norm = re.sub(r'[/\\]+', '/', path_str.strip().strip('"\' '))
         norm_lower = norm.lower()
-        if any(excl in norm_lower for excl in ["/_agents/", "\\_agents\\", "/brain/", "\\brain\\", "/scratch/", "\\scratch\\", "sources_"]):
+        if tool_name.lower() in {"edit_file", "write_file", "replace_file_content", "multi_replace_file_content", "write_to_file"}:
+            if any(seg in norm_lower for seg in ["/_agents/rules/", "/_agents/skills/", "/_agents/agents/", "/_agents/scripts-for-skills/", "voicenotes/_agents/"]):
+                return resolve_to_project("notes/Améliorer le système Antigravity Obsidian.md")
+        if not norm_lower.endswith(".md"):
+            return None
+        if "/advance_tldr/" in norm_lower:
+            return resolve_to_project(os.path.basename(norm))
+        if any(excl in norm_lower for excl in ["/_agents/", "/brain/", "/scratch/", "sources_"]):
             return None
         return resolve_to_project(norm)
 
     def extract_strings_recursive(val: Any) -> List[str]:
         res = []
         if isinstance(val, str):
-            stripped = val.strip()
-            if (stripped.startswith("{") and stripped.endswith("}")) or (stripped.startswith("[") and stripped.endswith("]")):
-                try:
-                    nested = json.loads(stripped)
-                    res.extend(extract_strings_recursive(nested))
-                except (json.JSONDecodeError, ValueError):
-                    res.append(val)
-            else:
-                res.append(val)
+            curr = val.strip()
+            for _ in range(2):
+                s = curr.strip()
+                if (s.startswith('"') and s.endswith('"')) or (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
+                    try:
+                        loaded = json.loads(s)
+                    except (json.JSONDecodeError, ValueError):
+                        break
+                    if isinstance(loaded, str):
+                        curr = loaded
+                        res.append(curr)
+                    else:
+                        res.extend(extract_strings_recursive(loaded))
+                        curr = None
+                        break
+                else:
+                    break
+            if curr is not None:
+                res.append(curr)
+                if '\\"' in curr or '\\\\' in curr:
+                    unesc = curr.replace('\\"', '"').replace('\\\\', '\\')
+                    if unesc != curr:
+                        res.append(unesc)
         elif isinstance(val, dict):
+            if "main_project_file" in val and isinstance(val["main_project_file"], str):
+                res.append(f'main_project_file: "{val["main_project_file"]}"')
             for v in val.values():
                 res.extend(extract_strings_recursive(v))
         elif isinstance(val, (list, tuple, set)):
@@ -5764,6 +5932,52 @@ def parse_transcript_work_time(
         return res
 
     path_arg_keys = {"path", "filepath", "file_path", "targetfile", "absolutepath"}
+    wake_phrases = (
+        "réveille argon", "reveille argon",
+        "réveille aaron", "reveille aaron",
+        "crée le fichier", "cree le fichier", "créer le fichier",
+        "enregistre ça dans un fichier", "enregistre dans un fichier",
+    )
+
+    brief_to_proj: Dict[str, str] = {}
+    subagent_to_proj: Dict[str, str] = {}
+    pending_subagent_projs: List[Optional[str]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        for tc in entry.get("tool_calls", []):
+            tname = str(tc.get("name") or "")
+            targs = tc.get("args", {})
+            if isinstance(targs, dict):
+                proj_found = None
+                for s in extract_strings_recursive(targs):
+                    for bm in re.findall(r'Projet\s*:\s*([^\r\n"\']+?\.md)', s, re.IGNORECASE):
+                        rp = resolve_to_project(bm)
+                        if rp:
+                            proj_found = rp
+                            break
+                    if proj_found:
+                        break
+                if tname == "write_file" and proj_found:
+                    pval = str(targs.get("Path") or "").strip().strip('"\' ')
+                    pval_norm = re.sub(r'[/\\]+', '/', pval).lower()
+                    if pval_norm:
+                        brief_to_proj[pval_norm] = proj_found
+                elif tname == "invoke_subagent":
+                    inv_proj = proj_found
+                    for ps in extract_strings_recursive(targs.get("Prompt", "")):
+                        ps_norm = re.sub(r'[/\\]+', '/', ps.strip().strip('"\' ')).lower()
+                        if ps_norm in brief_to_proj:
+                            inv_proj = brief_to_proj[ps_norm]
+                            break
+                    pending_subagent_projs.append(inv_proj)
+        if entry.get("type") == "GENERIC":
+            c_gen = str(entry.get("content") or "")
+            if "Created the following subagent:" in c_gen and pending_subagent_projs:
+                inv_proj = pending_subagent_projs.pop(0)
+                m_id = re.search(r'"conversationId"\s*:\s*"([^"]+)"', c_gen)
+                if m_id and inv_proj:
+                    subagent_to_proj[m_id.group(1).strip().lower()] = inv_proj
 
     for turn in turns:
         user_entry = turn["user_entry"]
@@ -5778,7 +5992,17 @@ def parse_transcript_work_time(
         else:
             arrow_count = len(re.findall(r"(?:->|→)", clean_part))
 
-        arg_count = arrow_count + comment_count
+        voice_utt_count = 0
+        if "<talker_agent_context>" in user_part:
+            talker_seg = user_part.split("<talker_agent_context>", 1)[1].split("</talker_agent_context>", 1)[0]
+            raw_utts = re.findall(r'\[[^\]]+\]\s*user:\s*"([^\r\n"]*)', talker_seg)
+            subst_utts = [
+                u.strip() for u in raw_utts
+                if u.strip() and not (len(u.strip()) < 40 and any(wp in u.strip().lower() for wp in wake_phrases))
+            ]
+            voice_utt_count = len(subst_utts)
+
+        arg_count = arrow_count + comment_count + (voice_utt_count if voice_utt_count > 1 else 0)
         if arg_count > 1:
             msg_minutes = max(float(minutes_per_message), arg_count * float(minutes_per_arrow))
         else:
@@ -5825,6 +6049,7 @@ def parse_transcript_work_time(
 
             # Inspection des tool_calls
             for tc in step.get("tool_calls", []):
+                tname = str(tc.get("name") or "")
                 raw_args = tc.get("args", {})
                 if isinstance(raw_args, str):
                     stripped_args = raw_args.strip()
@@ -5838,13 +6063,17 @@ def parse_transcript_work_time(
                 else:
                     args_obj = raw_args
 
-                # Marqueur C : Path direct d'un outil fichier pointant vers une note .md du coffre
+                # Marqueur C : Path direct d'un outil fichier pointant vers une note .md du coffre (ou _agents / advance_tldr)
                 if isinstance(args_obj, dict):
                     for k, v in args_obj.items():
                         if k.lower() in path_arg_keys and isinstance(v, str):
-                            p = is_vault_project_note(v)
+                            p = is_vault_project_note(v, tool_name=tname)
                             if p:
                                 matched.add(p)
+                        if tname == "send_message" and k.lower() == "recipient" and isinstance(v, str):
+                            rec_id = v.strip().strip('"\' ').lower()
+                            if rec_id in subagent_to_proj:
+                                matched.add(subagent_to_proj[rec_id])
 
                 # Extraction récursive des chaînes (déséchappées)
                 strings = extract_strings_recursive(args_obj)
@@ -6449,6 +6678,18 @@ def cmd_feedback(args, data):
         conv_id=transcript_conv_id,
         max_step_index=transcript_max_step
     )
+
+    keep_diff = getattr(args, "keep_diff", False)
+    if not is_agent and not keep_diff:
+        rel_path, abs_path = find_project_file(VAULT_DIR, args.project_path, data)
+        if abs_path and os.path.isfile(abs_path):
+            mn_path = Path(abs_path)
+            new_diff = _seal_henri_baseline_and_update_diff(
+                mn_path,
+                vault_dir=VAULT_DIR,
+                message=f"Validation Henri ({action})"
+            )
+            print(f"🔒 Baseline author='henri' scellée pour '{mn_path.stem}' -> Diff réinitialisé à {new_diff} dans _agents/project_diffs/🤖 {mn_path.stem}.md")
 
 
 def cmd_set_score(args, data):
@@ -7714,6 +7955,7 @@ def main():
     )
     fb_parser.add_argument("--duration", "-d", type=float, default=None, help="Durée explicite de la session en minutes (par défaut: transcript en mode humain, pomodoroDuration en mode --agent)")
     fb_parser.add_argument("--agent", action="store_true", help="Bascule en mode agent autonome (classement, scores et historique propres à l'agent)")
+    fb_parser.add_argument("--keep-diff", action="store_true", help="Préserve le diff de projet actuel sans sceller automatiquement la baseline author='henri'")
 
     # complete-task
     comp_parser = subparsers.add_parser("complete-task", help="Check off a task in a project note")
