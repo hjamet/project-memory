@@ -2730,6 +2730,13 @@ def _rewrite_paths_for_current_pc(text: str) -> str:
 
     text = re.sub(r'(!?\[[^\]]*\]\()(file:///[^)\n]+)(\))', _quote_file_url, text)
 
+    # Restauration stricte des exemples meta-documentaires generiques (wikilinks, Note...)
+    generic_examples = ("wikilinks", "Note", "Sous-Note.md", "Nom Image.png", "Cible", "target", "chemin")
+    for g in generic_examples:
+        g_stem = Path(g).stem
+        text = re.sub(rf'`*\[{re.escape(g)}\]\(file:///[^)]*?/{re.escape(g_stem)}\.md\)`*', f'`[[{g}]]`', text)
+        text = re.sub(rf'`+`\[\[{re.escape(g)}\]\]`+`', f'`[[{g}]]`', text)
+
     return text
 
 
