@@ -4463,9 +4463,10 @@ def _get_cas_engine(vault_dir: str = VAULT_DIR):
 def _get_or_update_project_diff(master_note_path: Path, vault_dir: str = VAULT_DIR) -> Tuple[int, Path]:
     cas = _get_cas_engine(vault_dir)
     stem = master_note_path.stem
+    clean_stem = re.sub(r'^(?:🤖\s*)+', '', stem).strip()
     diff_dir = Path(vault_dir) / "_agents" / "project_diffs"
     diff_dir.mkdir(parents=True, exist_ok=True)
-    diff_file = diff_dir / f"🤖 {stem}.md"
+    diff_file = diff_dir / f"🤖 {clean_stem}.md"
 
     try:
         rel_posix = master_note_path.relative_to(Path(vault_dir)).as_posix()
@@ -4568,7 +4569,8 @@ def _seal_henri_baseline_and_update_diff(master_note_path: Path, vault_dir: str 
     content = res_data.get("artifact_content")
     diff_dir = Path(vault_dir) / "_agents" / "project_diffs"
     diff_dir.mkdir(parents=True, exist_ok=True)
-    diff_file = diff_dir / f"🤖 {master_note_path.stem}.md"
+    clean_stem = re.sub(r'^(?:🤖\s*)+', '', master_note_path.stem).strip()
+    diff_file = diff_dir / f"🤖 {clean_stem}.md"
     if content:
         diff_file.write_text(content, encoding="utf-8")
     elif res_data.get("saved_artifact_path"):
@@ -4598,8 +4600,9 @@ def enrich_project_auto_fields(p, vault_dir=VAULT_DIR):
     master_path = Path(vault_dir) / rel_path if rel_path else None
     if master_path and master_path.is_file():
         stem = master_path.stem
+        clean_stem = re.sub(r'^(?:🤖\s*)+', '', stem).strip()
         diff_count, diff_file = _get_or_update_project_diff(master_path, vault_dir=vault_dir)
-        stem_encoded = urllib.parse.quote(stem)
+        stem_encoded = urllib.parse.quote(clean_stem)
         link = f"_agents/project_diffs/🤖%20{stem_encoded}.md"
         auto_disp = f"[🤖 {diff_count}]({link})"
         p["auto_disp"] = auto_disp
@@ -6689,7 +6692,8 @@ def cmd_feedback(args, data):
                 vault_dir=VAULT_DIR,
                 message=f"Validation Henri ({action})"
             )
-            print(f"🔒 Baseline author='henri' scellée pour '{mn_path.stem}' -> Diff réinitialisé à {new_diff} dans _agents/project_diffs/🤖 {mn_path.stem}.md")
+            clean_stem = re.sub(r'^(?:🤖\s*)+', '', mn_path.stem).strip()
+            print(f"🔒 Baseline author='henri' scellée pour '{mn_path.stem}' -> Diff réinitialisé à {new_diff} dans _agents/project_diffs/🤖 {clean_stem}.md")
 
 
 def cmd_set_score(args, data):
