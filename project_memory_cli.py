@@ -44,19 +44,19 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def find_vault_dir(start_dir):
+    for cand in [Path.home() / "Documents" / "VoiceNotes", Path(r"C:\Users\Jamet\Documents\VoiceNotes"), Path(r"C:\Users\hjamet\Documents\VoiceNotes")]:
+        if (cand / ".obsidian").is_dir():
+            return str(cand)
     curr = start_dir
     while curr and os.path.dirname(curr) != curr:
-        if os.path.exists(os.path.join(curr, ".obsidian")):
-            return curr
         if os.path.exists(os.path.join(curr, "VoiceNotes", ".obsidian")):
             return os.path.join(curr, "VoiceNotes")
+        if os.path.exists(os.path.join(curr, ".obsidian")):
+            return curr
         curr = os.path.dirname(curr)
     candidate = os.path.abspath(os.path.join(start_dir, "..", "VoiceNotes"))
     if os.path.exists(os.path.join(candidate, ".obsidian")):
         return candidate
-    for cand in [Path.home() / "Documents" / "VoiceNotes", Path(r"C:\Users\Jamet\Documents\VoiceNotes"), Path(r"C:\Users\hjamet\Documents\VoiceNotes")]:
-        if (cand / ".obsidian").is_dir():
-            return str(cand)
     return os.path.abspath(os.path.join(start_dir, "..", ".."))
 
 
@@ -4512,9 +4512,14 @@ def _get_or_update_project_diff(master_note_path: Path, vault_dir: str = VAULT_D
         diff_count = int(res_data.get("diff_count", 0))
         content = res_data.get("artifact_content")
         if content:
-            diff_file.write_text(content, encoding="utf-8")
+            diff_file.write_text(_rewrite_paths_for_current_pc(content), encoding="utf-8")
         elif res_data.get("saved_artifact_path"):
-            shutil.copy2(res_data["saved_artifact_path"], diff_file)
+            saved_p = Path(res_data["saved_artifact_path"])
+            if saved_p.exists():
+                raw = saved_p.read_text(encoding="utf-8", errors="replace")
+                diff_file.write_text(_rewrite_paths_for_current_pc(raw), encoding="utf-8")
+            else:
+                shutil.copy2(res_data["saved_artifact_path"], diff_file)
     else:
         henri_snaps = [s for s in snaps if str(s.get("author", "")).lower() == "henri"]
         is_identical_to_henri = False
@@ -4532,6 +4537,10 @@ def _get_or_update_project_diff(master_note_path: Path, vault_dir: str = VAULT_D
             diff_count = 0
         else:
             diff_text = diff_file.read_text(encoding="utf-8", errors="replace")
+            rewritten_diff = _rewrite_paths_for_current_pc(diff_text)
+            if rewritten_diff != diff_text:
+                diff_file.write_text(rewritten_diff, encoding="utf-8")
+                diff_text = rewritten_diff
             m = re.search(r"Arborescence des Modifications Détectées \((\d+) deltas\)", diff_text)
             if m:
                 diff_count = int(m.group(1))
@@ -4571,9 +4580,14 @@ def _seal_henri_baseline_and_update_diff(master_note_path: Path, vault_dir: str 
     clean_stem = re.sub(r'^(?:🤖\s*)+', '', master_note_path.stem).strip()
     diff_file = diff_dir / f"🤖 {clean_stem}.md"
     if content:
-        diff_file.write_text(content, encoding="utf-8")
+        diff_file.write_text(_rewrite_paths_for_current_pc(content), encoding="utf-8")
     elif res_data.get("saved_artifact_path"):
-        shutil.copy2(res_data["saved_artifact_path"], diff_file)
+        saved_p = Path(res_data["saved_artifact_path"])
+        if saved_p.exists():
+            raw = saved_p.read_text(encoding="utf-8", errors="replace")
+            diff_file.write_text(_rewrite_paths_for_current_pc(raw), encoding="utf-8")
+        else:
+            shutil.copy2(res_data["saved_artifact_path"], diff_file)
 
     return int(res_data.get("diff_count", 0))
 
@@ -4599,12 +4613,8 @@ def enrich_project_auto_fields(p, vault_dir=VAULT_DIR):
     master_path = Path(vault_dir) / rel_path if rel_path else None
     if master_path and master_path.is_file():
         diff_count, diff_file = _get_or_update_project_diff(master_path, vault_dir=vault_dir)
-        try:
-            rel_diff = os.path.relpath(diff_file, vault_dir)
-        except ValueError:
-            rel_diff = f"_agents/project_diffs/{diff_file.name}"
-        rel_diff_forward = str(rel_diff).replace("\\", "/")
-        link = urllib.parse.quote(rel_diff_forward, safe="/:")
+        abs_diff = Path(diff_file).resolve().as_posix().lstrip("/")
+        link = "file:///" + urllib.parse.quote(abs_diff, safe="/:")
         auto_disp = f"[🤖 {diff_count}]({link})"
         p["auto_disp"] = auto_disp
         p["auto_diff_count"] = diff_count
@@ -4622,7 +4632,7 @@ def enrich_project_auto_fields(p, vault_dir=VAULT_DIR):
         return auto_disp
 
 
-def format_project_table(projects, verbose=False):
+def format_project_table(projects, verbose=False, vault_dir=VAULT_DIR):
     lines = []
     title_links = []
     auto_disps = []
@@ -4632,15 +4642,16 @@ def format_project_table(projects, verbose=False):
             fp = p.get("file_path") or p.get("full_path")
             if fp:
                 try:
-                    rel = os.path.relpath(fp, VAULT_DIR)
+                    rel = os.path.relpath(fp, vault_dir)
                 except ValueError:
                     rel = os.path.basename(fp)
             else:
                 rel = f"{p['title']}.md"
         rel_forward = str(rel).replace("\\", "/")
-        rel_encoded = urllib.parse.quote(rel_forward, safe="/:")
+        abs_note = (Path(vault_dir) / rel_forward).resolve().as_posix().lstrip("/")
+        rel_encoded = "file:///" + urllib.parse.quote(abs_note, safe="/:")
         title_links.append(f"[{p['title']}]({rel_encoded})")
-        auto_disps.append(p["_cached_auto_disp"] if "_cached_auto_disp" in p else enrich_project_auto_fields(p, vault_dir=VAULT_DIR))
+        auto_disps.append(p["_cached_auto_disp"] if "_cached_auto_disp" in p else enrich_project_auto_fields(p, vault_dir=vault_dir))
 
     if verbose:
         lines.append("| Title | Eff.Score | Base | Rot. | Dead.Urg | Milest.Urg | Malus(K) | Deadline | Milestone | Reviews |")
@@ -4887,6 +4898,27 @@ def get_realtime_quota_indicators(force_refresh: bool = False) -> Tuple[List[str
     return _RUNTIME_QUOTA_CACHE
 
 
+def sync_project_diff_paths_for_current_host(vault_dir: str = VAULT_DIR) -> int:
+    """
+    Scanne tous les fichiers _agents/project_diffs/🤖 *.md et réécrit les chemins
+    pour le host courant (Users/Jamet <-> Users/hjamet) via _rewrite_paths_for_current_pc.
+    """
+    diff_dir = Path(vault_dir) / "_agents" / "project_diffs"
+    if not diff_dir.is_dir():
+        return 0
+    updated = 0
+    for diff_file in diff_dir.glob("🤖 *.md"):
+        try:
+            raw = diff_file.read_text(encoding="utf-8", errors="replace")
+            rewritten = _rewrite_paths_for_current_pc(raw)
+            if rewritten != raw:
+                diff_file.write_text(rewritten, encoding="utf-8")
+                updated += 1
+        except Exception:
+            pass
+    return updated
+
+
 def write_root_dashboard(vault_dir=VAULT_DIR, data=None, projects=None, show_progress: bool = False, quiet: Optional[bool] = None) -> str:
     """
     Construit et écrit le tableau de bord Markdown épuré 🎯 Projets.md
@@ -4896,6 +4928,8 @@ def write_root_dashboard(vault_dir=VAULT_DIR, data=None, projects=None, show_pro
         show_progress = not quiet
 
     t_start = time.time()
+    sync_project_diff_paths_for_current_host(vault_dir=vault_dir)
+
     if data is None:
         data = load_data(os.path.join(vault_dir, ".obsidian", "plugins", "project-memory", "data.json"))
 
@@ -4975,11 +5009,11 @@ def write_root_dashboard(vault_dir=VAULT_DIR, data=None, projects=None, show_pro
     if unreviewed:
         lines.append("## 🆕 Projets non révisés")
         lines.append("")
-        lines.append(format_project_table(unreviewed, verbose=False))
+        lines.append(format_project_table(unreviewed, verbose=False, vault_dir=vault_dir))
         lines.append("")
 
     if reviewed:
-        lines.append(format_project_table(reviewed, verbose=False))
+        lines.append(format_project_table(reviewed, verbose=False, vault_dir=vault_dir))
         lines.append("")
 
     dashboard_file = os.path.join(vault_dir, DASHBOARD_FILENAME)
