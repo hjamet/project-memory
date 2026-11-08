@@ -4768,10 +4768,14 @@ def _fetch_claude_usage() -> dict:
     if str(claude_subagent_path.parent) not in sys.path:
         sys.path.insert(0, str(claude_subagent_path.parent))
     import claude_subagent
-    quota = claude_subagent.fetch_claude_quota()
-    if not quota:
-        raise RuntimeError("fetch_claude_quota returned None.")
-    return quota
+    try:
+        quota = claude_subagent.fetch_claude_quota()
+        if not quota:
+            return {"error": "empty_quota", "message": "fetch_claude_quota a renvoyé un résultat vide"}
+        return quota
+    except Exception as exc:
+        return {"error": "fetch_error", "message": str(exc)}
+
 
 
 def _format_quota_duration_short(sec: float) -> str:
@@ -4826,13 +4830,19 @@ def get_realtime_quota_indicators(force_refresh: bool = False) -> Tuple[List[str
     with ThreadPoolExecutor(max_workers=2) as executor:
         f_agy = executor.submit(_fetch_agy_usage)
         f_claude = executor.submit(_fetch_claude_usage)
-        agy_data = f_agy.result()
-        claude_data = f_claude.result()
+        try:
+            agy_data = f_agy.result()
+        except Exception as e_agy:
+            agy_data = {"error": "agy_error", "message": str(e_agy)}
+        try:
+            claude_data = f_claude.result()
+        except Exception as e_claude:
+            claude_data = {"error": "claude_error", "message": str(e_claude)}
 
     md_lines = ["> ⚡ **Indicateurs de Quotas (Cible : tout utiliser pile en fin de semaine)** :"]
     cli_lines = ["⚡ Indicateurs de Quotas (Cible : tout utiliser pile en fin de semaine) :"]
 
-    if agy_data:
+    if agy_data and not agy_data.get("error"):
         groups = agy_data.get("command", {}).get("data", {}).get("groups", [])
         gemini_group = next((g for g in groups if g.get("name") == "Gemini Models"), None)
         claude_group = next((g for g in groups if g.get("name") == "Claude and GPT models"), None)
@@ -4892,38 +4902,54 @@ def get_realtime_quota_indicators(force_refresh: bool = False) -> Tuple[List[str
             )
 
     if claude_data:
-        fh = claude_data.get("five_hour", {})
-        sd = claude_data.get("seven_day", {})
+        if claude_data.get("error"):
+            err_msg = claude_data.get("message", "erreur inconnue")
+            md_lines.append(f"> - **Claude Code (Opus)** : ⚠️ **Indicateur indisponible** (*{err_msg}*)")
+            cli_lines.append(f"- Claude Code (Opus) : ⚠️ Indicateur indisponible ({err_msg})")
+        else:
+            fh = claude_data.get("five_hour", {})
+            sd = claude_data.get("seven_day", {})
 
-        used_5h = float(fh.get("utilization", 0.0))
-        used_7d = float(sd.get("utilization", 0.0))
-        rem_7d = 100.0 - used_7d
-        rem_5h = 100.0 - used_5h
+            used_5h = float(fh.get("utilization", 0.0))
+            used_7d = float(sd.get("utilization", 0.0))
+            rem_7d = 100.0 - used_7d
+            rem_5h = 100.0 - used_5h
 
-        rst_7d_str = sd.get("resets_at")
-        rst_7d_dt = datetime.fromisoformat(rst_7d_str.replace("Z", "+00:00")) if rst_7d_str else None
-        rem_7d_sec = max(0.0, (rst_7d_dt - now).total_seconds()) if rst_7d_dt else 0.0
+            rst_7d_str = sd.get("resets_at")
+            rst_7d_dt = datetime.fromisoformat(rst_7d_str.replace("Z", "+00:00")) if rst_7d_str else None
+            rem_7d_sec = max(0.0, (rst_7d_dt - now).total_seconds()) if rst_7d_dt else 0.0
 
-        rst_5h_str = fh.get("resets_at")
-        rst_5h_dt = datetime.fromisoformat(rst_5h_str.replace("Z", "+00:00")) if rst_5h_str else None
-        rem_5h_sec = max(0.0, (rst_5h_dt - now).total_seconds()) if rst_5h_dt else 0.0
+            rst_5h_str = fh.get("resets_at")
+            rst_5h_dt = datetime.fromisoformat(rst_5h_str.replace("Z", "+00:00")) if rst_5h_str else None
+            rem_5h_sec = max(0.0, (rst_5h_dt - now).total_seconds()) if rst_5h_dt else 0.0
 
-        target_used, delta, v_md, v_cli = _eval_quota_bucket(used_5h, used_7d, rem_7d_sec / 3600.0)
-        s_7d = "s" if round(used_7d) > 1 else ""
-        s_5h = "s" if round(used_5h) > 1 else ""
+            target_used, delta, v_md, v_cli = _eval_quota_bucket(used_5h, used_7d, rem_7d_sec / 3600.0)
+            s_7d = "s" if round(used_7d) > 1 else ""
+            s_5h = "s" if round(used_5h) > 1 else ""
 
-        cc_5h_rst_md = f" (reset `{_format_quota_duration_short(rem_5h_sec)}`)" if (used_5h > 0 and rst_5h_dt) else ""
-        cc_5h_rst_cli = f" (reset {_format_quota_duration_short(rem_5h_sec)})" if (used_5h > 0 and rst_5h_dt) else ""
+            cc_5h_rst_md = f" (reset `{_format_quota_duration_short(rem_5h_sec)}`)" if (used_5h > 0 and rst_5h_dt) else ""
+            cc_5h_rst_cli = f" (reset {_format_quota_duration_short(rem_5h_sec)})" if (used_5h > 0 and rst_5h_dt) else ""
 
-        rst_7d_label_md = f", reset `{_format_quota_date_fr(rst_7d_str)}`" if rst_7d_str else ""
-        rst_7d_label_cli = f", reset {_format_quota_date_fr(rst_7d_str)}" if rst_7d_str else ""
+            rst_7d_label_md = f", reset `{_format_quota_date_fr(rst_7d_str)}`" if rst_7d_str else ""
+            rst_7d_label_cli = f", reset {_format_quota_date_fr(rst_7d_str)}" if rst_7d_str else ""
 
-        md_lines.append(
-            f"> - **Claude Code (Opus)** : {v_md} — 7j : **{used_7d:.0f}% utilisé{s_7d}** (`{rem_7d:.0f}%` restants vs cible `{target_used:.0f}%` utilisés{rst_7d_label_md}) · 5h : **{used_5h:.0f}% utilisé{s_5h}**{cc_5h_rst_md}"
-        )
-        cli_lines.append(
-            f"- Claude Code (Opus) : {v_cli} — 7j : {used_7d:.0f}% utilisé{s_7d} ({rem_7d:.0f}% restants vs cible {target_used:.0f}% utilisés{rst_7d_label_cli}) · 5h : {used_5h:.0f}% utilisé{s_5h}{cc_5h_rst_cli}"
-        )
+            cache_note_md = ""
+            cache_note_cli = ""
+            if claude_data.get("_rate_limited"):
+                age_m = int(claude_data.get("_cache_age_sec", 0) // 60)
+                cache_note_md = f" · ⚠️ *[429 Rate Limit - cache {age_m}m]*"
+                cache_note_cli = f" · ⚠️ [429 Rate Limit - cache {age_m}m]"
+            elif claude_data.get("_error"):
+                age_m = int(claude_data.get("_cache_age_sec", 0) // 60)
+                cache_note_md = f" · ⚠️ *[{claude_data['_error']} - cache {age_m}m]*"
+                cache_note_cli = f" · ⚠️ [{claude_data['_error']} - cache {age_m}m]"
+
+            md_lines.append(
+                f"> - **Claude Code (Opus)** : {v_md} — 7j : **{used_7d:.0f}% utilisé{s_7d}** (`{rem_7d:.0f}%` restants vs cible `{target_used:.0f}%` utilisés{rst_7d_label_md}) · 5h : **{used_5h:.0f}% utilisé{s_5h}**{cc_5h_rst_md}{cache_note_md}"
+            )
+            cli_lines.append(
+                f"- Claude Code (Opus) : {v_cli} — 7j : {used_7d:.0f}% utilisé{s_7d} ({rem_7d:.0f}% restants vs cible {target_used:.0f}% utilisés{rst_7d_label_cli}) · 5h : {used_5h:.0f}% utilisé{s_5h}{cc_5h_rst_cli}{cache_note_cli}"
+            )
 
     _RUNTIME_QUOTA_CACHE = (md_lines, cli_lines)
     _RUNTIME_QUOTA_TIME = time.time()
