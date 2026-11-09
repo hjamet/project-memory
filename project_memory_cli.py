@@ -4479,7 +4479,7 @@ def _get_cas_engine(vault_dir: str = VAULT_DIR):
 
     from doc_version_mcp.cas_engine import CASEngine
     import doc_version_mcp.server as dv_server
-    engine = CASEngine(storage_dir=cas_dir)
+    engine = CASEngine(storage_dir=cas_dir, vault_root=Path(vault_dir))
     dv_server.cas = engine
 
     if not hasattr(engine, "prune_stale_targets"):
@@ -4989,16 +4989,13 @@ def write_root_dashboard(vault_dir=VAULT_DIR, data=None, projects=None, show_pro
             sys.stdout.flush()
 
     # Nettoyage TTL 14 jours des brouillons temporaires expirés
-    try:
-        cas_eng = _get_cas_engine(vault_dir)
-        active_project_targets = {
-            str(Path(vault_dir) / p["rel_path"])
-            for p in projects
-            if p.get("rel_path")
-        }
-        cas_eng.prune_stale_targets(max_age_days=14, protected_targets=active_project_targets)
-    except Exception:
-        pass
+    cas_eng = _get_cas_engine(vault_dir)
+    active_project_targets = {
+        str(Path(vault_dir) / p["rel_path"])
+        for p in projects
+        if p.get("rel_path")
+    }
+    cas_eng.prune_stale_targets(max_age_days=14, protected_targets=active_project_targets)
 
     if show_progress and total_projs > 0:
         bar_full = "█" * bar_width
