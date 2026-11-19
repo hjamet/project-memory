@@ -9,6 +9,131 @@ import { calculateTemporalBonus, isEligibleProject } from './statsUtils';
 import { ProjectStats, StatsData } from './types';
 
 const UNREAD_BASELINES_PATH = '_agents/unread_baselines.json';
+const ACTIVE_JOBS_FILE_PATH = '_agents/slideflow_active_jobs.json';
+const JOBS_BLOCK_START = '<!-- SLIDEFLOW_AGY_JOBS_START -->';
+const JOBS_BLOCK_END = '<!-- SLIDEFLOW_AGY_JOBS_END -->';
+
+interface SlideFlowCliJob {
+	id: string;
+	pid: number | null;
+	cli: string;
+	model: string;
+	status: 'running' | 'done' | 'error';
+	startedAt: string;
+	finishedAt?: string | null;
+	exitCode?: number | null;
+	commentCount: number;
+	notes: string[];
+	errorSummary?: string | null;
+}
+
+function isPidAlive(pid: number | null | undefined): boolean {
+	if (!pid || !Number.isInteger(pid) || pid <= 0) return false;
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (err: any) {
+		return Boolean(err && err.code === 'EPERM');
+	}
+}
+
+function formatHHMM(iso: string): string {
+	const d = new Date(iso);
+	if (isNaN(d.getTime())) return '--:--';
+	return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function formatNotesLabel(notes: string[]): string {
+	if (!notes || notes.length === 0) return 'Revue SlideFlow';
+	const unique = Array.from(new Set(notes.filter(Boolean)));
+	if (unique.length === 1) return unique[0];
+	return `${unique[0]} (+${unique.length - 1} note${unique.length - 1 > 1 ? 's' : ''})`;
+}
+
+async function renderActiveAgyJobsBlock(app: App): Promise<string[]> {
+	const adapter = app.vault.adapter;
+	if (!(await adapter.exists(ACTIVE_JOBS_FILE_PATH))) return [];
+	let jobs: SlideFlowCliJob[] = [];
+	try {
+		const raw = await adapter.read(ACTIVE_JOBS_FILE_PATH);
+		const parsed = JSON.parse(raw);
+		if (Array.isArray(parsed?.jobs)) {
+			jobs = parsed.jobs;
+		}
+	} catch {
+		return [];
+	}
+
+	const nowMs = Date.now();
+	const kept: SlideFlowCliJob[] = [];
+	let changed = false;
+	for (const job of jobs) {
+		const copy: SlideFlowCliJob = { ...job };
+		if (copy.status === 'running' && copy.pid && !isPidAlive(copy.pid)) {
+			copy.status = 'done';
+			copy.finishedAt = copy.finishedAt || new Date(nowMs).toISOString();
+			changed = true;
+		}
+		if (copy.status === 'running') {
+			kept.push(copy);
+			continue;
+		}
+		const finTime = new Date(copy.finishedAt || copy.startedAt).getTime();
+		const age = isNaN(finTime) ? Infinity : nowMs - finTime;
+		const limit = copy.status === 'error' ? 60 * 60 * 1000 : 15 * 60 * 1000;
+		if (age <= limit) {
+			kept.push(copy);
+		} else {
+			changed = true;
+		}
+	}
+
+	if (changed) {
+		try {
+			await adapter.write(ACTIVE_JOBS_FILE_PATH, JSON.stringify({ version: 1, jobs: kept }, null, 2));
+		} catch {
+			// non-fatal sync error
+		}
+	}
+
+	if (kept.length === 0) return [];
+	const running = kept.filter((j) => j.status === 'running');
+	const recent = kept.filter((j) => j.status !== 'running');
+	const lines: string[] = [JOBS_BLOCK_START];
+
+	if (running.length > 0) {
+		lines.push(`> 🤖 **Commandes \`agy\` en cours (${running.length})** :`);
+		for (const j of running) {
+			const label = formatNotesLabel(j.notes);
+			const modelPart = j.model ? ` · \`${j.model}\`` : '';
+			const pidPart = j.pid ? ` · PID \`${j.pid}\`` : '';
+			lines.push(
+				`> - ⏳ **${label}** · \`${j.commentCount} commentaire${j.commentCount > 1 ? 's' : ''}\`${modelPart} · démarré à \`${formatHHMM(j.startedAt)}\`${pidPart}`
+			);
+		}
+	} else {
+		lines.push(`> 🤖 **Dernières exécutions \`agy\`** :`);
+	}
+
+	for (const j of recent) {
+		const label = formatNotesLabel(j.notes);
+		const modelPart = j.model ? ` · \`${j.model}\`` : '';
+		const finStr = formatHHMM(j.finishedAt || j.startedAt);
+		if (j.status === 'done') {
+			lines.push(
+				`> - ✅ **${label}** · \`${j.commentCount} commentaire${j.commentCount > 1 ? 's' : ''}\`${modelPart} · terminé à \`${finStr}\``
+			);
+		} else {
+			const errPart = j.errorSummary ? ` — ${j.errorSummary.slice(0, 120)}` : '';
+			lines.push(
+				`> - ❌ **${label}** · \`${j.commentCount} commentaire${j.commentCount > 1 ? 's' : ''}\`${modelPart} · échec \`exit ${j.exitCode ?? '?'}\` à \`${finStr}\`${errPart}`
+			);
+		}
+	}
+
+	lines.push(JOBS_BLOCK_END);
+	return lines;
+}
 
 interface RankedProjectRow {
 	file: TFile;
@@ -192,12 +317,14 @@ export async function updateProjectDashboardFile(plugin: any, statsOverride?: St
 		existingContent = await app.vault.read(existingAbstract);
 	}
 	const quotaLines = extractPreservedQuotaBlock(existingContent);
+	const activeJobsLines = await renderActiveAgyJobsBlock(app);
 
 	const out: string[] = [
 		'# 🎯 Tableau de Bord des Projets',
 		'',
 		`> 🔄 **Dernière mise à jour** : ${formatLocalTimestamp(now)} · **Projets actifs** : ${reviewedRows.length} révisés${newRows.length > 0 ? ` · ${newRows.length} nouveaux` : ''}`,
 		...quotaLines,
+		...(activeJobsLines.length > 0 ? ['', ...activeJobsLines] : []),
 		'',
 		'| Title | Score | Diff | Deadline | Milestone |',
 		'| :--- | :---: | :---: | :---: | :---: |',
