@@ -70,7 +70,10 @@ async function renderActiveAgyJobsBlock(app: App): Promise<string[]> {
 	for (const job of jobs) {
 		const copy: SlideFlowCliJob = { ...job };
 		if (copy.status === 'running' && copy.pid && !isPidAlive(copy.pid)) {
-			copy.status = 'done';
+			copy.status = 'error';
+			copy.exitCode = copy.exitCode ?? -1;
+			copy.errorSummary =
+				copy.errorSummary || `PID ${copy.pid} terminé sans code de succès confirmé`;
 			copy.finishedAt = copy.finishedAt || new Date(nowMs).toISOString();
 			changed = true;
 		}
