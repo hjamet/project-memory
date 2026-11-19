@@ -5989,12 +5989,14 @@ def parse_transcript_work_time(
     db_projects: Optional[dict] = None,
     minutes_per_message: float = 6.0,
     minutes_per_arrow: float = 2.0,
+    minutes_per_comment: float = 2.5,
     min_step_index_by_project: Optional[Dict[str, int]] = None
 ) -> TranscriptParseResult:
     """
     Découpe le transcript en tours humains commençant à chaque USER_EXPLICIT (USER_INPUT).
-    Pour chaque tour, calcule la durée brute selon la règle canonique (6 min de base, ou 2 min par
-    argument/flèche '->'/'→' et commentaire d'artéfact si > 1), et identifie l'ensemble des
+    Pour chaque tour, calcule la durée brute selon la règle canonique (plancher 6 min, 2 min par
+    flèche '->'/'→' et 2,5 min par commentaire d'artéfact ou SlideFlow — y compris les lots débordés
+    sur *_payload.xml et les blocs <general_comments>), et identifie l'ensemble des
     projets suivis (clés de db_projects) touchés durant ce tour via USER_INPUT, les arguments
     des tool_calls (chemins de notes maîtresses, Projet : <chemin> dans les briefs, main_project_file)
     et les liens du PLANNER_RESPONSE ([Nom](file:///.../Nom.md) ou 🤖 <Titre>.md).
@@ -6233,12 +6235,55 @@ def parse_transcript_work_time(
         user_part = raw_content.split("<ADDITIONAL_METADATA>")[0]
         comment_count = len(re.findall(r'(?:^|\n)(?:Comment:\s*"|The user\'s comment was:)', user_part))
 
-        # Support natif SlideFlow (<slideflow_review> ... <note path="..."> ... <comment>...</comment>)
+        # Support natif SlideFlow (<slideflow_review> inline ou débordé sur *_payload.xml, <general_comments> et <note path="...">)
         slideflow_weights: Dict[str, int] = {}
         slideflow_comment_count = 0
-        if "<slideflow_review" in user_part:
-            sf_blocks = re.findall(r'<slideflow_review\b[^>]*>(.*?)</slideflow_review>', user_part, flags=re.DOTALL | re.IGNORECASE)
+        sf_source_text = user_part
+        if "<slideflow_review" not in sf_source_text:
+            spill_paths: List[str] = []
+            for m_sp in re.finditer(
+                r'Read and execute all SlideFlow review comments stored in this XML file:\s*["\']?([^\r\n"\'<>]+?_payload\.xml)["\']?',
+                user_part,
+                flags=re.IGNORECASE,
+            ):
+                spill_paths.append(m_sp.group(1).strip())
+            if not spill_paths:
+                for m_sp in re.finditer(
+                    r'((?:[A-Za-z]:[\\/]|/)[^\r\n"\'<>]+?_payload\.xml)',
+                    user_part,
+                    flags=re.IGNORECASE,
+                ):
+                    spill_paths.append(m_sp.group(1).strip())
+            loaded_spill_parts: List[str] = []
+            for sp_path in spill_paths:
+                if os.path.isfile(sp_path):
+                    try:
+                        with open(sp_path, "r", encoding="utf-8", errors="ignore") as spf:
+                            loaded_spill_parts.append(spf.read())
+                    except OSError:
+                        pass
+            if loaded_spill_parts:
+                sf_source_text = "\n".join(loaded_spill_parts)
+            elif spill_paths:
+                for st in turn["steps"]:
+                    st_c = str(st.get("content") or "")
+                    if "<slideflow_review" in st_c:
+                        loaded_spill_parts.append(st_c)
+                if loaded_spill_parts:
+                    sf_source_text = "\n".join(loaded_spill_parts)
+
+        if "<slideflow_review" in sf_source_text:
+            sf_blocks = re.findall(r'<slideflow_review\b[^>]*>(.*?)</slideflow_review>', sf_source_text, flags=re.DOTALL | re.IGNORECASE)
             for sf_block in sf_blocks:
+                general_blocks = re.findall(r'<general_comments\b[^>]*>(.*?)</general_comments>', sf_block, flags=re.DOTALL | re.IGNORECASE)
+                general_count = 0
+                for gb in general_blocks:
+                    gb_comments = [
+                        c.strip() for c in re.findall(r'<comment\b[^>]*>(.*?)</comment>', gb, flags=re.DOTALL | re.IGNORECASE)
+                        if c.strip()
+                    ]
+                    general_count += len(gb_comments)
+
                 note_matches = re.findall(r'<note\b[^>]*\bpath="([^"]+)"[^>]*>(.*?)</note>', sf_block, flags=re.DOTALL | re.IGNORECASE)
                 counted_in_notes = 0
                 for note_path, note_body in note_matches:
@@ -6251,8 +6296,9 @@ def parse_transcript_work_time(
                     p_note = resolve_to_project(note_path)
                     if p_note and n_c > 0:
                         slideflow_weights[p_note] = slideflow_weights.get(p_note, 0) + n_c
-                if counted_in_notes > 0:
-                    slideflow_comment_count += counted_in_notes
+
+                if counted_in_notes > 0 or general_count > 0:
+                    slideflow_comment_count += counted_in_notes + general_count
                 else:
                     fallback_comments = [
                         c.strip() for c in re.findall(r'<comment\b[^>]*>(.*?)</comment>', sf_block, flags=re.DOTALL | re.IGNORECASE)
@@ -6263,6 +6309,7 @@ def parse_transcript_work_time(
 
         clean_part = re.sub(r'```.*?```', '', user_part, flags=re.DOTALL)
         clean_part = re.sub(r'<mail>.*?</mail>', '', clean_part, flags=re.DOTALL)
+        clean_part = re.sub(r'<slideflow_review\b[^>]*>.*?</slideflow_review>', '', clean_part, flags=re.DOTALL | re.IGNORECASE)
         clean_part = re.sub(r'<context>.*?</context>', '', clean_part, flags=re.DOTALL | re.IGNORECASE)
         if "<USER_REQUEST>" in clean_part:
             body_part = clean_part.split("<USER_REQUEST>")[1].split("</USER_REQUEST>")[0]
@@ -6280,9 +6327,15 @@ def parse_transcript_work_time(
             ]
             voice_utt_count = len(subst_utts)
 
-        arg_count = arrow_count + comment_count + (voice_utt_count if voice_utt_count > 1 else 0)
-        if arg_count > 1:
-            msg_minutes = max(float(minutes_per_message), arg_count * float(minutes_per_arrow))
+        voice_extra = voice_utt_count if voice_utt_count > 1 else 0
+        arg_count = arrow_count + comment_count + voice_extra
+        if arg_count > 1 or comment_count >= 1:
+            weighted_minutes = (
+                arrow_count * float(minutes_per_arrow)
+                + comment_count * float(minutes_per_comment)
+                + voice_extra * float(minutes_per_arrow)
+            )
+            msg_minutes = max(float(minutes_per_message), weighted_minutes)
         else:
             msg_minutes = float(minutes_per_message)
         turn_durations.append(msg_minutes)
@@ -6291,7 +6344,7 @@ def parse_transcript_work_time(
         matched: Set[str] = set(slideflow_weights.keys())
 
         # Marqueur D (USER_INPUT) : annotations @[...], fichiers commentés et balises SlideFlow <note path="...">
-        user_sf_notes = re.findall(r'<note\b[^>]*\bpath="([^"]+?\.md)"', user_part, re.IGNORECASE)
+        user_sf_notes = re.findall(r'<note\b[^>]*\bpath="([^"]+?\.md)"', sf_source_text, re.IGNORECASE)
         for usn in user_sf_notes:
             p = resolve_to_project(usn)
             if p:
@@ -6464,7 +6517,7 @@ def parse_transcript_work_time(
 
         target_time = project_minutes.get(canon_target, 0.0)
         if target_time > 0:
-            final_minutes = float(max(1, round(target_time)))
+            final_minutes = float(max(1.0, round(target_time, 1)))
         else:
             final_minutes = 0.0
 
