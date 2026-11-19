@@ -42,14 +42,31 @@ function formatHHMM(iso: string): string {
 	return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
-function formatNotesLabel(notes: string[]): string {
+function formatNotesLabel(notes: string[], dashboardPath: string = '🎯 Projets.md'): string {
 	if (!notes || notes.length === 0) return 'Revue SlideFlow';
+	const normDash = (dashboardPath || '🎯 Projets.md').replace(/\\/g, '/').replace(/^\/+/, '').trim();
+	const baseDash = (normDash.split('/').pop() || normDash).replace(/\.md$/i, '').toLowerCase();
+	const normDashNoExt = normDash.replace(/\.md$/i, '').toLowerCase();
+	const dashKeys = new Set([normDash.toLowerCase(), normDashNoExt, `${baseDash}.md`, baseDash]);
+
 	const unique = Array.from(new Set(notes.filter(Boolean)));
-	if (unique.length === 1) return unique[0];
-	return `${unique[0]} (+${unique.length - 1} note${unique.length - 1 > 1 ? 's' : ''})`;
+	const regular: string[] = [];
+	const dash: string[] = [];
+	for (const n of unique) {
+		const low = n.replace(/\\/g, '/').replace(/^\/+/, '').trim().toLowerCase();
+		const lowNoExt = low.replace(/\.md$/i, '');
+		if (dashKeys.has(low) || dashKeys.has(lowNoExt)) {
+			dash.push(n);
+		} else {
+			regular.push(n);
+		}
+	}
+	const ordered = [...regular, ...dash];
+	if (ordered.length === 1) return ordered[0];
+	return `${ordered[0]} (+${ordered.length - 1} note${ordered.length - 1 > 1 ? 's' : ''})`;
 }
 
-async function renderActiveAgyJobsBlock(app: App): Promise<string[]> {
+async function renderActiveAgyJobsBlock(app: App, dashboardPath: string): Promise<string[]> {
 	const adapter = app.vault.adapter;
 	if (!(await adapter.exists(ACTIVE_JOBS_FILE_PATH))) return [];
 	let jobs: SlideFlowCliJob[] = [];
@@ -106,7 +123,7 @@ async function renderActiveAgyJobsBlock(app: App): Promise<string[]> {
 	if (running.length > 0) {
 		lines.push(`> 🤖 **Commandes \`agy\` en cours (${running.length})** :`);
 		for (const j of running) {
-			const label = formatNotesLabel(j.notes);
+			const label = formatNotesLabel(j.notes, dashboardPath);
 			const modelPart = j.model ? ` · \`${j.model}\`` : '';
 			const pidPart = j.pid ? ` · PID \`${j.pid}\`` : '';
 			lines.push(
@@ -118,7 +135,7 @@ async function renderActiveAgyJobsBlock(app: App): Promise<string[]> {
 	}
 
 	for (const j of recent) {
-		const label = formatNotesLabel(j.notes);
+		const label = formatNotesLabel(j.notes, dashboardPath);
 		const modelPart = j.model ? ` · \`${j.model}\`` : '';
 		const finStr = formatHHMM(j.finishedAt || j.startedAt);
 		if (j.status === 'done') {
@@ -298,7 +315,7 @@ export async function updateProjectDashboardFile(plugin: any, statsOverride?: St
 		existingContent = await app.vault.read(existingAbstract);
 	}
 	const quotaLines = extractPreservedQuotaBlock(existingContent);
-	const activeJobsLines = await renderActiveAgyJobsBlock(app);
+	const activeJobsLines = await renderActiveAgyJobsBlock(app, normalizedTarget);
 
 	const out: string[] = [
 		'# 🎯 Tableau de Bord des Projets',
