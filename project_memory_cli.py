@@ -384,7 +384,16 @@ class UniversalMilestoneParser:
 
         # 2. Find next future occurrence
         found_target: Optional[datetime] = None
-        cycle_satisfied = False
+        is_single_intraday = (
+            len(self._expand_cron_field(hour_spec, 0, 23)) == 1
+            and len(self._expand_cron_field(min_spec, 0, 59)) == 1
+        )
+        cycle_satisfied = bool(
+            past_target and last_sat_dt
+            and (last_sat_dt >= past_target or last_sat_dt.date() >= past_target.date())
+            and past_target.date() == now.date()
+            and is_single_intraday
+        )
 
         for day_offset in range(366):
             check_date = (now + timedelta(days=day_offset)).date()
@@ -2294,8 +2303,9 @@ def _convert_wikilinks_to_markdown_links(text: str, vault_dir: Optional[str] = N
 
         if any(sep in target for sep in ("/", "\\", ".")):
             posix_target = target.replace("\\", "/").lstrip("/")
+            abs_posix = (v_dir.resolve() / posix_target).as_posix().lstrip("/")
             lbl = label or target
-            encoded_url = "file:///" + urllib.parse.quote(posix_target, safe="/:#")
+            encoded_url = "file:///" + urllib.parse.quote(abs_posix, safe="/:#")
             return f"[{lbl}]({encoded_url})"
 
         lbl = label or target
@@ -2713,7 +2723,9 @@ def _rewrite_paths_for_current_pc(text: str) -> str:
         flags=re.IGNORECASE
     )
 
-    # Final pass on any residual wikilinks
+    # Final pass on any residual wikilinks and relative Markdown links
+    from doc_version_mcp.artifact_builder import convert_obsidian_wikilinks_for_antigravity
+    text = convert_obsidian_wikilinks_for_antigravity(text, voicenotes_dir=Path(VAULT_DIR))
     text = _convert_wikilinks_to_markdown_links(text)
 
     # Final pass on any Markdown file:/// URLs to ensure strict URI encoding (zero unencoded spaces)
@@ -4645,8 +4657,12 @@ def enrich_project_auto_fields(p, vault_dir=VAULT_DIR):
     master_path = Path(vault_dir) / rel_path if rel_path else None
     if master_path and master_path.is_file():
         diff_count, diff_file = _get_or_update_project_diff(master_path, vault_dir=vault_dir)
-        abs_diff = Path(diff_file).resolve().as_posix().lstrip("/")
-        link = "file:///" + urllib.parse.quote(abs_diff, safe="/:")
+        try:
+            rel_diff = Path(diff_file).resolve().relative_to(Path(vault_dir).resolve()).as_posix()
+            link = urllib.parse.quote(rel_diff, safe="/")
+        except ValueError:
+            abs_diff = Path(diff_file).resolve().as_posix().lstrip("/")
+            link = "file:///" + urllib.parse.quote(abs_diff, safe="/:")
         auto_disp = f"[🤖 {diff_count}]({link})"
         p["auto_disp"] = auto_disp
         p["auto_diff_count"] = diff_count
@@ -4679,9 +4695,8 @@ def format_project_table(projects, verbose=False, vault_dir=VAULT_DIR):
                     rel = os.path.basename(fp)
             else:
                 rel = f"{p['title']}.md"
-        rel_forward = str(rel).replace("\\", "/")
-        abs_note = (Path(vault_dir) / rel_forward).resolve().as_posix().lstrip("/")
-        rel_encoded = "file:///" + urllib.parse.quote(abs_note, safe="/:")
+        rel_forward = str(rel).replace("\\", "/").lstrip("/")
+        rel_encoded = urllib.parse.quote(rel_forward, safe="/")
         title_links.append(f"[{p['title']}]({rel_encoded})")
         auto_disps.append(p["_cached_auto_disp"] if "_cached_auto_disp" in p else enrich_project_auto_fields(p, vault_dir=vault_dir))
 
@@ -4711,10 +4726,10 @@ def format_project_table(projects, verbose=False, vault_dir=VAULT_DIR):
 
             lines.append(f"| {title_link} | {eff_str} | {base_str} | {rot_str} | {dead_urg_str} | {mile_urg_str} | {malus_str} | {deadline_disp} | {milestone_disp} | {rev_str} |")
     else:
-        # Affichage épuré par défaut : Title, Score, Diff, Deadline, Milestone
-        lines.append("| Title | Score | Diff | Deadline | Milestone |")
-        lines.append("| :--- | :---: | :---: | :---: | :---: |")
-        for p, title_link, auto_disp in zip(projects, title_links, auto_disps):
+        # Affichage épuré par défaut : Title, Score, Deadline, Milestone (Diffs gérés nativement par SlideFlow)
+        lines.append("| Title | Score | Deadline | Milestone |")
+        lines.append("| :--- | :---: | :---: | :---: |")
+        for p, title_link in zip(projects, title_links):
             arrow = p.get('trend_arrow')
             if not arrow and p.get('effective_score') is not None:
                 arrow = '➖'
@@ -4728,7 +4743,7 @@ def format_project_table(projects, verbose=False, vault_dir=VAULT_DIR):
             if len(milestone_disp) > 15:
                 milestone_disp = milestone_disp[:13] + ".."
 
-            lines.append(f"| {title_link} | {eff_str} | {auto_disp} | {deadline_disp} | {milestone_disp} |")
+            lines.append(f"| {title_link} | {eff_str} | {deadline_disp} | {milestone_disp} |")
 
     return "\n".join(lines)
 
@@ -4942,6 +4957,154 @@ def sync_project_diff_paths_for_current_host(vault_dir: str = VAULT_DIR) -> int:
     return updated
 
 
+def _is_pid_alive(pid: Optional[int]) -> bool:
+    if not pid or not isinstance(pid, int) or pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            h = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not h:
+                return False
+            try:
+                code = ctypes.c_ulong()
+                if ctypes.windll.kernel32.GetExitCodeProcess(h, ctypes.byref(code)):
+                    return code.value == STILL_ACTIVE
+                return False
+            finally:
+                ctypes.windll.kernel32.CloseHandle(h)
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def _render_slideflow_active_jobs_block(vault_dir: str, dashboard_filename: str = DASHBOARD_FILENAME) -> list[str]:
+    jobs_file = os.path.join(vault_dir, "_agents", "slideflow_active_jobs.json")
+    if not os.path.isfile(jobs_file):
+        return []
+    try:
+        with open(jobs_file, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        raw_jobs = payload.get("jobs", []) if isinstance(payload, dict) else []
+    except Exception:
+        return []
+
+    now_ts = time.time()
+    kept = []
+    changed = False
+
+    for job in raw_jobs:
+        if not isinstance(job, dict):
+            continue
+        item = dict(job)
+        if item.get("status") == "running" and item.get("pid") and not _is_pid_alive(item.get("pid")):
+            item["status"] = "error"
+            item["exitCode"] = item.get("exitCode") if item.get("exitCode") is not None else -1
+            item["errorSummary"] = item.get("errorSummary") or f"PID {item.get('pid')} terminé sans code de succès confirmé"
+            item["finishedAt"] = item.get("finishedAt") or datetime.now(timezone.utc).isoformat()
+            changed = True
+        if item.get("status") == "running":
+            kept.append(item)
+            continue
+        ts_str = item.get("finishedAt") or item.get("startedAt") or ""
+        try:
+            dt_obj = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+            age_s = now_ts - dt_obj.timestamp()
+        except Exception:
+            age_s = 1e9
+        limit_s = 3600 if item.get("status") == "error" else 900
+        if age_s <= limit_s:
+            kept.append(item)
+        else:
+            changed = True
+
+    if changed:
+        try:
+            with open(jobs_file, "w", encoding="utf-8") as f:
+                json.dump({"version": 1, "jobs": kept}, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    if not kept:
+        return []
+
+    def _fmt_hhmm(iso_str: str) -> str:
+        try:
+            dt_obj = datetime.fromisoformat(iso_str.replace("Z", "+00:00")).astimezone()
+            return dt_obj.strftime("%H:%M")
+        except Exception:
+            return "--:--"
+
+    norm_dash = (dashboard_filename or DASHBOARD_FILENAME).replace("\\", "/").lstrip("/").strip()
+    base_dash = norm_dash.split("/")[-1]
+    base_no_ext = base_dash[:-3] if base_dash.lower().endswith(".md") else base_dash
+    norm_no_ext = norm_dash[:-3] if norm_dash.lower().endswith(".md") else norm_dash
+    dash_keys = {norm_dash.lower(), norm_no_ext.lower(), base_dash.lower(), base_no_ext.lower()}
+
+    def _fmt_notes(notes_list) -> str:
+        uniq = list(dict.fromkeys(str(n) for n in (notes_list or []) if n))
+        if not uniq:
+            return "Revue SlideFlow"
+        regular = []
+        dash = []
+        for n in uniq:
+            low = n.replace("\\", "/").lstrip("/").strip().lower()
+            low_no_ext = low[:-3] if low.endswith(".md") else low
+            if low in dash_keys or low_no_ext in dash_keys:
+                dash.append(n)
+            else:
+                regular.append(n)
+        ordered = regular + dash
+        if len(ordered) == 1:
+            return ordered[0]
+        extra = len(ordered) - 1
+        return f"{ordered[0]} (+{extra} note{'s' if extra > 1 else ''})"
+
+    running = [j for j in kept if j.get("status") == "running"]
+    recent = [j for j in kept if j.get("status") != "running"]
+    out = ["<!-- SLIDEFLOW_AGY_JOBS_START -->"]
+    if running:
+        out.append(f"> 🤖 **Commandes `agy` en cours ({len(running)})** :")
+        for j in running:
+            label = _fmt_notes(j.get("notes"))
+            cnt = int(j.get("commentCount") or 0)
+            model_part = f" · `{j['model']}`" if j.get("model") else ""
+            pid_part = f" · PID `{j['pid']}`" if j.get("pid") else ""
+            t_str = _fmt_hhmm(j.get("startedAt") or "")
+            out.append(
+                f"> - ⏳ **{label}** · `{cnt} commentaire{'s' if cnt > 1 else ''}`{model_part} · démarré à `{t_str}`{pid_part}"
+            )
+    else:
+        out.append("> 🤖 **Dernières exécutions `agy`** :")
+
+    for j in recent:
+        label = _fmt_notes(j.get("notes"))
+        cnt = int(j.get("commentCount") or 0)
+        model_part = f" · `{j['model']}`" if j.get("model") else ""
+        fin_str = _fmt_hhmm(j.get("finishedAt") or j.get("startedAt") or "")
+        if j.get("status") == "done":
+            out.append(
+                f"> - ✅ **{label}** · `{cnt} commentaire{'s' if cnt > 1 else ''}`{model_part} · terminé à `{fin_str}`"
+            )
+        else:
+            err_s = (j.get("errorSummary") or "").strip()[:120]
+            err_part = f" — {err_s}" if err_s else ""
+            out.append(
+                f"> - ❌ **{label}** · `{cnt} commentaire{'s' if cnt > 1 else ''}`{model_part} · échec `exit {j.get('exitCode', '?')}` à `{fin_str}`{err_part}"
+            )
+
+    out.append("<!-- SLIDEFLOW_AGY_JOBS_END -->")
+    return out
+
+
 def write_root_dashboard(vault_dir=VAULT_DIR, data=None, projects=None, show_progress: bool = False, quiet: Optional[bool] = None) -> str:
     """
     Construit et écrit le tableau de bord Markdown épuré 🎯 Projets.md
@@ -5024,6 +5187,11 @@ def write_root_dashboard(vault_dir=VAULT_DIR, data=None, projects=None, show_pro
     if md_quota_lines:
         lines.append(">")
         lines.extend(md_quota_lines)
+    configured_dashboard = (data.get("projectFile") or "").strip() if isinstance(data, dict) else ""
+    active_jobs_lines = _render_slideflow_active_jobs_block(vault_dir, configured_dashboard or DASHBOARD_FILENAME)
+    if active_jobs_lines:
+        lines.append("")
+        lines.extend(active_jobs_lines)
     lines.append("")
 
     if unreviewed:
@@ -5865,6 +6033,7 @@ def parse_transcript_work_time(
 
     entries = []
     max_step_seen = -1
+    has_truncated_user_input = False
     with open(str(transcript_path), "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
             line = line.strip()
@@ -5877,8 +6046,28 @@ def parse_transcript_work_time(
                     s_idx = entry_obj.get("step_index")
                     if isinstance(s_idx, int) and s_idx > max_step_seen:
                         max_step_seen = s_idx
+                    if entry_obj.get("type") == "USER_INPUT" and "content" in (entry_obj.get("truncated_fields") or []):
+                        has_truncated_user_input = True
             except json.JSONDecodeError:
                 continue
+
+    if has_truncated_user_input:
+        full_path = os.path.join(os.path.dirname(str(transcript_path)), "transcript_full.jsonl")
+        if os.path.isfile(full_path):
+            full_user_by_step = {}
+            with open(full_path, "r", encoding="utf-8", errors="ignore") as ff:
+                for fline in ff:
+                    if '"USER_INPUT"' not in fline:
+                        continue
+                    try:
+                        fobj = json.loads(fline)
+                        if isinstance(fobj, dict) and fobj.get("type") == "USER_INPUT":
+                            full_user_by_step[fobj.get("step_index")] = fobj.get("content")
+                    except json.JSONDecodeError:
+                        continue
+            for e in entries:
+                if isinstance(e, dict) and e.get("type") == "USER_INPUT" and e.get("step_index") in full_user_by_step:
+                    e["content"] = full_user_by_step[e["step_index"]]
 
     if not entries:
         return TranscriptParseResult(0.0, 0, 0.0, {}, target_project, max_step_index=-1)
@@ -5916,6 +6105,7 @@ def parse_transcript_work_time(
     user_messages = len(turns)
     turn_durations: List[float] = []
     matched_per_turn: List[Set[str]] = []
+    slideflow_weights_per_turn: List[Dict[str, int]] = []
 
     def resolve_to_project(raw_candidate: str) -> Optional[str]:
         if not raw_candidate:
@@ -6041,9 +6231,39 @@ def parse_transcript_work_time(
         user_entry = turn["user_entry"]
         raw_content = str(user_entry.get("content") or "")
         user_part = raw_content.split("<ADDITIONAL_METADATA>")[0]
-        comment_count = len(re.findall(r'(?:^|\n)Comment:\s*"', user_part))
+        comment_count = len(re.findall(r'(?:^|\n)(?:Comment:\s*"|The user\'s comment was:)', user_part))
+
+        # Support natif SlideFlow (<slideflow_review> ... <note path="..."> ... <comment>...</comment>)
+        slideflow_weights: Dict[str, int] = {}
+        slideflow_comment_count = 0
+        if "<slideflow_review" in user_part:
+            sf_blocks = re.findall(r'<slideflow_review\b[^>]*>(.*?)</slideflow_review>', user_part, flags=re.DOTALL | re.IGNORECASE)
+            for sf_block in sf_blocks:
+                note_matches = re.findall(r'<note\b[^>]*\bpath="([^"]+)"[^>]*>(.*?)</note>', sf_block, flags=re.DOTALL | re.IGNORECASE)
+                counted_in_notes = 0
+                for note_path, note_body in note_matches:
+                    note_comments = [
+                        c.strip() for c in re.findall(r'<comment\b[^>]*>(.*?)</comment>', note_body, flags=re.DOTALL | re.IGNORECASE)
+                        if c.strip()
+                    ]
+                    n_c = len(note_comments)
+                    counted_in_notes += n_c
+                    p_note = resolve_to_project(note_path)
+                    if p_note and n_c > 0:
+                        slideflow_weights[p_note] = slideflow_weights.get(p_note, 0) + n_c
+                if counted_in_notes > 0:
+                    slideflow_comment_count += counted_in_notes
+                else:
+                    fallback_comments = [
+                        c.strip() for c in re.findall(r'<comment\b[^>]*>(.*?)</comment>', sf_block, flags=re.DOTALL | re.IGNORECASE)
+                        if c.strip()
+                    ]
+                    slideflow_comment_count += len(fallback_comments)
+        comment_count += slideflow_comment_count
+
         clean_part = re.sub(r'```.*?```', '', user_part, flags=re.DOTALL)
         clean_part = re.sub(r'<mail>.*?</mail>', '', clean_part, flags=re.DOTALL)
+        clean_part = re.sub(r'<context>.*?</context>', '', clean_part, flags=re.DOTALL | re.IGNORECASE)
         if "<USER_REQUEST>" in clean_part:
             body_part = clean_part.split("<USER_REQUEST>")[1].split("</USER_REQUEST>")[0]
             arrow_count = len(re.findall(r"(?:->|→)", body_part))
@@ -6066,17 +6286,30 @@ def parse_transcript_work_time(
         else:
             msg_minutes = float(minutes_per_message)
         turn_durations.append(msg_minutes)
+        slideflow_weights_per_turn.append(slideflow_weights)
 
-        matched: Set[str] = set()
+        matched: Set[str] = set(slideflow_weights.keys())
 
-        # Marqueur D (USER_INPUT) : annotations @[...]
-        user_at_matches = re.findall(r'@\[([a-zA-Z0-9_\- \u0080-\uffff]+?\.md)\]', user_part)
+        # Marqueur D (USER_INPUT) : annotations @[...], fichiers commentés et balises SlideFlow <note path="...">
+        user_sf_notes = re.findall(r'<note\b[^>]*\bpath="([^"]+?\.md)"', user_part, re.IGNORECASE)
+        for usn in user_sf_notes:
+            p = resolve_to_project(usn)
+            if p:
+                matched.add(p)
+
+        user_at_matches = re.findall(r'@\[([a-zA-Z0-9_\- \u0080-\uffff/\\:\.]+?\.md)\]', user_part)
         for uam in user_at_matches:
             p = resolve_to_project(uam)
             if p:
                 matched.add(p)
 
-        user_text = user_part.lower()
+        user_comment_files = re.findall(r'Comments on the file (file:///[^\s\r\n]+?\.md)\b', user_part, re.IGNORECASE)
+        for ucf in user_comment_files:
+            p = resolve_to_project(ucf)
+            if p:
+                matched.add(p)
+
+        user_text = clean_part.lower()
         for p_key in (db_projects or {}).keys():
             title = os.path.splitext(os.path.basename(p_key))[0]
             if len(title) >= 6 and title.lower() in user_text:
@@ -6174,8 +6407,22 @@ def parse_transcript_work_time(
     project_minutes: Dict[str, float] = {p: 0.0 for p in (db_projects or {}).keys()}
     total_detected_in_transcript = False
 
-    for turn, m, t_min in zip(turns, final_matched_per_turn, turn_durations):
-        if m:
+    for turn, m, t_min, sf_w in zip(turns, final_matched_per_turn, turn_durations, slideflow_weights_per_turn):
+        if sf_w:
+            total_detected_in_transcript = True
+            total_sf_c = sum(sf_w.values())
+            for p, c_cnt in sf_w.items():
+                if min_step_index_by_project:
+                    last_step = min_step_index_by_project.get(p)
+                    if last_step is None:
+                        for k_min, v_step in min_step_index_by_project.items():
+                            if k_min == p or os.path.basename(k_min).lower() == os.path.basename(p).lower():
+                                last_step = v_step
+                                break
+                    if last_step is not None and turn.get("step_index", 0) <= last_step:
+                        continue
+                project_minutes[p] = project_minutes.get(p, 0.0) + (t_min * (c_cnt / total_sf_c))
+        elif m:
             total_detected_in_transcript = True
             share = t_min / len(m)
             for p in m:
@@ -6411,7 +6658,7 @@ def apply_feedback(project_path, action, worked, data, elapsed_minutes=None, is_
                     ratio = min(1.0, max(0.0, cumulated_duration / target_minutes)) if target_minutes > 0 else 1.0
                     existing_entry_for_conv["duration_minutes"] = round(cumulated_duration, 2)
                     existing_entry_for_conv["ratio"] = round(ratio, 4)
-                    existing_entry_for_conv["interrupted"] = (ratio < 0.99)
+                    existing_entry_for_conv["interrupted"] = False
                     existing_entry_for_conv["date"] = now_iso
                     if conv_id:
                         existing_entry_for_conv["conv_id"] = conv_id
@@ -6422,10 +6669,9 @@ def apply_feedback(project_path, action, worked, data, elapsed_minutes=None, is_
                         )
                     agent_obj["recentWorkDates"] = valid_dates
 
-                    if ratio >= 0.5:
-                        agent_obj["lastSatisfiedMilestoneDate"] = now_iso
-                        if is_agent_only:
-                            proj["lastSatisfiedMilestoneDate"] = now_iso
+                    agent_obj["lastSatisfiedMilestoneDate"] = now_iso
+                    if is_agent_only:
+                        proj["lastSatisfiedMilestoneDate"] = now_iso
 
                     current_bonus = float(agent_obj.get("rotationBonus", 0.0))
                     s_base = float(agent_obj.get("currentScore", 50.0))
@@ -6445,7 +6691,7 @@ def apply_feedback(project_path, action, worked, data, elapsed_minutes=None, is_
                     "ratio": round(ratio, 4),
                     "duration_minutes": round(elapsed_minutes, 2),
                     "target_minutes": round(target_minutes, 2),
-                    "interrupted": (ratio < 0.99)
+                    "interrupted": False
                 }
                 if conv_id:
                     session_entry["conv_id"] = conv_id
@@ -6454,10 +6700,9 @@ def apply_feedback(project_path, action, worked, data, elapsed_minutes=None, is_
                 valid_dates.append(session_entry)
                 agent_obj["recentWorkDates"] = valid_dates
 
-                if ratio >= 0.5:
-                    agent_obj["lastSatisfiedMilestoneDate"] = now_iso
-                    if is_agent_only:
-                        proj["lastSatisfiedMilestoneDate"] = now_iso
+                agent_obj["lastSatisfiedMilestoneDate"] = now_iso
+                if is_agent_only:
+                    proj["lastSatisfiedMilestoneDate"] = now_iso
 
                 current_bonus = float(agent_obj.get("rotationBonus", 0.0))
                 s_base = float(agent_obj.get("currentScore", 50.0))
@@ -6519,7 +6764,7 @@ def apply_feedback(project_path, action, worked, data, elapsed_minutes=None, is_
                     ratio = min(1.0, max(0.0, cumulated_duration / target_minutes)) if target_minutes > 0 else 1.0
                     existing_entry_for_conv["duration_minutes"] = round(cumulated_duration, 2)
                     existing_entry_for_conv["ratio"] = round(ratio, 4)
-                    existing_entry_for_conv["interrupted"] = (ratio < 0.99)
+                    existing_entry_for_conv["interrupted"] = False
                     existing_entry_for_conv["date"] = now_iso
                     if conv_id:
                         existing_entry_for_conv["conv_id"] = conv_id
@@ -6530,8 +6775,7 @@ def apply_feedback(project_path, action, worked, data, elapsed_minutes=None, is_
                         )
                     proj["recentWorkDates"] = valid_dates
 
-                    if ratio >= 0.5:
-                        proj["lastSatisfiedMilestoneDate"] = now_iso
+                    proj["lastSatisfiedMilestoneDate"] = now_iso
 
                     current_bonus = float(proj.get("rotationBonus", 0.0))
                     raw_s_base = proj.get("currentScore")
@@ -6553,7 +6797,7 @@ def apply_feedback(project_path, action, worked, data, elapsed_minutes=None, is_
                     "ratio": round(ratio, 4),
                     "duration_minutes": round(elapsed_minutes, 2),
                     "target_minutes": round(target_minutes, 2),
-                    "interrupted": (ratio < 0.99)
+                    "interrupted": False
                 }
                 if conv_id:
                     session_entry["conv_id"] = conv_id
@@ -6562,8 +6806,7 @@ def apply_feedback(project_path, action, worked, data, elapsed_minutes=None, is_
                 valid_dates.append(session_entry)
                 proj["recentWorkDates"] = valid_dates
 
-                if ratio >= 0.5:
-                    proj["lastSatisfiedMilestoneDate"] = now_iso
+                proj["lastSatisfiedMilestoneDate"] = now_iso
 
                 current_bonus = float(proj.get("rotationBonus", 0.0))
                 raw_s_base = proj.get("currentScore")
