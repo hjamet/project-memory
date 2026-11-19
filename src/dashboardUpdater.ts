@@ -210,7 +210,7 @@ export async function updateProjectDashboardFile(plugin: any, statsOverride?: St
 			row.effectiveScore !== null
 				? `${row.effectiveScore.toFixed(2)} ${row.trendArrow}`.trim()
 				: `NEW ${row.trendArrow}`.trim();
-		const diffCell = row.isModified ? '🟢 Modifié' : '-';
+		const diffCell = row.isModified ? '●' : '-';
 		out.push(`| ${titleLink} | ${scoreStr} | ${diffCell} | ${row.deadlineDisp} | ${row.milestoneDisp} |`);
 	}
 

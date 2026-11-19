@@ -469,12 +469,22 @@ export function isEligibleProject(
     const normPath = projectPath.replace(/\\/g, '/').replace(/^\/+/, '');
     const lowerPath = normPath.toLowerCase();
 
-    // System-excluded folders
-    const excludedPrefixes = [
-        '_agents/', 'voicenotes/', 'souvenirs/', 'administratif/', 'advance/',
-        '.obsidian/', '.git/', '.trash/'
+    // System-excluded folders (100% aligned with project_memory_cli.py EXCLUDED_DIRS)
+    const excludedDirs = [
+        '_agents/', 'agents/', '.agents/', 'voicenotes/', 'readwise/',
+        'souvenirs/', 'administratif/', 'advance/', '.advance_tldr/',
+        'attachments/', 'thumbnails/', 'excalidraw/', 'antigravity/',
+        'templates/', 'tests/', 'test_output_vault/', 'rattrapage_aib_pack/',
+        '.obsidian/', '.git/', '.trash/', '.claude/', '.cursor/',
+        '.smart-env/', '.pytest_cache/'
     ];
-    if (excludedPrefixes.some(p => lowerPath.startsWith(p) || lowerPath.includes('/' + p))) {
+    if (excludedDirs.some(p => lowerPath.startsWith(p) || lowerPath.includes('/' + p))) {
+        return false;
+    }
+
+    const fileName = lowerPath.split('/').pop() || '';
+    const systemFiles = ['agents.md', 'readme.md', 'claude.md', 'gemini.md', '🎯 projets.md'];
+    if (systemFiles.includes(fileName)) {
         return false;
     }
 
