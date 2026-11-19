@@ -1,8 +1,9 @@
-import { App, Plugin, PluginSettingTab, Setting, AbstractInputSuggest, TFile, getAllTags } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, AbstractInputSuggest, TFile, Notice, getAllTags } from 'obsidian';
 import ReviewModal from './src/ReviewModal';
 import StatsModal from './src/StatsModal';
 import StatsView, { VIEW_TYPE_STATS } from './src/StatsView';
 import { calculateTemporalBonus, isEligibleProject } from './src/statsUtils';
+import { updateProjectDashboardFile } from './src/dashboardUpdater';
 import {
 	ProjectsMemorySettings,
 	ProjectStats,
@@ -29,7 +30,8 @@ const DEFAULT_SETTINGS: ProjectsMemorySettings = {
 	pomodoroDuration: 25,
 	statsStoredInData: false,
 	deadlineProperty: 'deadline',
-	milestoneProperty: 'milestone'
+	milestoneProperty: 'milestone',
+	projectFile: ''
 }
 
 export default class ProjectsMemoryPlugin extends Plugin {
@@ -45,6 +47,7 @@ export default class ProjectsMemoryPlugin extends Plugin {
 	private lastUrgentProjectTime: number = 0;
 	public pomodoroState: any = null;
 	public pomodoroGlobalIntervalId: number | null = null;
+	private dashboardUpdateTimer: number | null = null;
 
 	private async loadPersistedContainer(): Promise<{ payload: PersistedPayload; isLegacy: boolean }> {
 		const adapter = this.app.vault.adapter;
@@ -114,6 +117,20 @@ export default class ProjectsMemoryPlugin extends Plugin {
 			}
 		});
 
+		// Register manual dashboard update command
+		this.addCommand({
+			id: 'update-project-file',
+			name: 'Update project file dashboard',
+			callback: async () => {
+				if (!this.settings.projectFile?.trim()) {
+					new Notice('Project Memory: configure "Project File" in plugin settings first.');
+					return;
+				}
+				await this.refreshProjectFileNow();
+				new Notice(`Project Memory: updated ${this.settings.projectFile}`);
+			}
+		});
+
 		// Add Status Bar Item
 		this.statusBarItemEl = this.addStatusBarItem();
 		this.statusBarItemEl.addClass('pm-status-bar');
@@ -135,11 +152,42 @@ export default class ProjectsMemoryPlugin extends Plugin {
 
 		// Settings tab
 		this.addSettingTab(new ProjectsMemorySettingTab(this.app, this));
+
+		// Update configured Project File once workspace & metadata cache are ready
+		this.app.workspace.onLayoutReady(() => {
+			if (this.settings.projectFile?.trim()) {
+				this.scheduleDashboardUpdate();
+			}
+		});
 	}
 
 	onunload() {
+		if (this.dashboardUpdateTimer !== null) {
+			window.clearTimeout(this.dashboardUpdateTimer);
+			this.dashboardUpdateTimer = null;
+		}
 		// Detach sidebar leaves to prevent stale references on plugin reload
 		this.app.workspace.detachLeavesOfType(VIEW_TYPE_STATS);
+	}
+
+	public scheduleDashboardUpdate(statsOverride?: StatsData): void {
+		if (!this.settings?.projectFile?.trim()) return;
+		if (this.dashboardUpdateTimer !== null) {
+			window.clearTimeout(this.dashboardUpdateTimer);
+		}
+		this.dashboardUpdateTimer = window.setTimeout(() => {
+			this.dashboardUpdateTimer = null;
+			void this.refreshProjectFileNow(statsOverride);
+		}, 350);
+	}
+
+	public async refreshProjectFileNow(statsOverride?: StatsData): Promise<boolean> {
+		try {
+			return await updateProjectDashboardFile(this, statsOverride);
+		} catch (err) {
+			console.error('Project Memory: failed to update Project File:', err);
+			return false;
+		}
 	}
 
 	async loadSettings() {
@@ -201,6 +249,7 @@ export default class ProjectsMemoryPlugin extends Plugin {
 			stats: nextStats
 		};
 		await this.saveData(nextPayload);
+		this.scheduleDashboardUpdate(nextStats);
 	}
 
 	async handleFileRename(oldPath: string, newPath: string): Promise<void> {
@@ -763,5 +812,68 @@ class ProjectsMemorySettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					});
 			});
+
+		// Project File (auto-updated dashboard note, e.g. 🎯 Projets.md)
+		new Setting(containerEl)
+			.setName('Project File')
+			.setDesc('Vault-relative path of the Markdown dashboard note automatically updated whenever project scores change (e.g. 🎯 Projets.md). Uses native internal links ideal for Obsidian & SlideFlow.')
+			.addText(text => {
+				text
+					.setPlaceholder('🎯 Projets.md')
+					.setValue(this.plugin.settings.projectFile || '')
+					.onChange(async (value) => {
+						this.plugin.settings.projectFile = value.trim();
+						await this.plugin.saveSettings();
+					});
+
+				new ProjectFileSuggestor(this.app, text.inputEl, this.plugin);
+			})
+			.addButton(btn => {
+				btn
+					.setButtonText('Update now')
+					.setTooltip('Immediately regenerate the configured Project File')
+					.onClick(async () => {
+						if (!this.plugin.settings.projectFile?.trim()) {
+							new Notice('Please enter a Project File path first (e.g. 🎯 Projets.md).');
+							return;
+						}
+						const ok = await this.plugin.refreshProjectFileNow();
+						new Notice(ok
+							? `Project Memory: updated ${this.plugin.settings.projectFile}`
+							: `Project Memory: failed to update ${this.plugin.settings.projectFile}`
+						);
+					});
+			});
+	}
+}
+
+class ProjectFileSuggestor extends AbstractInputSuggest<TFile> {
+	private plugin: ProjectsMemoryPlugin;
+
+	constructor(app: App, inputEl: HTMLInputElement, plugin: ProjectsMemoryPlugin) {
+		super(app, inputEl);
+		this.plugin = plugin;
+	}
+
+	protected getSuggestions(query: string): TFile[] {
+		const q = query.trim().toLowerCase();
+		const files = this.app.vault.getMarkdownFiles();
+		if (!q) return files.slice(0, 20);
+		return files
+			.filter((f) => f.path.toLowerCase().includes(q) || f.basename.toLowerCase().includes(q))
+			.slice(0, 25);
+	}
+
+	renderSuggestion(file: TFile, el: HTMLElement) {
+		el.setText(file.path);
+	}
+
+	selectSuggestion(file: TFile, _evt: MouseEvent | KeyboardEvent) {
+		this.setValue(file.path);
+		this.plugin.settings.projectFile = file.path;
+		void this.plugin.saveSettings().then(() => {
+			this.plugin.scheduleDashboardUpdate();
+		});
+		this.close();
 	}
 }

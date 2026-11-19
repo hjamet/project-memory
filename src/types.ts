@@ -64,6 +64,7 @@ export interface ProjectsMemorySettings {
 	statsStoredInData: boolean; // migration flag indicating stats are persisted via saveData
 	deadlineProperty: string; // frontmatter property key for deadline (default: 'deadline')
 	milestoneProperty: string; // frontmatter property key for milestone (default: 'milestone')
+	projectFile?: string; // vault-relative path to auto-updated dashboard note (e.g. '🎯 Projets.md')
 }
 
 export interface PersistedPayload {
