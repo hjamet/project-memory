@@ -8,7 +8,6 @@ import { App, TFile } from 'obsidian';
 import { calculateTemporalBonus, isEligibleProject } from './statsUtils';
 import { ProjectStats, StatsData } from './types';
 
-const UNREAD_BASELINES_PATH = '_agents/unread_baselines.json';
 const ACTIVE_JOBS_FILE_PATH = '_agents/slideflow_active_jobs.json';
 const JOBS_BLOCK_START = '<!-- SLIDEFLOW_AGY_JOBS_START -->';
 const JOBS_BLOCK_END = '<!-- SLIDEFLOW_AGY_JOBS_END -->';
@@ -145,7 +144,6 @@ interface RankedProjectRow {
 	effectiveScore: number | null;
 	baseScore: number | null;
 	trendArrow: string;
-	isModified: boolean;
 	deadlineDisp: string;
 	milestoneDisp: string;
 }
@@ -178,22 +176,6 @@ function computeTrendArrow(stats?: ProjectStats): string {
 	if (curr > prev + 0.01) return '🟢 ↑';
 	if (curr < prev - 0.01) return '🔴 ↓';
 	return '➖';
-}
-
-async function loadUnreadNotesSet(app: App): Promise<Set<string>> {
-	const set = new Set<string>();
-	const adapter = app.vault.adapter;
-	if (!(await adapter.exists(UNREAD_BASELINES_PATH))) {
-		return set;
-	}
-	const raw = await adapter.read(UNREAD_BASELINES_PATH);
-	const parsed = JSON.parse(raw);
-	if (parsed && typeof parsed === 'object' && parsed.notes && typeof parsed.notes === 'object') {
-		for (const key of Object.keys(parsed.notes)) {
-			set.add(key.replace(/\\/g, '/').replace(/^\/+/, ''));
-		}
-	}
-	return set;
 }
 
 function extractPreservedQuotaBlock(existingContent: string): string[] {
@@ -230,7 +212,6 @@ export async function updateProjectDashboardFile(plugin: any, statsOverride?: St
 	const deadlineProp = plugin.settings?.deadlineProperty || 'deadline';
 	const milestoneProp = plugin.settings?.milestoneProperty || 'milestone';
 
-	const unreadNotes = await loadUnreadNotesSet(app).catch(() => new Set<string>());
 	const mdFiles = app.vault.getMarkdownFiles();
 	const now = new Date();
 
@@ -263,7 +244,6 @@ export async function updateProjectDashboardFile(plugin: any, statsOverride?: St
 			projectStats.currentScore === null;
 
 		const normPath = file.path.replace(/\\/g, '/').replace(/^\/+/, '');
-		const isModified = unreadNotes.has(normPath);
 
 		if (isUnreviewed) {
 			newRows.push({
@@ -273,7 +253,6 @@ export async function updateProjectDashboardFile(plugin: any, statsOverride?: St
 				effectiveScore: null,
 				baseScore: null,
 				trendArrow: '🆕',
-				isModified,
 				deadlineDisp,
 				milestoneDisp,
 			});
@@ -298,7 +277,6 @@ export async function updateProjectDashboardFile(plugin: any, statsOverride?: St
 			effectiveScore: temporalRes.effectiveScore,
 			baseScore,
 			trendArrow: computeTrendArrow(projectStats),
-			isModified,
 			deadlineDisp,
 			milestoneDisp,
 		});
@@ -329,8 +307,8 @@ export async function updateProjectDashboardFile(plugin: any, statsOverride?: St
 		...quotaLines,
 		...(activeJobsLines.length > 0 ? ['', ...activeJobsLines] : []),
 		'',
-		'| Title | Score | Diff | Deadline | Milestone |',
-		'| :--- | :---: | :---: | :---: | :---: |',
+		'| Title | Score | Deadline | Milestone |',
+		'| :--- | :---: | :---: | :---: |',
 	];
 
 	for (const row of allRows) {
@@ -340,8 +318,7 @@ export async function updateProjectDashboardFile(plugin: any, statsOverride?: St
 			row.effectiveScore !== null
 				? `${row.effectiveScore.toFixed(2)} ${row.trendArrow}`.trim()
 				: `NEW ${row.trendArrow}`.trim();
-		const diffCell = row.isModified ? '●' : '-';
-		out.push(`| ${titleLink} | ${scoreStr} | ${diffCell} | ${row.deadlineDisp} | ${row.milestoneDisp} |`);
+		out.push(`| ${titleLink} | ${scoreStr} | ${row.deadlineDisp} | ${row.milestoneDisp} |`);
 	}
 
 	const nextContent = out.join('\n') + '\n';
