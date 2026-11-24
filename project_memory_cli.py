@@ -4772,197 +4772,6 @@ def format_project_table(projects, verbose=False, vault_dir=VAULT_DIR):
     return "\n".join(lines)
 
 
-_RUNTIME_QUOTA_CACHE: Optional[Tuple[List[str], List[str]]] = None
-_RUNTIME_QUOTA_TIME: float = 0.0
-
-
-def _fetch_agy_usage() -> dict:
-    agy_candidates = [
-        Path(os.environ.get("LOCALAPPDATA", "")) / "agy" / "bin" / "agy.exe",
-        Path.home() / "AppData" / "Local" / "agy" / "bin" / "agy.exe",
-        Path(r"C:\Users\Jamet\AppData\Local\agy\bin\agy.exe"),
-    ]
-    agy_exe = shutil.which("agy")
-    if not agy_exe:
-        for cand in agy_candidates:
-            if cand.is_file():
-                agy_exe = str(cand)
-                break
-    if not agy_exe:
-        raise FileNotFoundError("Exécutable `agy.exe` introuvable.")
-
-    cmd = [agy_exe, "--output-format", "json", "-p", "/usage"]
-    proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
-    if proc.returncode != 0:
-        raise RuntimeError(f"agy.exe returned exit {proc.returncode}: {proc.stderr or proc.stdout}")
-    return json.loads(proc.stdout)
-
-
-def _fetch_claude_usage() -> dict:
-    claude_subagent_path = Path(__file__).resolve().parent / "claude_subagent.py"
-    if not claude_subagent_path.is_file():
-        cand = Path(r"C:\Users\Jamet\Documents\VoiceNotes\_agents\scripts-for-skills\claude_subagent.py")
-        if cand.is_file():
-            claude_subagent_path = cand
-    if str(claude_subagent_path.parent) not in sys.path:
-        sys.path.insert(0, str(claude_subagent_path.parent))
-    import claude_subagent
-    try:
-        quota = claude_subagent.fetch_claude_quota()
-        if not quota:
-            return {"error": "empty_quota", "message": "fetch_claude_quota a renvoyé un résultat vide"}
-        return quota
-    except Exception as exc:
-        return {"error": "fetch_error", "message": str(exc)}
-
-
-
-def _format_quota_duration_short(sec: float) -> str:
-    sec = max(0.0, sec)
-    if sec >= 86400:
-        d = int(sec // 86400)
-        h = int((sec % 86400) // 3600)
-        return f"{d}j {h:02d}h"
-    h = int(sec // 3600)
-    m = int((sec % 3600) // 60)
-    return f"{h}h {m:02d}m"
-
-
-def _format_quota_date_fr(iso_str: str) -> str:
-    d = datetime.fromisoformat(iso_str.replace("Z", "+00:00")).astimezone()
-    days_map = {"Mon": "lun.", "Tue": "mar.", "Wed": "mer.", "Thu": "jeu.", "Fri": "ven.", "Sat": "sam.", "Sun": "dim."}
-    day_fr = days_map.get(d.strftime("%a"), d.strftime("%a").lower())
-    return f"{day_fr} {d.strftime('%Hh%M')}"
-
-
-def _eval_quota_bucket(used_5h: float, used_7d: float, rem_hours_7d: float) -> Tuple[float, float, str, str]:
-    elapsed_fraction = max(0.0, min(1.0, (168.0 - rem_hours_7d) / 168.0))
-    target_used_pct = 96.0 * elapsed_fraction
-    delta = used_7d - target_used_pct
-    if used_5h >= 85.0 or used_7d >= 96.0:
-        v_md = "🔴 **PAUSE (Quota 5h ou 7j presque épuisé)**"
-        v_cli = "🔴 PAUSE (Quota 5h ou 7j presque épuisé)"
-    elif used_7d == 0.0 or delta < -8.0:
-        v_md = "🟢 **UTILISER PLUS**"
-        v_cli = "🟢 UTILISER PLUS"
-    elif -8.0 <= delta <= 8.0:
-        v_md = "🟡 **RYTHME OPTIMAL**"
-        v_cli = "🟡 RYTHME OPTIMAL"
-    else:
-        v_md = "🟠 **UTILISER MOINS**"
-        v_cli = "🟠 UTILISER MOINS"
-    return target_used_pct, delta, v_md, v_cli
-
-
-def get_realtime_quota_indicators(force_refresh: bool = False) -> Tuple[List[str], List[str]]:
-    """
-    Récupère en direct depuis les APIs officielles (agy.exe et Anthropic OAuth via claude_subagent.py)
-    les 3 indicateurs de couleur de rythme de consommation de quota (ZÉRO estimation locale).
-    Retourne (lignes_markdown, lignes_console).
-    """
-    global _RUNTIME_QUOTA_CACHE, _RUNTIME_QUOTA_TIME
-    if not force_refresh and _RUNTIME_QUOTA_CACHE is not None and (time.time() - _RUNTIME_QUOTA_TIME) < 30.0:
-        return _RUNTIME_QUOTA_CACHE
-
-    now = datetime.now(timezone.utc)
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        f_agy = executor.submit(_fetch_agy_usage)
-        f_claude = executor.submit(_fetch_claude_usage)
-        try:
-            agy_data = f_agy.result()
-        except Exception as e_agy:
-            agy_data = {"error": "agy_error", "message": str(e_agy)}
-        try:
-            claude_data = f_claude.result()
-        except Exception as e_claude:
-            claude_data = {"error": "claude_error", "message": str(e_claude)}
-
-    md_lines = ["> ⚡ **Indicateurs de Quotas (Cible : tout utiliser pile en fin de semaine)** :"]
-    cli_lines = ["⚡ Indicateurs de Quotas (Cible : tout utiliser pile en fin de semaine) :"]
-
-    if agy_data and not agy_data.get("error"):
-        groups = agy_data.get("command", {}).get("data", {}).get("groups", [])
-        gemini_group = next((g for g in groups if g.get("name") == "Gemini Models"), None)
-        claude_group = next((g for g in groups if g.get("name") == "Claude and GPT models"), None)
-
-        if gemini_group:
-            b_gem_w = next(b for b in gemini_group["buckets"] if b.get("window") == "weekly")
-            b_gem_5 = next(b for b in gemini_group["buckets"] if b.get("window") == "5h")
-
-            rem_7d = b_gem_w["remaining_fraction"] * 100.0
-            used_7d = 100.0 - rem_7d
-            rem_5h = b_gem_5["remaining_fraction"] * 100.0
-            used_5h = 100.0 - rem_5h
-
-            rst_7d_dt = datetime.fromisoformat(b_gem_w["reset_time"].replace("Z", "+00:00"))
-            rem_7d_sec = max(0.0, (rst_7d_dt - now).total_seconds())
-
-            target_used, delta, v_md, v_cli = _eval_quota_bucket(used_5h, used_7d, rem_7d_sec / 3600.0)
-            target_rem = 100.0 - target_used
-
-            md_lines.append(
-                f"> - **Antigravity Gemini** : {v_md} — {rem_7d:.0f}%/{target_rem:.0f}%"
-            )
-            cli_lines.append(
-                f"- Antigravity Gemini : {v_cli} — {rem_7d:.0f}%/{target_rem:.0f}%"
-            )
-
-        if claude_group:
-            b_cl_w = next(b for b in claude_group["buckets"] if b.get("window") == "weekly")
-            b_cl_5 = next(b for b in claude_group["buckets"] if b.get("window") == "5h")
-
-            rem_7d = b_cl_w["remaining_fraction"] * 100.0
-            used_7d = 100.0 - rem_7d
-            rem_5h = b_cl_5["remaining_fraction"] * 100.0
-            used_5h = 100.0 - rem_5h
-
-            rst_7d_dt = datetime.fromisoformat(b_cl_w["reset_time"].replace("Z", "+00:00"))
-            rem_7d_sec = max(0.0, (rst_7d_dt - now).total_seconds())
-
-            target_used, delta, v_md, v_cli = _eval_quota_bucket(used_5h, used_7d, rem_7d_sec / 3600.0)
-            target_rem = 100.0 - target_used
-
-            md_lines.append(
-                f"> - **Antigravity Claude** : {v_md} — {rem_7d:.0f}%/{target_rem:.0f}%"
-            )
-            cli_lines.append(
-                f"- Antigravity Claude : {v_cli} — {rem_7d:.0f}%/{target_rem:.0f}%"
-            )
-
-    if claude_data:
-        if claude_data.get("error"):
-            err_msg = claude_data.get("message", "erreur inconnue")
-            md_lines.append(f"> - **Claude Code (Opus)** : ⚠️ **Indicateur indisponible** (*{err_msg}*)")
-            cli_lines.append(f"- Claude Code (Opus) : ⚠️ Indicateur indisponible ({err_msg})")
-        else:
-            fh = claude_data.get("five_hour", {})
-            sd = claude_data.get("seven_day", {})
-
-            used_5h = float(fh.get("utilization", 0.0))
-            used_7d = float(sd.get("utilization", 0.0))
-            rem_7d = 100.0 - used_7d
-            rem_5h = 100.0 - used_5h
-
-            rst_7d_str = sd.get("resets_at")
-            rst_7d_dt = datetime.fromisoformat(rst_7d_str.replace("Z", "+00:00")) if rst_7d_str else None
-            rem_7d_sec = max(0.0, (rst_7d_dt - now).total_seconds()) if rst_7d_dt else 0.0
-
-            target_used, delta, v_md, v_cli = _eval_quota_bucket(used_5h, used_7d, rem_7d_sec / 3600.0)
-            target_rem = 100.0 - target_used
-
-            md_lines.append(
-                f"> - **Claude Code (Opus)** : {v_md} — {rem_7d:.0f}%/{target_rem:.0f}%"
-            )
-            cli_lines.append(
-                f"- Claude Code (Opus) : {v_cli} — {rem_7d:.0f}%/{target_rem:.0f}%"
-            )
-
-    _RUNTIME_QUOTA_CACHE = (md_lines, cli_lines)
-    _RUNTIME_QUOTA_TIME = time.time()
-    return _RUNTIME_QUOTA_CACHE
-
-
 def sync_project_diff_paths_for_current_host(vault_dir: str = VAULT_DIR) -> int:
     """
     Scanne tous les fichiers _agents/project_diffs/🤖 *.md et réécrit les chemins
@@ -4979,154 +4788,6 @@ def sync_project_diff_paths_for_current_host(vault_dir: str = VAULT_DIR) -> int:
             diff_file.write_text(rewritten, encoding="utf-8")
             updated += 1
     return updated
-
-
-def _is_pid_alive(pid: Optional[int]) -> bool:
-    if not pid or not isinstance(pid, int) or pid <= 0:
-        return False
-    if os.name == "nt":
-        try:
-            import ctypes
-            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-            STILL_ACTIVE = 259
-            h = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-            if not h:
-                return False
-            try:
-                code = ctypes.c_ulong()
-                if ctypes.windll.kernel32.GetExitCodeProcess(h, ctypes.byref(code)):
-                    return code.value == STILL_ACTIVE
-                return False
-            finally:
-                ctypes.windll.kernel32.CloseHandle(h)
-        except Exception:
-            return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-
-
-def _render_slideflow_active_jobs_block(vault_dir: str, dashboard_filename: str = DASHBOARD_FILENAME) -> list[str]:
-    jobs_file = os.path.join(vault_dir, "_agents", "slideflow_active_jobs.json")
-    if not os.path.isfile(jobs_file):
-        return []
-    try:
-        with open(jobs_file, "r", encoding="utf-8") as f:
-            payload = json.load(f)
-        raw_jobs = payload.get("jobs", []) if isinstance(payload, dict) else []
-    except Exception:
-        return []
-
-    now_ts = time.time()
-    kept = []
-    changed = False
-
-    for job in raw_jobs:
-        if not isinstance(job, dict):
-            continue
-        item = dict(job)
-        if item.get("status") == "running" and item.get("pid") and not _is_pid_alive(item.get("pid")):
-            item["status"] = "error"
-            item["exitCode"] = item.get("exitCode") if item.get("exitCode") is not None else -1
-            item["errorSummary"] = item.get("errorSummary") or f"PID {item.get('pid')} terminé sans code de succès confirmé"
-            item["finishedAt"] = item.get("finishedAt") or datetime.now(timezone.utc).isoformat()
-            changed = True
-        if item.get("status") == "running":
-            kept.append(item)
-            continue
-        ts_str = item.get("finishedAt") or item.get("startedAt") or ""
-        try:
-            dt_obj = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-            age_s = now_ts - dt_obj.timestamp()
-        except Exception:
-            age_s = 1e9
-        limit_s = 3600 if item.get("status") == "error" else 900
-        if age_s <= limit_s:
-            kept.append(item)
-        else:
-            changed = True
-
-    if changed:
-        try:
-            with open(jobs_file, "w", encoding="utf-8") as f:
-                json.dump({"version": 1, "jobs": kept}, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
-
-    if not kept:
-        return []
-
-    def _fmt_hhmm(iso_str: str) -> str:
-        try:
-            dt_obj = datetime.fromisoformat(iso_str.replace("Z", "+00:00")).astimezone()
-            return dt_obj.strftime("%H:%M")
-        except Exception:
-            return "--:--"
-
-    norm_dash = (dashboard_filename or DASHBOARD_FILENAME).replace("\\", "/").lstrip("/").strip()
-    base_dash = norm_dash.split("/")[-1]
-    base_no_ext = base_dash[:-3] if base_dash.lower().endswith(".md") else base_dash
-    norm_no_ext = norm_dash[:-3] if norm_dash.lower().endswith(".md") else norm_dash
-    dash_keys = {norm_dash.lower(), norm_no_ext.lower(), base_dash.lower(), base_no_ext.lower()}
-
-    def _fmt_notes(notes_list) -> str:
-        uniq = list(dict.fromkeys(str(n) for n in (notes_list or []) if n))
-        if not uniq:
-            return "Revue SlideFlow"
-        regular = []
-        dash = []
-        for n in uniq:
-            low = n.replace("\\", "/").lstrip("/").strip().lower()
-            low_no_ext = low[:-3] if low.endswith(".md") else low
-            if low in dash_keys or low_no_ext in dash_keys:
-                dash.append(n)
-            else:
-                regular.append(n)
-        ordered = regular + dash
-        if len(ordered) == 1:
-            return ordered[0]
-        extra = len(ordered) - 1
-        return f"{ordered[0]} (+{extra} note{'s' if extra > 1 else ''})"
-
-    running = [j for j in kept if j.get("status") == "running"]
-    recent = [j for j in kept if j.get("status") != "running"]
-    out = ["<!-- SLIDEFLOW_AGY_JOBS_START -->"]
-    if running:
-        out.append(f"> 🤖 **Commandes `agy` en cours ({len(running)})** :")
-        for j in running:
-            label = _fmt_notes(j.get("notes"))
-            cnt = int(j.get("commentCount") or 0)
-            model_part = f" · `{j['model']}`" if j.get("model") else ""
-            pid_part = f" · PID `{j['pid']}`" if j.get("pid") else ""
-            t_str = _fmt_hhmm(j.get("startedAt") or "")
-            out.append(
-                f"> - ⏳ **{label}** · `{cnt} commentaire{'s' if cnt > 1 else ''}`{model_part} · démarré à `{t_str}`{pid_part}"
-            )
-    else:
-        out.append("> 🤖 **Dernières exécutions `agy`** :")
-
-    for j in recent:
-        label = _fmt_notes(j.get("notes"))
-        cnt = int(j.get("commentCount") or 0)
-        model_part = f" · `{j['model']}`" if j.get("model") else ""
-        fin_str = _fmt_hhmm(j.get("finishedAt") or j.get("startedAt") or "")
-        if j.get("status") == "done":
-            out.append(
-                f"> - ✅ **{label}** · `{cnt} commentaire{'s' if cnt > 1 else ''}`{model_part} · terminé à `{fin_str}`"
-            )
-        else:
-            err_s = (j.get("errorSummary") or "").strip()[:120]
-            err_part = f" — {err_s}" if err_s else ""
-            out.append(
-                f"> - ❌ **{label}** · `{cnt} commentaire{'s' if cnt > 1 else ''}`{model_part} · échec `exit {j.get('exitCode', '?')}` à `{fin_str}`{err_part}"
-            )
-
-    out.append("<!-- SLIDEFLOW_AGY_JOBS_END -->")
-    return out
 
 
 def write_root_dashboard(vault_dir=VAULT_DIR, data=None, projects=None, show_progress: bool = False, quiet: Optional[bool] = None) -> str:
@@ -5201,22 +4862,12 @@ def write_root_dashboard(vault_dir=VAULT_DIR, data=None, projects=None, show_pro
     n_unrev = len(unreviewed)
     active_summary = f"{n_rev} révisés" + (f", {n_unrev} non révisés" if n_unrev > 0 else "")
 
-    md_quota_lines, _ = get_realtime_quota_indicators()
-
     lines = [
         "# 🎯 Tableau de Bord des Projets",
         "",
         f"> 🔄 **Dernière mise à jour** : {now_str} · **Projets actifs** : {active_summary}",
+        "",
     ]
-    if md_quota_lines:
-        lines.append(">")
-        lines.extend(md_quota_lines)
-    configured_dashboard = (data.get("projectFile") or "").strip() if isinstance(data, dict) else ""
-    active_jobs_lines = _render_slideflow_active_jobs_block(vault_dir, configured_dashboard or DASHBOARD_FILENAME)
-    if active_jobs_lines:
-        lines.append("")
-        lines.extend(active_jobs_lines)
-    lines.append("")
 
     if unreviewed:
         lines.append("## 🆕 Projets non révisés")
@@ -5251,12 +4902,6 @@ def cmd_dashboard(args, data):
     elapsed = time.time() - t0
     if is_json:
         print(json.dumps({"status": "ok", "path": target_path, "active_projects": active_count, "elapsed_seconds": round(elapsed, 2)}))
-    else:
-        _, cli_quota_lines = get_realtime_quota_indicators()
-        if cli_quota_lines:
-            print()
-            for ql in cli_quota_lines:
-                print(ql)
 
 
 def clean_orphans(vault_dir=VAULT_DIR, data_path=DATA_JSON_PATH, cache_path=CACHE_PATH, dry_run=False):
@@ -5392,11 +5037,6 @@ def cmd_list(args, data):
     else:
         verbose = getattr(args, "verbose", False) or getattr(args, "debug", False)
         role_label = "🤖 Mode Autonome Agent : " if is_agent_mode else ""
-        _, cli_quota_lines = get_realtime_quota_indicators()
-        if cli_quota_lines:
-            for ql in cli_quota_lines:
-                print(ql)
-            print()
         if show_unreviewed_only:
             print(f"=== {role_label}🆕 Unreviewed Projects ({len(unreviewed)} projects awaiting initial evaluation) ===")
             print(format_project_table(unreviewed_disp, verbose=verbose) if unreviewed_disp else "  (No unreviewed projects)")

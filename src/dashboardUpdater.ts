@@ -2,157 +2,14 @@
  * dashboardUpdater.ts — Met à jour automatiquement le fichier "Project File" (ex. 🎯 Projets.md)
  * à chaque modification de score dans Project Memory, avec des liens Markdown relatifs natifs
  * compatibles Obsidian, SlideFlow et Antigravity (zéro file:///).
+ *
+ * Note : les commandes `agy` et les indicateurs de quotas IA (Antigravity Gemini, Antigravity
+ * Claude, Claude Code Opus) vivent exclusivement dans la sidebar SlideFlow AGY.
  */
 
 import { App, TFile } from 'obsidian';
 import { calculateTemporalBonus, isEligibleProject } from './statsUtils';
 import { ProjectStats, StatsData } from './types';
-
-const ACTIVE_JOBS_FILE_PATH = '_agents/slideflow_active_jobs.json';
-const JOBS_BLOCK_START = '<!-- SLIDEFLOW_AGY_JOBS_START -->';
-const JOBS_BLOCK_END = '<!-- SLIDEFLOW_AGY_JOBS_END -->';
-
-interface SlideFlowCliJob {
-	id: string;
-	pid: number | null;
-	cli: string;
-	model: string;
-	status: 'running' | 'done' | 'error';
-	startedAt: string;
-	finishedAt?: string | null;
-	exitCode?: number | null;
-	commentCount: number;
-	notes: string[];
-	errorSummary?: string | null;
-}
-
-function isPidAlive(pid: number | null | undefined): boolean {
-	if (!pid || !Number.isInteger(pid) || pid <= 0) return false;
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (err: any) {
-		return Boolean(err && err.code === 'EPERM');
-	}
-}
-
-function formatHHMM(iso: string): string {
-	const d = new Date(iso);
-	if (isNaN(d.getTime())) return '--:--';
-	return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-}
-
-function formatNotesLabel(notes: string[], dashboardPath: string = '🎯 Projets.md'): string {
-	if (!notes || notes.length === 0) return 'Revue SlideFlow';
-	const normDash = (dashboardPath || '🎯 Projets.md').replace(/\\/g, '/').replace(/^\/+/, '').trim();
-	const baseDash = (normDash.split('/').pop() || normDash).replace(/\.md$/i, '').toLowerCase();
-	const normDashNoExt = normDash.replace(/\.md$/i, '').toLowerCase();
-	const dashKeys = new Set([normDash.toLowerCase(), normDashNoExt, `${baseDash}.md`, baseDash]);
-
-	const unique = Array.from(new Set(notes.filter(Boolean)));
-	const regular: string[] = [];
-	const dash: string[] = [];
-	for (const n of unique) {
-		const low = n.replace(/\\/g, '/').replace(/^\/+/, '').trim().toLowerCase();
-		const lowNoExt = low.replace(/\.md$/i, '');
-		if (dashKeys.has(low) || dashKeys.has(lowNoExt)) {
-			dash.push(n);
-		} else {
-			regular.push(n);
-		}
-	}
-	const ordered = [...regular, ...dash];
-	if (ordered.length === 1) return ordered[0];
-	return `${ordered[0]} (+${ordered.length - 1} note${ordered.length - 1 > 1 ? 's' : ''})`;
-}
-
-async function renderActiveAgyJobsBlock(app: App, dashboardPath: string): Promise<string[]> {
-	const adapter = app.vault.adapter;
-	if (!(await adapter.exists(ACTIVE_JOBS_FILE_PATH))) return [];
-	let jobs: SlideFlowCliJob[] = [];
-	try {
-		const raw = await adapter.read(ACTIVE_JOBS_FILE_PATH);
-		const parsed = JSON.parse(raw);
-		if (Array.isArray(parsed?.jobs)) {
-			jobs = parsed.jobs;
-		}
-	} catch {
-		return [];
-	}
-
-	const nowMs = Date.now();
-	const kept: SlideFlowCliJob[] = [];
-	let changed = false;
-	for (const job of jobs) {
-		const copy: SlideFlowCliJob = { ...job };
-		if (copy.status === 'running' && copy.pid && !isPidAlive(copy.pid)) {
-			copy.status = 'error';
-			copy.exitCode = copy.exitCode ?? -1;
-			copy.errorSummary =
-				copy.errorSummary || `PID ${copy.pid} terminé sans code de succès confirmé`;
-			copy.finishedAt = copy.finishedAt || new Date(nowMs).toISOString();
-			changed = true;
-		}
-		if (copy.status === 'running') {
-			kept.push(copy);
-			continue;
-		}
-		const finTime = new Date(copy.finishedAt || copy.startedAt).getTime();
-		const age = isNaN(finTime) ? Infinity : nowMs - finTime;
-		const limit = copy.status === 'error' ? 60 * 60 * 1000 : 15 * 60 * 1000;
-		if (age <= limit) {
-			kept.push(copy);
-		} else {
-			changed = true;
-		}
-	}
-
-	if (changed) {
-		try {
-			await adapter.write(ACTIVE_JOBS_FILE_PATH, JSON.stringify({ version: 1, jobs: kept }, null, 2));
-		} catch {
-			// non-fatal sync error
-		}
-	}
-
-	if (kept.length === 0) return [];
-	const running = kept.filter((j) => j.status === 'running');
-	const recent = kept.filter((j) => j.status !== 'running');
-	const lines: string[] = [JOBS_BLOCK_START];
-
-	if (running.length > 0) {
-		lines.push(`> 🤖 **Commandes \`agy\` en cours (${running.length})** :`);
-		for (const j of running) {
-			const label = formatNotesLabel(j.notes, dashboardPath);
-			const modelPart = j.model ? ` · \`${j.model}\`` : '';
-			const pidPart = j.pid ? ` · PID \`${j.pid}\`` : '';
-			lines.push(
-				`> - ⏳ **${label}** · \`${j.commentCount} commentaire${j.commentCount > 1 ? 's' : ''}\`${modelPart} · démarré à \`${formatHHMM(j.startedAt)}\`${pidPart}`
-			);
-		}
-	} else {
-		lines.push(`> 🤖 **Dernières exécutions \`agy\`** :`);
-	}
-
-	for (const j of recent) {
-		const label = formatNotesLabel(j.notes, dashboardPath);
-		const modelPart = j.model ? ` · \`${j.model}\`` : '';
-		const finStr = formatHHMM(j.finishedAt || j.startedAt);
-		if (j.status === 'done') {
-			lines.push(
-				`> - ✅ **${label}** · \`${j.commentCount} commentaire${j.commentCount > 1 ? 's' : ''}\`${modelPart} · terminé à \`${finStr}\``
-			);
-		} else {
-			const errPart = j.errorSummary ? ` — ${j.errorSummary.slice(0, 120)}` : '';
-			lines.push(
-				`> - ❌ **${label}** · \`${j.commentCount} commentaire${j.commentCount > 1 ? 's' : ''}\`${modelPart} · échec \`exit ${j.exitCode ?? '?'}\` à \`${finStr}\`${errPart}`
-			);
-		}
-	}
-
-	lines.push(JOBS_BLOCK_END);
-	return lines;
-}
 
 interface RankedProjectRow {
 	file: TFile;
@@ -193,28 +50,6 @@ function computeTrendArrow(stats?: ProjectStats): string {
 	if (curr > prev + 0.01) return '🟢 ↑';
 	if (curr < prev - 0.01) return '🔴 ↓';
 	return '➖';
-}
-
-function extractPreservedQuotaBlock(existingContent: string): string[] {
-	const lines = existingContent.replace(/\r\n/g, '\n').split('\n');
-	const preserved: string[] = [];
-	let capturing = false;
-	for (const line of lines) {
-		if (!capturing) {
-			if (line.startsWith('> ⚡')) {
-				capturing = true;
-				preserved.push('>');
-				preserved.push(line);
-			}
-		} else {
-			if (line.startsWith('>')) {
-				preserved.push(line);
-			} else {
-				break;
-			}
-		}
-	}
-	return preserved;
 }
 
 export async function updateProjectDashboardFile(plugin: any, statsOverride?: StatsData): Promise<boolean> {
@@ -314,15 +149,11 @@ export async function updateProjectDashboardFile(plugin: any, statsOverride?: St
 	if (existingAbstract instanceof TFile) {
 		existingContent = await app.vault.read(existingAbstract);
 	}
-	const quotaLines = extractPreservedQuotaBlock(existingContent);
-	const activeJobsLines = await renderActiveAgyJobsBlock(app, normalizedTarget);
 
 	const out: string[] = [
 		'# 🎯 Tableau de Bord des Projets',
 		'',
 		`> 🔄 **Dernière mise à jour** : ${formatLocalTimestamp(now)} · **Projets actifs** : ${reviewedRows.length} révisés${newRows.length > 0 ? ` · ${newRows.length} nouveaux` : ''}`,
-		...quotaLines,
-		...(activeJobsLines.length > 0 ? ['', ...activeJobsLines] : []),
 		'',
 		'| Title | Score | Deadline | Milestone |',
 		'| :--- | :---: | :---: | :---: |',
