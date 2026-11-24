@@ -335,6 +335,10 @@ class UniversalMilestoneParser:
     ) -> MilestoneResolution:
         parts = cron_pattern.split()
         min_spec, hour_spec, dom_spec, mon_spec, dow_spec = parts
+        is_single_intraday = (
+            len(self._expand_cron_field(hour_spec, 0, 23)) == 1
+            and len(self._expand_cron_field(min_spec, 0, 59)) == 1
+        )
 
         # 1. Find most recent past occurrence (within last 366 days)
         past_target: Optional[datetime] = None
@@ -365,7 +369,10 @@ class UniversalMilestoneParser:
         # Check if past occurrence was satisfied
         if past_target:
             past_sat = False
-            if last_sat_dt and (last_sat_dt >= past_target or last_sat_dt.date() >= past_target.date()):
+            if last_sat_dt and (
+                last_sat_dt >= past_target
+                or (is_single_intraday and last_sat_dt.date() >= past_target.date())
+            ):
                 past_sat = True
             if not past_sat:
                 diff_sec = (past_target - now).total_seconds()
@@ -384,10 +391,6 @@ class UniversalMilestoneParser:
 
         # 2. Find next future occurrence
         found_target: Optional[datetime] = None
-        is_single_intraday = (
-            len(self._expand_cron_field(hour_spec, 0, 23)) == 1
-            and len(self._expand_cron_field(min_spec, 0, 59)) == 1
-        )
         cycle_satisfied = bool(
             past_target and last_sat_dt
             and (last_sat_dt >= past_target or last_sat_dt.date() >= past_target.date())
@@ -415,7 +418,10 @@ class UniversalMilestoneParser:
                     if cand_dt <= now:
                         continue
 
-                    if last_sat_dt and (last_sat_dt >= cand_dt or last_sat_dt.date() >= cand_dt.date()):
+                    if last_sat_dt and (
+                        last_sat_dt >= cand_dt
+                        or (is_single_intraday and last_sat_dt.date() >= cand_dt.date())
+                    ):
                         cycle_satisfied = True
                         continue
 
@@ -441,7 +447,12 @@ class UniversalMilestoneParser:
 
         diff = (found_target - now).total_seconds() / 86400.0
         days_rem = max(0.0, diff)
-        urgency = 0.0 if cycle_satisfied else math.exp(-lam * days_rem)
+        eff_lam = lam
+        if not is_single_intraday and past_target:
+            cycle_days = (found_target - past_target).total_seconds() / 86400.0
+            if 0.0 < cycle_days < 1.0:
+                eff_lam = max(lam, 3.0 / cycle_days)
+        urgency = 0.0 if cycle_satisfied else math.exp(-eff_lam * days_rem)
         cycle_id = f"cron_{found_target.strftime('%Y-%m-%d_%H%M')}"
         status_str = " (validé)" if cycle_satisfied else ""
 
@@ -584,13 +595,18 @@ class UniversalMilestoneParser:
         found_target = None
         cycle_satisfied = False
 
+        is_subday = duration_delta < timedelta(days=1)
+
         while True:
             if max_reps is not None and rep_count >= max_reps:
                 break
             if curr_dt <= now:
                 past_target = curr_dt
             else:
-                if last_sat_dt and (last_sat_dt >= curr_dt or last_sat_dt.date() >= curr_dt.date()):
+                if last_sat_dt and (
+                    last_sat_dt >= curr_dt
+                    or (not is_subday and last_sat_dt.date() >= curr_dt.date())
+                ):
                     cycle_satisfied = True
                 else:
                     found_target = curr_dt
@@ -603,7 +619,10 @@ class UniversalMilestoneParser:
         # Check if past target was satisfied
         if past_target:
             past_sat = False
-            if last_sat_dt and (last_sat_dt >= past_target or last_sat_dt.date() >= past_target.date()):
+            if last_sat_dt and (
+                last_sat_dt >= past_target
+                or (not is_subday and last_sat_dt.date() >= past_target.date())
+            ):
                 past_sat = True
             if not past_sat:
                 diff_sec = (past_target - now).total_seconds()
@@ -635,7 +654,12 @@ class UniversalMilestoneParser:
 
         diff_sec = (found_target - now).total_seconds()
         days_rem = max(0.0, diff_sec / 86400.0)
-        urgency = 0.0 if cycle_satisfied else math.exp(-lam * days_rem)
+        eff_lam = lam
+        if is_subday:
+            cycle_days = duration_delta.total_seconds() / 86400.0
+            if cycle_days > 0.0:
+                eff_lam = max(lam, 3.0 / cycle_days)
+        urgency = 0.0 if cycle_satisfied else math.exp(-eff_lam * days_rem)
         cycle_id = f"interval_{found_target.strftime('%Y%m%d_%H%M')}"
         status_str = " (validé)" if cycle_satisfied else ""
 
