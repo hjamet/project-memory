@@ -231,8 +231,7 @@ export default class ProjectsMemoryPlugin extends Plugin {
 				const memProj = data.projects[key];
 				mergedProjects[key] = {
 					...diskProj,
-					...memProj,
-					agent: memProj.agent ? { ...(diskProj.agent ?? {}), ...memProj.agent } : diskProj.agent
+					...memProj
 				};
 			} else {
 				mergedProjects[key] = data.projects[key];

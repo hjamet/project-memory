@@ -418,45 +418,6 @@
     flex-shrink: 0;
 }
 
-/* Mode Tabs (Humain vs Agent) */
-.projects-memory-stats-modal .stats-mode-tabs {
-    display: flex;
-    justify-content: center;
-    gap: 0.75rem;
-    margin-bottom: 1.25rem;
-    flex-shrink: 0;
-}
-
-.projects-memory-stats-modal .stats-mode-tab-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem 1.25rem;
-    border-radius: 999px;
-    border: 1px solid var(--background-modifier-border);
-    background: var(--background-secondary);
-    color: var(--text-muted);
-    font-size: 0.9rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.25s cubic-bezier(0.2, 0.9, 0.2, 1);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
-}
-
-.projects-memory-stats-modal .stats-mode-tab-btn:hover {
-    background: var(--background-modifier-hover);
-    color: var(--text-normal);
-    transform: translateY(-1px);
-    box-shadow: 0 3px 8px rgba(0, 0, 0, 0.08);
-}
-
-.projects-memory-stats-modal .stats-mode-tab-btn.is-active {
-    background: linear-gradient(135deg, var(--interactive-accent), var(--interactive-accent-hover, #4f46e5));
-    color: var(--text-on-accent, white);
-    border-color: transparent;
-    box-shadow: 0 4px 14px rgba(var(--interactive-accent-rgb, 79, 70, 229), 0.35);
-}
-
 /* Stats Summary Banner */
 .projects-memory-stats-modal .stats-summary-banner {
     display: flex;

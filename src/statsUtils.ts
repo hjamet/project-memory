@@ -664,34 +664,10 @@ export function computeSearchSimilarity(projectName: string, searchTerm: string)
 }
 
 /**
- * Helper to extract project statistics source depending on active mode ('human' | 'agent').
- * Excludes projects that do not belong to the requested mode.
- */
-export function getProjectStatSource(projectEntry: any, mode: 'human' | 'agent' = 'human'): any {
-    if (!projectEntry) return null;
-    if (mode === 'agent') {
-        const agent = projectEntry.agent;
-        if (agent && ((agent.totalReviews && agent.totalReviews > 0) || (agent.reviewHistory && agent.reviewHistory.length > 0))) {
-            return agent;
-        }
-        return null;
-    }
-    // mode === 'human'
-    const isPureAgentOnly = (projectEntry.totalReviews || 0) === 0 &&
-        (!projectEntry.reviewHistory || projectEntry.reviewHistory.length === 0) &&
-        (projectEntry.agent?.totalReviews && projectEntry.agent.totalReviews > 0);
-    if (isPureAgentOnly) {
-        return null;
-    }
-    return projectEntry;
-}
-
-/**
  * Process stats data into chart-ready datasets using the replay mechanism.
  */
 export function processStatsData(statsData: any, options: StatsProcessingOptions): ProcessedChartData {
     const { daysLimit, projectsLimit, searchTerm, selectedProjects, plugin, deadlines } = options;
-    const mode = options.mode || 'human';
 
     // Generate date labels
     let dateLabels: string[] = [];
@@ -708,13 +684,7 @@ export function processStatsData(statsData: any, options: StatsProcessingOptions
     // Filter archived projects
     const allProjectPaths = filterArchivedProjects(Object.keys(statsData.projects), plugin);
 
-    // Filter eligible projects for the requested mode
-    const allEligiblePaths: string[] = [];
-    for (const p of allProjectPaths) {
-        if (getProjectStatSource(statsData.projects[p], mode) !== null) {
-            allEligiblePaths.push(p);
-        }
-    }
+    const allEligiblePaths: string[] = allProjectPaths;
 
     if (allEligiblePaths.length === 0) {
         return {
@@ -732,7 +702,7 @@ export function processStatsData(statsData: any, options: StatsProcessingOptions
     // Map projects with scores and search relevance
     const mappedProjects = allEligiblePaths.map(projectPath => {
         const projectName = projectPath.split('/').pop()?.replace('.md', '') || projectPath;
-        const source = getProjectStatSource(statsData.projects[projectPath], mode);
+        const source = statsData.projects[projectPath];
         const score = (source && typeof source.effectiveScore === 'number')
             ? source.effectiveScore
             : (((source?.currentScore ?? 0) + (source?.rotationBonus ?? 0)));
@@ -779,7 +749,7 @@ export function processStatsData(statsData: any, options: StatsProcessingOptions
 
     const allEvents: ReviewEvent[] = [];
     allEligiblePaths.forEach(path => {
-        const proj = getProjectStatSource(statsData.projects[path], mode);
+        const proj = statsData.projects[path];
         if (proj && proj.reviewHistory && Array.isArray(proj.reviewHistory)) {
             proj.reviewHistory.forEach((r: any) => {
                 allEvents.push({
@@ -796,7 +766,7 @@ export function processStatsData(statsData: any, options: StatsProcessingOptions
     // Setup replay state
     const projectStates: { [path: string]: { currentScore: number; bonusSnapshot: number } } = {};
     allEligiblePaths.forEach(p => {
-        const s = getProjectStatSource(statsData.projects[p], mode);
+        const s = statsData.projects[p];
         projectStates[p] = {
             currentScore: s?.currentScore ?? s?.baseScore ?? 0,
             bonusSnapshot: 0
@@ -804,7 +774,7 @@ export function processStatsData(statsData: any, options: StatsProcessingOptions
     });
     let globalRotationAccumulator = 0;
     const rotationBonusAmount = (plugin as any).settings?.rotationBonus || 0.3;
-    const pomodoroDuration = mode === 'agent' ? 45 : ((plugin as any)?.settings?.pomodoroDuration || 45);
+    const pomodoroDuration = (plugin as any)?.settings?.pomodoroDuration || 45;
 
     // Prepare dataset maps
     const realScoreMap: { [path: string]: (number | null)[] } = {};
@@ -899,7 +869,7 @@ export function processStatsData(statsData: any, options: StatsProcessingOptions
 
     // Count recentWorkDates non-duplicated with reviewHistory
     projectNames.forEach(path => {
-        const source = getProjectStatSource(statsData.projects[path], mode);
+        const source = statsData.projects[path];
         if (source?.recentWorkDates && Array.isArray(source.recentWorkDates)) {
             for (const rw of source.recentWorkDates) {
                 const rwDateStr = typeof rw === 'string' ? rw : (rw?.date ? String(rw.date) : '');
@@ -1009,7 +979,6 @@ export function processStatsData(statsData: any, options: StatsProcessingOptions
 export function calculateProjectStats(
     statsData: any,
     plugin: Plugin,
-    mode: 'human' | 'agent' = 'human',
     daysLimit?: number
 ): ProjectStatEntry[] {
     if (!statsData || !statsData.projects) return [];
@@ -1019,7 +988,7 @@ export function calculateProjectStats(
     const eligibleSources: { [path: string]: any } = {};
 
     for (const projectPath of allPaths) {
-        const source = getProjectStatSource(statsData.projects[projectPath], mode);
+        const source = statsData.projects[projectPath];
         if (source) {
             eligiblePaths.push(projectPath);
             eligibleSources[projectPath] = source;
@@ -1032,7 +1001,7 @@ export function calculateProjectStats(
     const rf = Number(pluginAny?.settings?.rapprochementFactor ?? pluginAny?.settings?.rapprochmentFactor ?? 0.2);
     const nowMs = Date.now();
     const sixHoursMs = 6 * 60 * 60 * 1000;
-    const pomodoroDuration = mode === 'agent' ? 45 : (pluginAny?.settings?.pomodoroDuration || 45);
+    const pomodoroDuration = pluginAny?.settings?.pomodoroDuration || 45;
 
     const cutoffDate = (daysLimit && daysLimit > 0)
         ? new Date(nowMs - daysLimit * 24 * 60 * 60 * 1000)

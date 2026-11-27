@@ -24,7 +24,6 @@ export default class StatsModal extends Modal {
     private projectsLimit: number = 10;
     private searchTerm: string = '';
     private selectedProjects: Set<string> = new Set<string>();
-    private activeMode: 'human' | 'agent' = 'human';
 
     constructor(app: App, plugin: Plugin) {
         super(app);
@@ -39,9 +38,6 @@ export default class StatsModal extends Modal {
         const titleEl = this.contentEl.createEl('h2', { text: 'Statistiques des Projets' });
         titleEl.style.textAlign = 'center';
         titleEl.style.marginBottom = '1rem';
-
-        // Create mode tabs
-        this.createModeTabs();
 
         // Create search container
         this.createSearchContainer();
@@ -87,49 +83,6 @@ export default class StatsModal extends Modal {
         }
     }
 
-    private createModeTabs(): void {
-        const tabsContainer = this.contentEl.createEl('div', { cls: 'stats-mode-tabs' });
-
-        const humanBtn = tabsContainer.createEl('button', {
-            text: '👤 Mes Statistiques (Humain)',
-            cls: `stats-mode-tab-btn ${this.activeMode === 'human' ? 'is-active' : ''}`
-        });
-
-        const agentBtn = tabsContainer.createEl('button', {
-            text: '🤖 Statistiques Agent (/advance)',
-            cls: `stats-mode-tab-btn ${this.activeMode === 'agent' ? 'is-active' : ''}`
-        });
-
-        humanBtn.addEventListener('click', async () => {
-            if (this.activeMode !== 'human') {
-                this.activeMode = 'human';
-                this.selectedProjects.clear();
-                await this.refreshCharts();
-                this.updateModeTabsActiveState();
-            }
-        });
-
-        agentBtn.addEventListener('click', async () => {
-            if (this.activeMode !== 'agent') {
-                this.activeMode = 'agent';
-                this.selectedProjects.clear();
-                await this.refreshCharts();
-                this.updateModeTabsActiveState();
-            }
-        });
-    }
-
-    private updateModeTabsActiveState(): void {
-        const btns = this.contentEl.querySelectorAll('.stats-mode-tab-btn');
-        btns.forEach((btn, idx) => {
-            if ((idx === 0 && this.activeMode === 'human') || (idx === 1 && this.activeMode === 'agent')) {
-                btn.classList.add('is-active');
-            } else {
-                btn.classList.remove('is-active');
-            }
-        });
-    }
-
     /**
      * Delegate to the shared processStatsData with this modal's current options.
      */
@@ -140,8 +93,7 @@ export default class StatsModal extends Modal {
             searchTerm: this.searchTerm,
             selectedProjects: this.selectedProjects,
             plugin: this.plugin,
-            deadlines: this.deadlines,
-            mode: this.activeMode
+            deadlines: this.deadlines
         });
     }
 
@@ -159,7 +111,7 @@ export default class StatsModal extends Modal {
 
         // Summary banner
         const summaryBanner = chartsContainer.createEl('div', { cls: 'stats-summary-banner' });
-        const activeProjects = calculateProjectStats(statsData, this.plugin, this.activeMode, this.daysLimit);
+        const activeProjects = calculateProjectStats(statsData, this.plugin, this.daysLimit);
 
         const timeSpentItem = summaryBanner.createEl('div', { cls: 'stats-summary-item' });
         timeSpentItem.createEl('span', { cls: 'stats-summary-icon', text: '⏱️' });
@@ -182,63 +134,7 @@ export default class StatsModal extends Modal {
         // Create projects list at the top
         this.createProjectsListInContainer(statsData, chartsContainer);
 
-        // 1. Effective Score Chart
-        const effectiveScoreContainer = chartsContainer.createEl('div', { cls: 'chart-container' });
-        effectiveScoreContainer.createEl('h3', { text: 'Évolution du Score Effectif', cls: 'chart-title' });
-        const effectiveScoreCanvas = effectiveScoreContainer.createEl('canvas', { cls: 'chart-canvas' });
-
-        this.chartInstances.push(new Chart(effectiveScoreCanvas, {
-            type: 'line',
-            data: chartData.effectiveScoreData,
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                scales: {
-                    x: { display: true, grid: { display: false } },
-                    y: { beginAtZero: false, min: 0, grid: { color: 'rgba(0, 0, 0, 0.1)' } }
-                },
-                plugins: {
-                    legend: { display: true, position: 'top', labels: { usePointStyle: true, padding: 20 } },
-                    tooltip: { mode: 'index', intersect: false }
-                },
-                elements: {
-                    point: { radius: 3, hoverRadius: 6 },
-                    line: { borderWidth: 2 }
-                }
-            }
-        }));
-
-        this.createDynamicControls(effectiveScoreContainer);
-
-        // 2. Base Score Chart
-        const baseScoreContainer = chartsContainer.createEl('div', { cls: 'chart-container' });
-        baseScoreContainer.createEl('h3', { text: 'Évolution du Score de Base', cls: 'chart-title' });
-        const baseScoreCanvas = baseScoreContainer.createEl('canvas', { cls: 'chart-canvas' });
-
-        this.chartInstances.push(new Chart(baseScoreCanvas, {
-            type: 'line',
-            data: chartData.realScoreData,
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                scales: {
-                    x: { display: true, grid: { display: false } },
-                    y: { beginAtZero: false, min: 0, grid: { color: 'rgba(0, 0, 0, 0.1)' } }
-                },
-                plugins: {
-                    legend: { display: true, position: 'top', labels: { usePointStyle: true, padding: 20 } },
-                    tooltip: { mode: 'index', intersect: false }
-                },
-                elements: {
-                    point: { radius: 3, hoverRadius: 6 },
-                    line: { borderWidth: 2 }
-                }
-            }
-        }));
-
-        this.createDynamicControls(baseScoreContainer);
-
-        // 3. Split Row: Camembert (Doughnut) + Bar Plot for Temps de Travail par Projet
+        // 1. Split Row (right under the projects list): Camembert (Doughnut) + Bar Plot for Temps de Travail par Projet
         const projectTimeContainer = chartsContainer.createEl('div', { cls: 'chart-container' });
         projectTimeContainer.createEl('h3', { text: `Temps de Travail par Projet (Période sélectionnée)`, cls: 'chart-title' });
 
@@ -303,6 +199,62 @@ export default class StatsModal extends Modal {
         }));
 
         this.createDynamicControls(projectTimeContainer);
+
+        // 2. Effective Score Chart
+        const effectiveScoreContainer = chartsContainer.createEl('div', { cls: 'chart-container' });
+        effectiveScoreContainer.createEl('h3', { text: 'Évolution du Score Effectif', cls: 'chart-title' });
+        const effectiveScoreCanvas = effectiveScoreContainer.createEl('canvas', { cls: 'chart-canvas' });
+
+        this.chartInstances.push(new Chart(effectiveScoreCanvas, {
+            type: 'line',
+            data: chartData.effectiveScoreData,
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: { display: true, grid: { display: false } },
+                    y: { beginAtZero: false, min: 0, grid: { color: 'rgba(0, 0, 0, 0.1)' } }
+                },
+                plugins: {
+                    legend: { display: true, position: 'top', labels: { usePointStyle: true, padding: 20 } },
+                    tooltip: { mode: 'index', intersect: false }
+                },
+                elements: {
+                    point: { radius: 3, hoverRadius: 6 },
+                    line: { borderWidth: 2 }
+                }
+            }
+        }));
+
+        this.createDynamicControls(effectiveScoreContainer);
+
+        // 3. Base Score Chart
+        const baseScoreContainer = chartsContainer.createEl('div', { cls: 'chart-container' });
+        baseScoreContainer.createEl('h3', { text: 'Évolution du Score de Base', cls: 'chart-title' });
+        const baseScoreCanvas = baseScoreContainer.createEl('canvas', { cls: 'chart-canvas' });
+
+        this.chartInstances.push(new Chart(baseScoreCanvas, {
+            type: 'line',
+            data: chartData.realScoreData,
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: { display: true, grid: { display: false } },
+                    y: { beginAtZero: false, min: 0, grid: { color: 'rgba(0, 0, 0, 0.1)' } }
+                },
+                plugins: {
+                    legend: { display: true, position: 'top', labels: { usePointStyle: true, padding: 20 } },
+                    tooltip: { mode: 'index', intersect: false }
+                },
+                elements: {
+                    point: { radius: 3, hoverRadius: 6 },
+                    line: { borderWidth: 2 }
+                }
+            }
+        }));
+
+        this.createDynamicControls(baseScoreContainer);
 
         // 4. Temps passé par Jour (min) Chart (replacing Actions par Jour)
         const dailyTimeContainer = chartsContainer.createEl('div', { cls: 'chart-container' });
@@ -479,14 +431,12 @@ export default class StatsModal extends Modal {
         const projectsContainer = container.createEl('div', { cls: 'projects-list-container' });
 
         projectsContainer.createEl('h3', {
-            text: this.activeMode === 'agent'
-                ? `Liste des Projets Agent (/advance) (Max: ${this.projectsLimit})`
-                : `Liste des Projets par Priorité (Max: ${this.projectsLimit})`,
+            text: `Liste des Projets par Priorité (Max: ${this.projectsLimit})`,
             cls: 'projects-list-title'
         });
 
         // Calculate project stats using shared logic
-        const projectStats = calculateProjectStats(statsData, this.plugin, this.activeMode, this.daysLimit);
+        const projectStats = calculateProjectStats(statsData, this.plugin, this.daysLimit);
 
         // Map similarity for search
         const mappedProjectStats = projectStats.map(p => {

@@ -40,6 +40,7 @@ Le plugin utilise exclusivement la mécanique interne d'Obsidian (`saveData`/`lo
 - **Module partagé** : Extraction de ~500 lignes de logique métier dans `statsUtils.ts` (zéro duplication).
 - **Clé de Deadline Configurable** : Permet l'interopérabilité avec d'autres plugins (ex: Tasks) en choisissant dynamiquement la clé de frontmatter utilisée pour la date d'échéance (ex: `due`, `echeance`).
 - Filtrage des projets archivés dans le `StatsModal` et ajout d'un bouton direct pour ouvrir la note depuis la liste.
+- **Tracking unique utilisateur** : suppression complète du double tracking Agent (`/advance`) dans le plugin (onglet « Statistiques Agent ») et dans le CLI (`--agent`, `next-autonomous`, `agent_only`, `agent_autonomous`). Ordre du `StatsModal` : bannière de résumé → liste des projets → Temps de travail par projet (camembert + barres côte à côte) → Score effectif → Score de base → Temps passé par jour.
 - Migration réussie et suppression de l'ancien fichier `stats.json` standalone.
 - Stabilité garantie des rendus Chart.js qui se recréent adéquatement à la volée.
 - Résolution du problème de rendu des callouts / admonitions dans le modal de revue grâce à l'utilisation d'un `Component` dédié pour isoler le cycle de vie du rendu.

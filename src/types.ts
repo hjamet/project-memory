@@ -19,19 +19,6 @@ export interface WorkSessionEntry {
 	interrupted?: boolean;
 }
 
-export interface AgentStats {
-	effectiveScore?: number;
-	baseScore?: number;
-	totalReviews: number;
-	currentScore: number;
-	rotationBonus?: number;
-	lastReviewDate?: string;
-	sessionsSinceHuman?: number;
-	lastSatisfiedMilestoneDate?: string;
-	reviewHistory: ReviewHistoryEntry[];
-	recentWorkDates?: (string | WorkSessionEntry)[];
-}
-
 export interface ProjectStats {
 	currentScore: number; // current pertinence score stored in the persistent stats payload
 	rotationBonus: number;
@@ -40,7 +27,6 @@ export interface ProjectStats {
 	lastSatisfiedMilestoneDate?: string;
 	reviewHistory: ReviewHistoryEntry[];
 	recentWorkDates?: (string | WorkSessionEntry)[];
-	agent?: AgentStats;
 }
 
 export interface GlobalStats {
@@ -145,5 +131,4 @@ export interface StatsProcessingOptions {
 	selectedProjects: Set<string>;
 	plugin: Plugin;
 	deadlines: { [path: string]: string };
-	mode?: 'human' | 'agent';
 }
